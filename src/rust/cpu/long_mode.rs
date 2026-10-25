@@ -248,9 +248,20 @@ unsafe fn pop_val(bits: u32) -> OrPageFault<u64> {
 // ---------------------------------------------------------------------------------------------
 // flags
 
+static PARITY: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = (i as u8).count_ones() % 2 == 0;
+        i += 1;
+    }
+    t
+};
+
+#[inline(always)]
 unsafe fn set_flags(cf: bool, af: bool, of: bool, result: u64, bits: u32) {
     let r = result & mask(bits);
-    let pf = (r as u8).count_ones() % 2 == 0;
+    let pf = PARITY[r as u8 as usize];
     let zf = r == 0;
     let sf = r >> (bits - 1) & 1 != 0;
     *flags = *flags & !FLAGS_ALL
@@ -268,31 +279,38 @@ unsafe fn alu(op: u8, a: u64, b: u64, bits: u32) -> u64 {
     let m = mask(bits);
     let a = a & m;
     let b = b & m;
-    let carry_in = (get_eflags() & FLAG_CARRY) as u128;
     let msb = bits - 1;
-    let (r, cf, of) = match op {
+    match op {
+        1 | 4 | 6 => {
+            let r = match op {
+                1 => a | b,
+                4 => a & b,
+                _ => a ^ b,
+            };
+            set_flags(false, false, false, r, bits);
+            r
+        },
         0 | 2 => {
-            let cin = if op == 2 { carry_in } else { 0 };
-            let wide = a as u128 + b as u128 + cin;
-            let r = wide as u64 & m;
-            (r, wide >> bits & 1 != 0, ((a ^ r) & (b ^ r)) >> msb & 1 != 0)
+            let cin = if op == 2 { (get_eflags() & FLAG_CARRY != 0) as u64 } else { 0 };
+            let (s1, c1) = a.overflowing_add(b);
+            let (s2, c2) = s1.overflowing_add(cin);
+            let r = s2 & m;
+            let cf = if bits == 64 { c1 || c2 } else { s2 >> bits & 1 != 0 };
+            let of = ((a ^ r) & (b ^ r)) >> msb & 1 != 0;
+            set_flags(cf, (a ^ b ^ r) & 0x10 != 0, of, r, bits);
+            r
         },
-        3 | 5 | 7 => {
-            let cin = if op == 3 { carry_in } else { 0 };
-            let r = (a as u128).wrapping_sub(b as u128).wrapping_sub(cin) as u64 & m;
-            (r, (a as u128) < b as u128 + cin, ((a ^ b) & (a ^ r)) >> msb & 1 != 0)
+        _ => {
+            let cin = if op == 3 { (get_eflags() & FLAG_CARRY != 0) as u64 } else { 0 };
+            let (s1, b1) = a.overflowing_sub(b);
+            let (s2, b2) = s1.overflowing_sub(cin);
+            let r = s2 & m;
+            let cf = b1 || b2;
+            let of = ((a ^ b) & (a ^ r)) >> msb & 1 != 0;
+            set_flags(cf, (a ^ b ^ r) & 0x10 != 0, of, r, bits);
+            r
         },
-        1 => (a | b, false, false),
-        4 => (a & b, false, false),
-        _ => (a ^ b, false, false),
-    };
-    let af = (a ^ b ^ r) & 0x10 != 0;
-    let (af, of) = match op {
-        1 | 4 | 6 => (false, false),
-        _ => (af, of),
-    };
-    set_flags(cf, af, of, r, bits);
-    r
+    }
 }
 
 /// Replace the flags with an already materialised value

@@ -70,6 +70,9 @@ PS2.prototype.reset = function()
     /** @type {boolean} */
     this.have_mouse = true;
 
+    /** @type {number} */
+    this.last_kbd_code = 0;
+
     /** @type {boolean} */
     this.mouse_flush_scheduled = false;
 
@@ -295,6 +298,15 @@ PS2.prototype.kbd_send_code = function(code)
 {
     if(this.enable_keyboard_stream)
     {
+        // Auto-repeat of a held key is a stream of identical make codes. A guest that is slow to
+        // read them (an interpreter) would work through the backlog long after the key was
+        // released, so drop repeats while the guest has not read the earlier ones.
+        if(code === this.last_kbd_code && !(code & 0x80) && this.kbd_buffer.length >= 4)
+        {
+            return;
+        }
+        this.last_kbd_code = code;
+
         dbg_log("adding kbd code: " + h(code), LOG_PS2);
         this.kbd_buffer.push(code);
         this.raise_irq();
