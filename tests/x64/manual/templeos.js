@@ -23,6 +23,7 @@ const emulator = new V86({
     bios: { buffer: buf(__dirname + "/../../../bios/seabios.bin") },
     vga_bios: { buffer: buf(__dirname + "/../../../bios/vgabios.bin") },
     cdrom: { buffer: buf(iso) },
+    initial_state: process.env.TOS_LOAD ? { buffer: buf(process.env.TOS_LOAD) } : undefined,
     boot_order: 0x123,
     memory_size: 512 * 1024 * 1024,
     vga_memory_size: 8 * 1024 * 1024,
@@ -95,7 +96,7 @@ async function type(text)
         const [code, shift] = SC[ch] || [0x39, false];
         if(shift) emulator.bus.send("keyboard-code", 0x2A);
         emulator.bus.send("keyboard-code", code);
-        await new Promise(r => setTimeout(r, 150));
+        await new Promise(r => setTimeout(r, +process.env.TOS_HOLD || 150));
         emulator.bus.send("keyboard-code", code | 0x80);
         if(shift) emulator.bus.send("keyboard-code", 0xAA);
         await new Promise(r => setTimeout(r, 150));
@@ -135,10 +136,37 @@ if(process.env.TOS_AUTO)
     }, 2000);
 }
 
+// TOS_RAW='[[seconds, [scancode, ...]], ...]': raw scancodes (set 1)
+for(const [sec, codes] of JSON.parse(process.env.TOS_RAW || "[]"))
+{
+    setTimeout(async () => { for(const c of codes) { emulator.bus.send("keyboard-code", c); await new Promise(r => setTimeout(r, 120)); } }, sec * 1000);
+}
+
+// TOS_MOUSE='[[seconds, dx, dy, buttons], ...]': relative mouse move, then buttons (bit0 left)
+for(const [sec, dx, dy, b] of JSON.parse(process.env.TOS_MOUSE || "[]"))
+{
+    setTimeout(async () => {
+        if(dx || dy) emulator.bus.send("mouse-delta", [dx, -dy]);
+        emulator.bus.send("mouse-click", [!!(b & 1), !!(b & 2), !!(b & 4)]);
+        await new Promise(r => setTimeout(r, 300));
+        emulator.bus.send("mouse-click", [false, false, false]);
+    }, sec * 1000);
+}
+
 // TOS_SHOTS='[seconds, ...]' writes <screenshot>.<seconds>.png at those uptimes
 for(const sec of JSON.parse(process.env.TOS_SHOTS || "[]"))
 {
     setTimeout(() => shot && screenshot(shot.replace(/\.png$/, "") + "." + sec + ".png"), sec * 1000);
+}
+
+// TOS_SAVE=<file> TOS_SAVE_AT=<seconds>: write a state snapshot
+if(process.env.TOS_SAVE)
+{
+    setTimeout(async () => {
+        const st = await emulator.save_state();
+        fs.writeFileSync(process.env.TOS_SAVE, Buffer.from(st));
+        console.error("state saved (%d bytes)", st.byteLength);
+    }, +process.env.TOS_SAVE_AT * 1000);
 }
 
 const iv = setInterval(report, 10000);
