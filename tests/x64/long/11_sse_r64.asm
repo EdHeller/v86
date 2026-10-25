@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: SSE2 with 64-bit GPRs: movq xmm<->r64, cvtsi2sd/cvttsd2si with REX.W, pextrq-free paths
 %include "inc/long.inc"

@@ -4824,6 +4824,7 @@ pub unsafe fn reset_cpu() {
 
     for i in 0..16 {
         *reg_hi.offset(i) = 0;
+        write_xmm128_2(i as i32, 0, 0);
     }
     for i in 0..8 {
         *reg_ext.offset(i) = 0;

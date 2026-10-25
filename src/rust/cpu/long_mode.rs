@@ -16,6 +16,9 @@
 //!   and raise #UD otherwise
 
 use crate::cpu::cpu::*;
+use crate::cpu::sse_instr::sse_integer_round;
+use crate::gen;
+use crate::prefix;
 use crate::cpu::global_pointers::*;
 use crate::cpu::instructions;
 use crate::cpu::instructions_0f;
@@ -147,13 +150,13 @@ unsafe fn fetch8_high() -> OrPageFault<u64> {
 }
 
 unsafe fn fetch8() -> OrPageFault<u64> {
-    if *rip_hi != 0 { fetch8_high() } else { Ok(read_imm8()? as u8 as u64) }
+    if *rip_hi != 0 { fetch8_high() } else { Ok(crate::cpu::cpu::read_imm8()? as u8 as u64) }
 }
 unsafe fn fetch16() -> OrPageFault<u64> {
-    if *rip_hi != 0 { Ok(fetch8()? | fetch8()? << 8) } else { Ok(read_imm16()? as u16 as u64) }
+    if *rip_hi != 0 { Ok(fetch8()? | fetch8()? << 8) } else { Ok(crate::cpu::cpu::read_imm16()? as u16 as u64) }
 }
 unsafe fn fetch32() -> OrPageFault<u64> {
-    if *rip_hi != 0 { Ok(fetch16()? | fetch16()? << 16) } else { Ok(read_imm32s()? as u32 as u64) }
+    if *rip_hi != 0 { Ok(fetch16()? | fetch16()? << 16) } else { Ok(crate::cpu::cpu::read_imm32s()? as u32 as u64) }
 }
 unsafe fn fetch64() -> OrPageFault<u64> { Ok(fetch32()? | fetch32()? << 32) }
 
@@ -185,6 +188,10 @@ unsafe fn set_rip(target: u64) -> OrPageFault<()> {
 
 unsafe fn decode_modrm(p: &Prefixes, imm_len: u64) -> OrPageFault<ModRM> {
     let m = fetch8()? as u8;
+    decode_modrm_byte(p, m, imm_len)
+}
+
+unsafe fn decode_modrm_byte(p: &Prefixes, m: u8, imm_len: u64) -> OrPageFault<ModRM> {
     let md = m >> 6;
     let reg = (m >> 3 & 7) | p.r();
     let rm = m & 7;
@@ -1017,6 +1024,8 @@ unsafe fn exec() -> OrPageFault<()> {
             let d = sign_extend(fetch8()?, 8);
             set_rip(rip().wrapping_add(d))?;
         },
+        0x9B => instructions::instr_9B(),
+        0xD8..=0xDF => return bridge_x87(&p, opcode),
         0xF4 => instructions::instr_F4(),
         0xF5 => set_eflags_raw(get_eflags() ^ FLAG_CARRY),
         0xF6 | 0xF7 => group3(&p, opcode)?,
@@ -1087,7 +1096,7 @@ unsafe fn group3(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
     // test has an immediate, which matters for rip-relative addressing
     let peek_reg = {
         let ip = *instruction_pointer;
-        let b = read_imm8()? as u8 >> 3 & 7;
+        let b = crate::cpu::cpu::read_imm8()? as u8 >> 3 & 7;
         *instruction_pointer = ip;
         b
     };
@@ -1586,7 +1595,12 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                 rm_write(p, &m, osz, r)?;
             }
         },
-        _ => return unimplemented_opcode(0x0F00 | opcode as u32),
+        _ => {
+            if sse_gpr(p, opcode)? {
+                return Ok(());
+            }
+            return bridge_0f(p, opcode);
+        },
     }
     Ok(())
 }
@@ -1829,4 +1843,236 @@ unsafe fn cmpxchg_double(p: &Prefixes, addr: u64) -> OrPageFault<()> {
     }
     set_eflags_raw(get_eflags() & !FLAG_ZERO | equal as i32 * FLAG_ZERO);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// bridge to the generated interpreters (sse, mmx, x87)
+//
+// The generated 64-bit variants (gen/interpreter0f64.rs, gen/interpreter64.rs) decode modrm bytes
+// by calling the functions below, which honour REX and 64-bit addressing. The instruction
+// implementations behind them only support 32-bit addresses.
+
+static mut BRIDGE_PREFIXES: Prefixes = Prefixes {
+    rex: 0,
+    has_rex: false,
+    osz16: false,
+    asz32: false,
+    seg: -1,
+    rep: 0,
+    lock: false,
+};
+static mut BRIDGE_IMM_LEN: u64 = 0;
+
+pub unsafe fn rex_b() -> i32 { (BRIDGE_PREFIXES.rex as i32 & 1) << 3 }
+pub unsafe fn rex_r() -> i32 { (BRIDGE_PREFIXES.rex as i32 & 4) << 1 }
+
+pub unsafe fn read_imm8() -> OrPageFault<i32> { Ok(fetch8()? as i32) }
+pub unsafe fn read_imm8s() -> OrPageFault<i32> { Ok(sign_extend(fetch8()?, 8) as i32) }
+pub unsafe fn read_imm16() -> OrPageFault<i32> { Ok(fetch16()? as i32) }
+pub unsafe fn read_imm32s() -> OrPageFault<i32> { Ok(fetch32()? as i32) }
+
+pub unsafe fn modrm_resolve64(modrm_byte: i32) -> OrPageFault<i32> {
+    let p = BRIDGE_PREFIXES;
+    match decode_modrm_byte(&p, modrm_byte as u8, BRIDGE_IMM_LEN)?.loc {
+        Loc::Mem(a) => lin(a),
+        Loc::Reg(_) => unreachable!(),
+    }
+}
+
+unsafe fn bridge_prefix_bits(p: &Prefixes) -> u8 {
+    (if p.osz16 { prefix::PREFIX_66 } else { 0 })
+        | match p.rep {
+            0xF2 => prefix::PREFIX_F2,
+            0xF3 => prefix::PREFIX_F3,
+            _ => 0,
+        }
+}
+
+/// Immediate bytes following the modrm operand, needed for rip-relative addressing
+fn bridge_imm_len(opcode: u8) -> u64 {
+    match opcode {
+        0x70..=0x73 | 0xC2 | 0xC4 | 0xC5 | 0xC6 | 0x3A => 1,
+        _ => 0,
+    }
+}
+
+unsafe fn bridge_0f(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
+    // mmx instructions (no mandatory prefix) only have 8 registers, REX.R/B do not apply
+    let xmm = p.osz16
+        || p.rep != 0
+        || matches!(opcode, 0x10..=0x17 | 0x28..=0x2F | 0x50..=0x5F | 0xC2 | 0xC6);
+    BRIDGE_PREFIXES = *p;
+    if !xmm {
+        BRIDGE_PREFIXES.rex &= !5;
+    }
+    BRIDGE_IMM_LEN = bridge_imm_len(opcode);
+    *prefixes = bridge_prefix_bits(p);
+    let size_bit = if p.osz16 && !p.w() { 0 } else { 0x100 };
+    gen::interpreter0f64::run(opcode as u32 | size_bit);
+    *prefixes = 0;
+    Ok(())
+}
+
+unsafe fn bridge_x87(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
+    BRIDGE_PREFIXES = *p;
+    BRIDGE_IMM_LEN = 0;
+    *prefixes = 0;
+    gen::interpreter64::run(opcode as u32 | 0x100);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// sse instructions with general purpose register operands (64-bit forms and r8-r15)
+
+fn f64_to_i64(x: f64) -> u64 {
+    if x.is_nan() || x >= 9.223372036854775807e18 || x < -9.223372036854775808e18 {
+        i64::MIN as u64
+    }
+    else {
+        x as i64 as u64
+    }
+}
+
+unsafe fn xmm_source(m: &ModRM, bits: u32) -> OrPageFault<u64> {
+    match m.loc {
+        Loc::Reg(n) => Ok(read_xmm64s(n as i32) & mask(bits)),
+        Loc::Mem(a) => mem_read(a, bits),
+    }
+}
+
+/// Returns Ok(true) if the instruction was handled
+unsafe fn sse_gpr(p: &Prefixes, opcode: u8) -> OrPageFault<bool> {
+    let wide = p.w();
+    match opcode {
+        // movd / movq xmm, r/m
+        0x6E if p.osz16 => {
+            let m = decode_modrm(p, 0)?;
+            let v = rm_read(p, &m, if wide { 64 } else { 32 })?;
+            write_xmm128_2(m.reg as i32, v, 0);
+        },
+        // movd / movq r/m, xmm
+        0x7E if p.osz16 => {
+            let m = decode_modrm(p, 0)?;
+            let v = read_xmm64s(m.reg as i32);
+            rm_write(p, &m, if wide { 64 } else { 32 }, v & mask(if wide { 64 } else { 32 }))?;
+        },
+        // movd / movq mm, r/m
+        0x6E if p.rep == 0 && wide => {
+            let m = decode_modrm(p, 0)?;
+            let v = rm_read(p, &m, 64)?;
+            write_mmx_reg64((m.reg & 7) as i32, v);
+            transition_fpu_to_mmx();
+        },
+        0x7E if p.rep == 0 && wide => {
+            let m = decode_modrm(p, 0)?;
+            let v = read_mmx64s((m.reg & 7) as i32);
+            rm_write(p, &m, 64, v)?;
+            transition_fpu_to_mmx();
+        },
+        // cvtsi2ss / cvtsi2sd xmm, r/m32/64
+        0x2A if p.rep == 0xF2 || p.rep == 0xF3 => {
+            let m = decode_modrm(p, 0)?;
+            let bits = if wide { 64 } else { 32 };
+            let v = sign_extend(rm_read(p, &m, bits)?, bits) as i64;
+            if p.rep == 0xF2 {
+                write_xmm_f64(m.reg as i32, v as f64);
+            }
+            else {
+                write_xmm_f32(m.reg as i32, v as f32);
+            }
+        },
+        // cvttss2si / cvttsd2si / cvtss2si / cvtsd2si r, xmm/m
+        0x2C | 0x2D if p.rep == 0xF2 || p.rep == 0xF3 => {
+            let m = decode_modrm(p, 0)?;
+            let double = p.rep == 0xF2;
+            let src = xmm_source(&m, if double { 64 } else { 32 })?;
+            let x = if double { f64::from_bits(src) } else { f32::from_bits(src as u32) as f64 };
+            let x = if opcode == 0x2D { sse_integer_round(x) } else { x };
+            if wide {
+                set_r64(m.reg, f64_to_i64(x));
+            }
+            else {
+                let r = if x.is_nan() || x >= 2147483648.0 || x < -2147483648.0 {
+                    i32::MIN as u32
+                }
+                else {
+                    x as i32 as u32
+                };
+                set_reg(m.reg, 32, true, r as u64);
+            }
+        },
+        // movmskps / movmskpd r32, xmm
+        0x50 => {
+            let m = decode_modrm(p, 0)?;
+            let Loc::Reg(n) = m.loc else { return ud().map(|_| true) };
+            let v = read_xmm128s(n as i32);
+            let bits = if p.osz16 {
+                (v.u64[0] >> 63 | (v.u64[1] >> 63) << 1) as u64
+            }
+            else {
+                (v.u32[0] >> 31 | (v.u32[1] >> 31) << 1 | (v.u32[2] >> 31) << 2 | (v.u32[3] >> 31) << 3)
+                    as u64
+            };
+            set_reg(m.reg, 32, true, bits);
+        },
+        // pmovmskb r32, xmm / mm
+        0xD7 => {
+            let m = decode_modrm(p, 0)?;
+            let Loc::Reg(n) = m.loc else { return ud().map(|_| true) };
+            let mut bits = 0u64;
+            if p.osz16 {
+                let v = read_xmm128s(n as i32);
+                for i in 0..16 {
+                    bits |= ((v.u8[i] >> 7) as u64) << i;
+                }
+            }
+            else {
+                let v = read_mmx64s((n & 7) as i32);
+                for i in 0..8 {
+                    bits |= (v >> (8 * i + 7) & 1) << i;
+                }
+            }
+            set_reg(m.reg, 32, true, bits);
+        },
+        // pextrw r32, xmm/mm, imm8
+        0xC5 => {
+            let m = decode_modrm(p, 1)?;
+            let Loc::Reg(n) = m.loc else { return ud().map(|_| true) };
+            let imm = fetch8()?;
+            let v = if p.osz16 {
+                read_xmm128s(n as i32).u16[(imm & 7) as usize] as u64
+            }
+            else {
+                read_mmx64s((n & 7) as i32) >> (16 * (imm & 3)) & 0xFFFF
+            };
+            set_reg(m.reg, 32, true, v);
+        },
+        // pinsrw xmm/mm, r32/m16, imm8
+        0xC4 => {
+            let m = decode_modrm(p, 1)?;
+            let v = rm_read(p, &m, if matches!(m.loc, Loc::Reg(_)) { 32 } else { 16 })? as u16;
+            let imm = fetch8()?;
+            if p.osz16 {
+                let mut x = read_xmm128s(m.reg as i32);
+                x.u16[(imm & 7) as usize] = v;
+                write_xmm_reg128(m.reg as i32, x);
+            }
+            else {
+                let r = (m.reg & 7) as i32;
+                let shift = 16 * (imm & 3);
+                let old = read_mmx64s(r);
+                write_mmx_reg64(r, old & !(0xFFFFu64 << shift) | (v as u64) << shift);
+                transition_fpu_to_mmx();
+            }
+        },
+        // movnti m32/m64, r32/r64
+        0xC3 => {
+            let m = decode_modrm(p, 0)?;
+            let bits = if wide { 64 } else { 32 };
+            let v = get_reg(m.reg, bits, true);
+            rm_write(p, &m, bits, v)?;
+        },
+        _ => return Ok(false),
+    }
+    Ok(true)
 }

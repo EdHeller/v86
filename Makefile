@@ -4,6 +4,7 @@ NASM_TEST_DIR=./tests/nasm
 
 INSTRUCTION_TABLES=src/rust/gen/jit.rs src/rust/gen/jit0f.rs \
 		   src/rust/gen/interpreter.rs src/rust/gen/interpreter0f.rs \
+		   src/rust/gen/interpreter64.rs src/rust/gen/interpreter0f64.rs \
 		   src/rust/gen/analyzer.rs src/rust/gen/analyzer0f.rs \
 
 # Only the dependencies common to both generate_{jit,interpreter}.js
@@ -92,6 +93,7 @@ BROWSER_FILES=screen.js keyboard.js mouse.js speaker.js serial.js \
 
 RUST_FILES=$(shell find src/rust/ -name '*.rs') \
 	   src/rust/gen/interpreter.rs src/rust/gen/interpreter0f.rs \
+	   src/rust/gen/interpreter64.rs src/rust/gen/interpreter0f64.rs \
 	   src/rust/gen/jit.rs src/rust/gen/jit0f.rs \
 	   src/rust/gen/analyzer.rs src/rust/gen/analyzer0f.rs
 
@@ -200,6 +202,11 @@ src/rust/gen/interpreter.rs: $(INTERPRETER_DEPENDENCIES)
 	./gen/generate_interpreter.js --output-dir build/ --table interpreter
 src/rust/gen/interpreter0f.rs: $(INTERPRETER_DEPENDENCIES)
 	./gen/generate_interpreter.js --output-dir build/ --table interpreter0f
+
+src/rust/gen/interpreter64.rs: $(INTERPRETER_DEPENDENCIES)
+	./gen/generate_interpreter.js --output-dir build/ --table interpreter64
+src/rust/gen/interpreter0f64.rs: $(INTERPRETER_DEPENDENCIES)
+	./gen/generate_interpreter.js --output-dir build/ --table interpreter0f64
 
 src/rust/gen/analyzer.rs: $(ANALYZER_DEPENDENCIES)
 	./gen/generate_analyzer.js --output-dir build/ --table analyzer

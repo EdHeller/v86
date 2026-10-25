@@ -196,7 +196,7 @@ export function CPU(bus, wm, stop_idling)
     this.fpu_dp_selector = view(Int32Array, memory, 1060, 1);
     this.fpu_dp_selector[0] = 0;
 
-    this.reg_xmm32s = view(Int32Array, memory, 832, 8 * 4);
+    this.reg_xmm32s = view(Int32Array, memory, 1536, 16 * 4);
 
     this.mxcsr = view(Int32Array, memory, 824, 1);
 

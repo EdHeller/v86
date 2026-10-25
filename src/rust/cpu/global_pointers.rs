@@ -55,7 +55,7 @@ pub const memory_size: *mut u32 = 812 as *mut u32;
 pub const fpu_stack_empty: *mut u8 = 816 as *mut u8;
 pub const mxcsr: *mut i32 = 824 as *mut i32;
 
-pub const reg_xmm: *mut reg128 = 832 as *mut reg128;
+pub const reg_xmm: *mut reg128 = 1536 as *mut reg128; // 16 entries, xmm8-15 are only used in 64-bit mode
 pub const current_tsc: *mut u64 = 960 as *mut u64;
 
 pub const reg_pdpte: *mut u64 = 968 as *mut u64; // 4 64-bit entries

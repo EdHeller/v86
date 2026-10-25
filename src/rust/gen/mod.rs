@@ -4,6 +4,11 @@ pub mod interpreter;
 pub mod interpreter0f;
 
 #[rustfmt::skip]
+pub mod interpreter64;
+#[rustfmt::skip]
+pub mod interpreter0f64;
+
+#[rustfmt::skip]
 pub mod jit;
 #[rustfmt::skip]
 pub mod jit0f;

@@ -20,11 +20,20 @@ const gen_all = get_switch_exist("--all");
 const to_generate = {
     interpreter: gen_all || table_arg === "interpreter",
     interpreter0f: gen_all || table_arg === "interpreter0f",
+    // Variants used by the 64-bit mode interpreter (cpu/long_mode.rs) for the instructions it
+    // does not implement itself: modrm decoding honours REX and 64-bit addressing. Only the x87
+    // opcodes of the one-byte table are generated.
+    interpreter64: gen_all || table_arg === "interpreter64",
+    interpreter0f64: gen_all || table_arg === "interpreter0f64",
 };
+const X64 = to_generate.interpreter64 || to_generate.interpreter0f64;
+const MODRM_RM = X64 ? "(modrm_byte & 7 | rex_b())" : "modrm_byte & 7";
+const MODRM_REG = X64 ? "(modrm_byte >> 3 & 7 | rex_r())" : "modrm_byte >> 3 & 7";
+const MODRM_RESOLVE = X64 ? "modrm_resolve64" : "modrm_resolve";
 
 assert(
     Object.keys(to_generate).some(k => to_generate[k]),
-    "Pass --table [interpreter|interpreter0f] or --all to pick which tables to generate"
+    "Pass --table [interpreter|interpreter0f|interpreter64|interpreter0f64] or --all to pick which tables to generate"
 );
 
 gen_table();
@@ -268,7 +277,7 @@ function gen_instruction_body_after_fixed_g(encoding, size)
 
             return [].concat(
                 instruction_prefix,
-                gen_call(instruction_name, ["modrm_byte & 7", "modrm_byte >> 3 & 7"]),
+                gen_call(instruction_name, [MODRM_RM, MODRM_REG]),
                 instruction_postfix
             );
         }
@@ -283,15 +292,15 @@ function gen_instruction_body_after_fixed_g(encoding, size)
             }
             else
             {
-                mem_args = ["match modrm_resolve(modrm_byte) { Ok(a) => a, Err(()) => return }"];
+                mem_args = [`match ${MODRM_RESOLVE}(modrm_byte) { Ok(a) => a, Err(()) => return }`];
             }
 
-            const reg_args = ["modrm_byte & 7"];
+            const reg_args = [MODRM_RM];
 
             if(encoding.fixed_g === undefined)
             {
-                mem_args.push("modrm_byte >> 3 & 7");
-                reg_args.push("modrm_byte >> 3 & 7");
+                mem_args.push(MODRM_REG);
+                reg_args.push(MODRM_REG);
             }
 
             if(imm_read)
@@ -374,6 +383,7 @@ function gen_table()
     let cases = [];
     for(let opcode = 0; opcode < 0x100; opcode++)
     {
+        if(to_generate.interpreter64 && (opcode < 0xD8 || opcode > 0xDF)) continue;
         let encoding = by_opcode[opcode];
         assert(encoding && encoding.length);
 
@@ -407,6 +417,31 @@ function gen_table()
             body: ["assert!(false);"]
         },
     };
+    if(to_generate.interpreter64)
+    {
+        const code = [
+            "#![cfg_attr(rustfmt, rustfmt_skip)]",
+
+            "#![allow(unused_imports, unused_parens)]",
+            "use crate::cpu::cpu::after_block_boundary;",
+            "use crate::cpu::long_mode::{modrm_resolve64, rex_b, rex_r, read_imm8, read_imm8s, read_imm16, read_imm32s};",
+            "use crate::cpu::cpu::{task_switch_test, trigger_ud};",
+            "use crate::cpu::instructions;",
+            "use crate::cpu::global_pointers::{instruction_pointer, prefixes};",
+            "use crate::prefix;",
+            "#[allow(unused_variables)]",
+            "pub unsafe fn run(opcode: u32) {",
+            table,
+            "}",
+        ];
+
+        finalize_table_rust(
+            OUT_DIR,
+            "interpreter64.rs",
+            rust_ast.print_syntax_tree([].concat(code)).join("\n") + "\n"
+        );
+    }
+
     if(to_generate.interpreter)
     {
         const code = [
@@ -470,6 +505,31 @@ function gen_table()
             body: ["assert!(false);"]
         },
     };
+
+    if(to_generate.interpreter0f64)
+    {
+        const code = [
+            "#![cfg_attr(rustfmt, rustfmt_skip)]",
+
+            "#![allow(unused_imports, unused_parens)]",
+            "use crate::cpu::cpu::after_block_boundary;",
+            "use crate::cpu::long_mode::{modrm_resolve64, rex_b, rex_r, read_imm8, read_imm16, read_imm32s};",
+            "use crate::cpu::cpu::{task_switch_test, task_switch_test_mmx, trigger_ud};",
+            "use crate::cpu::instructions_0f;",
+            "use crate::cpu::global_pointers::{instruction_pointer, prefixes};",
+            "use crate::prefix;",
+
+            "pub unsafe fn run(opcode: u32) {",
+            table0f,
+            "}",
+        ];
+
+        finalize_table_rust(
+            OUT_DIR,
+            "interpreter0f64.rs",
+            rust_ast.print_syntax_tree([].concat(code)).join("\n") + "\n"
+        );
+    }
 
     if(to_generate.interpreter0f)
     {
