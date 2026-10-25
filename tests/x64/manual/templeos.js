@@ -28,6 +28,7 @@ const emulator = new V86({
     vga_memory_size: 8 * 1024 * 1024,
     autostart: true,
     disable_jit: +process.env.DISABLE_JIT,
+    wasm_path: process.env.WASM || undefined,
     log_level: 0,
 });
 
@@ -71,6 +72,71 @@ function screenshot(path)
     const chunk = (t, d) => { const l = Buffer.alloc(4); l.writeUInt32BE(d.length); const td = Buffer.concat([Buffer.from(t), d]); const c = Buffer.alloc(4); c.writeUInt32BE(crc(td)); return Buffer.concat([l, td, c]); };
     const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2;
     fs.writeFileSync(path, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]));
+}
+
+// US layout, scancode set 1
+const SC = {};
+"1234567890-=".split("").forEach((c, i) => SC[c] = [0x02 + i, false]);
+"qwertyuiop[]".split("").forEach((c, i) => SC[c] = [0x10 + i, false]);
+"asdfghjkl;'".split("").forEach((c, i) => SC[c] = [0x1E + i, false]);
+"zxcvbnm,./".split("").forEach((c, i) => SC[c] = [0x2C + i, false]);
+"!@#$%^&*()_+".split("").forEach((c, i) => SC[c] = [0x02 + i, true]);
+"QWERTYUIOP{}".split("").forEach((c, i) => SC[c] = [0x10 + i, true]);
+"ASDFGHJKL:\"".split("").forEach((c, i) => SC[c] = [0x1E + i, true]);
+"ZXCVBNM<>?".split("").forEach((c, i) => SC[c] = [0x2C + i, true]);
+SC[" "] = [0x39, false]; SC["\n"] = [0x1C, false]; SC["\\"] = [0x2B, false]; SC["`"] = [0x29, false];
+
+async function type(text)
+{
+    for(const ch of text)
+    {
+        const [code, shift] = SC[ch] || [0x39, false];
+        if(shift) emulator.bus.send("keyboard-code", 0x2A);
+        emulator.bus.send("keyboard-code", code);
+        await new Promise(r => setTimeout(r, 150));
+        emulator.bus.send("keyboard-code", code | 0x80);
+        if(shift) emulator.bus.send("keyboard-code", 0xAA);
+        await new Promise(r => setTimeout(r, 150));
+    }
+}
+
+// TOS_KEYS='[[seconds, "text"], ...]' types text at the given uptimes
+for(const [sec, text] of JSON.parse(process.env.TOS_KEYS || "[]"))
+{
+    setTimeout(() => type(text), sec * 1000);
+}
+
+// TOS_AUTO='["text to type", ...]': answers the install prompt with "n" once it shows up, then types
+// each entry 90 seconds after the previous one
+function ink(x0, y0, x1, y1)
+{
+    const vga = emulator.v86.cpu.devices.vga;
+    let n = 0;
+    for(let y = y0; y < y1; y++) for(let x = x0; x < x1; x += 8) n += vga.plane0[y * 80 + (x >> 3)] ? 1 : 0;
+    return n;
+}
+if(process.env.TOS_AUTO)
+{
+    const lines = JSON.parse(process.env.TOS_AUTO);
+    let stage = 0;
+    const t = setInterval(async () => {
+        if(stage === 0 && emulator.v86.cpu.devices.vga.graphical_mode && ink(8, 132, 280, 146) > 15 && ink(320, 100, 330, 400) > 30)
+        {
+            stage = 1;
+            console.error("install prompt at t=%ds", Math.round(process.uptime()));
+            await new Promise(r => setTimeout(r, 3000));
+            await type("n");
+            await new Promise(r => setTimeout(r, 150000));
+            for(const l of lines) { await type(l); await new Promise(r => setTimeout(r, 90000)); }
+            stage = 2;
+        }
+    }, 2000);
+}
+
+// TOS_SHOTS='[seconds, ...]' writes <screenshot>.<seconds>.png at those uptimes
+for(const sec of JSON.parse(process.env.TOS_SHOTS || "[]"))
+{
+    setTimeout(() => shot && screenshot(shot.replace(/\.png$/, "") + "." + sec + ".png"), sec * 1000);
 }
 
 const iv = setInterval(report, 10000);
