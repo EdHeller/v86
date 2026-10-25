@@ -223,9 +223,17 @@ pub unsafe fn instr16_0F01_1_mem(addr: i32) { sidt(addr, 0xFFFFFF) }
 pub unsafe fn instr32_0F01_1_mem(addr: i32) { sidt(addr, -1) }
 
 #[no_mangle]
-pub unsafe fn instr16_0F01_2_reg(_r: i32) { trigger_ud(); }
+pub unsafe fn instr16_0F01_2_reg(r: i32) { xcr_instruction(r); }
 #[no_mangle]
-pub unsafe fn instr32_0F01_2_reg(_r: i32) { trigger_ud(); }
+pub unsafe fn instr32_0F01_2_reg(r: i32) { xcr_instruction(r); }
+
+pub unsafe fn xcr_instruction(r: i32) {
+    match r {
+        0 => crate::cpu::misc_instr::xgetbv(),
+        1 => crate::cpu::misc_instr::xsetbv(),
+        _ => trigger_ud(),
+    }
+}
 
 unsafe fn lgdt(addr: i32, mask: i32) {
     if 0 != *cpl {
@@ -580,7 +588,7 @@ pub unsafe fn instr_F30F12(source: reg128, r: i32) {
 }
 pub unsafe fn instr_F30F12_reg(r1: i32, r2: i32) { instr_F30F12(read_xmm128s(r1), r2); }
 pub unsafe fn instr_F30F12_mem(addr: i32, r: i32) {
-    instr_F30F12(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_F30F12(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_0F13_mem(addr: i32, r: i32) {
     // movlps m64, xmm
@@ -642,7 +650,7 @@ pub unsafe fn instr_0F15(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F15_reg(r1: i32, r2: i32) { instr_0F15(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F15_mem(addr: i32, r: i32) {
-    instr_0F15(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F15(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F15(source: reg128, r: i32) {
@@ -659,7 +667,7 @@ pub unsafe fn instr_660F15(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F15_reg(r1: i32, r2: i32) { instr_660F15(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F15_mem(addr: i32, r: i32) {
-    instr_660F15(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F15(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -689,7 +697,7 @@ pub unsafe fn instr_F30F16(source: reg128, r: i32) {
 }
 pub unsafe fn instr_F30F16_reg(r1: i32, r2: i32) { instr_F30F16(read_xmm128s(r1), r2); }
 pub unsafe fn instr_F30F16_mem(addr: i32, r: i32) {
-    instr_F30F16(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_F30F16(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_0F17_mem(addr: i32, r: i32) {
     // movhps m64, xmm
@@ -879,7 +887,7 @@ pub unsafe fn instr_0F28(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F28_reg(r1: i32, r2: i32) { instr_0F28(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F28_mem(addr: i32, r: i32) {
-    instr_0F28(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F28(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_660F28(source: reg128, r: i32) {
     // movapd xmm, xmm/m128
@@ -889,13 +897,13 @@ pub unsafe fn instr_660F28(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F28_reg(r1: i32, r2: i32) { instr_660F28(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F28_mem(addr: i32, r: i32) {
-    instr_660F28(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F28(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_0F29_mem(addr: i32, r: i32) {
     // movaps m128, xmm
     let data = read_xmm128s(r);
     // XXX: Aligned write or #gp
-    return_on_pagefault!(safe_write128(addr, data));
+    return_on_pagefault!(safe_write128_aligned(addr, data));
 }
 pub unsafe fn instr_0F29_reg(r1: i32, r2: i32) {
     // movaps xmm, xmm
@@ -905,7 +913,7 @@ pub unsafe fn instr_660F29_mem(addr: i32, r: i32) {
     // movapd m128, xmm
     let data = read_xmm128s(r);
     // XXX: Aligned write or #gp
-    return_on_pagefault!(safe_write128(addr, data));
+    return_on_pagefault!(safe_write128_aligned(addr, data));
 }
 pub unsafe fn instr_660F29_reg(r1: i32, r2: i32) {
     // movapd xmm, xmm
@@ -971,13 +979,13 @@ pub unsafe fn instr_0F2B_reg(_r1: i32, _r2: i32) { trigger_ud(); }
 pub unsafe fn instr_0F2B_mem(addr: i32, r: i32) {
     // movntps m128, xmm
     // XXX: Aligned write or #gp
-    mov_r_m128(addr, r);
+    mov_r_m128_aligned(addr, r);
 }
 pub unsafe fn instr_660F2B_reg(_r1: i32, _r2: i32) { trigger_ud(); }
 pub unsafe fn instr_660F2B_mem(addr: i32, r: i32) {
     // movntpd m128, xmm
     // XXX: Aligned write or #gp
-    mov_r_m128(addr, r);
+    mov_r_m128_aligned(addr, r);
 }
 
 pub unsafe fn instr_0F2C(source: u64, r: i32) {
@@ -1009,7 +1017,7 @@ pub unsafe fn instr_660F2C(source: reg128, r: i32) {
 }
 #[no_mangle]
 pub unsafe fn instr_660F2C_mem(addr: i32, r: i32) {
-    instr_660F2C(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F2C(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F2C_reg(r1: i32, r2: i32) { instr_660F2C(read_xmm128s(r1), r2); }
@@ -1067,7 +1075,7 @@ pub unsafe fn instr_660F2D(source: reg128, r: i32) {
 pub unsafe fn instr_660F2D_reg(r1: i32, r2: i32) { instr_660F2D(read_xmm128s(r1), r2); }
 #[no_mangle]
 pub unsafe fn instr_660F2D_mem(addr: i32, r: i32) {
-    instr_660F2D(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F2D(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_F20F2D(source: u64, r: i32) {
     // cvtsd2si r32, xmm/m64
@@ -1790,7 +1798,7 @@ pub unsafe fn instr_0F51(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F51_reg(r1: i32, r2: i32) { instr_0F51(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F51_mem(addr: i32, r: i32) {
-    instr_0F51(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F51(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F51(source: reg128, r: i32) {
@@ -1803,7 +1811,7 @@ pub unsafe fn instr_660F51(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F51_reg(r1: i32, r2: i32) { instr_660F51(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F51_mem(addr: i32, r: i32) {
-    instr_660F51(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F51(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F51(source: u64, r: i32) {
@@ -1841,7 +1849,7 @@ pub unsafe fn instr_0F52(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F52_reg(r1: i32, r2: i32) { instr_0F52(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F52_mem(addr: i32, r: i32) {
-    instr_0F52(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F52(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F30F52(source: f32, r: i32) {
@@ -1868,7 +1876,7 @@ pub unsafe fn instr_0F53(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F53_reg(r1: i32, r2: i32) { instr_0F53(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F53_mem(addr: i32, r: i32) {
-    instr_0F53(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F53(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F30F53(source: f32, r: i32) {
@@ -1888,7 +1896,7 @@ pub unsafe fn instr_0F54(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F54_reg(r1: i32, r2: i32) { instr_0F54(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F54_mem(addr: i32, r: i32) {
-    instr_0F54(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F54(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F54(source: reg128, r: i32) {
@@ -1898,7 +1906,7 @@ pub unsafe fn instr_660F54(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F54_reg(r1: i32, r2: i32) { instr_660F54(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F54_mem(addr: i32, r: i32) {
-    instr_660F54(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F54(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F55(source: reg128, r: i32) {
@@ -1908,7 +1916,7 @@ pub unsafe fn instr_0F55(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F55_reg(r1: i32, r2: i32) { instr_0F55(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F55_mem(addr: i32, r: i32) {
-    instr_0F55(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F55(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F55(source: reg128, r: i32) {
@@ -1918,7 +1926,7 @@ pub unsafe fn instr_660F55(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F55_reg(r1: i32, r2: i32) { instr_660F55(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F55_mem(addr: i32, r: i32) {
-    instr_660F55(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F55(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F56(source: reg128, r: i32) {
@@ -1928,7 +1936,7 @@ pub unsafe fn instr_0F56(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F56_reg(r1: i32, r2: i32) { instr_0F56(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F56_mem(addr: i32, r: i32) {
-    instr_0F56(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F56(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F56(source: reg128, r: i32) {
@@ -1938,7 +1946,7 @@ pub unsafe fn instr_660F56(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F56_reg(r1: i32, r2: i32) { instr_660F56(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F56_mem(addr: i32, r: i32) {
-    instr_660F56(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F56(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F57(source: reg128, r: i32) {
@@ -1948,7 +1956,7 @@ pub unsafe fn instr_0F57(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F57_reg(r1: i32, r2: i32) { instr_0F57(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F57_mem(addr: i32, r: i32) {
-    instr_0F57(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F57(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F57(source: reg128, r: i32) {
@@ -1958,7 +1966,7 @@ pub unsafe fn instr_660F57(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F57_reg(r1: i32, r2: i32) { instr_660F57(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F57_mem(addr: i32, r: i32) {
-    instr_660F57(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F57(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -1977,7 +1985,7 @@ pub unsafe fn instr_0F58(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F58_reg(r1: i32, r2: i32) { instr_0F58(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F58_mem(addr: i32, r: i32) {
-    instr_0F58(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F58(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F58(source: reg128, r: i32) {
@@ -1993,7 +2001,7 @@ pub unsafe fn instr_660F58(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F58_reg(r1: i32, r2: i32) { instr_660F58(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F58_mem(addr: i32, r: i32) {
-    instr_660F58(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F58(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F58(source: u64, r: i32) {
@@ -2033,7 +2041,7 @@ pub unsafe fn instr_0F59(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F59_reg(r1: i32, r2: i32) { instr_0F59(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F59_mem(addr: i32, r: i32) {
-    instr_0F59(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F59(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F59(source: reg128, r: i32) {
@@ -2049,7 +2057,7 @@ pub unsafe fn instr_660F59(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F59_reg(r1: i32, r2: i32) { instr_660F59(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F59_mem(addr: i32, r: i32) {
-    instr_660F59(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F59(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F59(source: u64, r: i32) {
@@ -2097,7 +2105,7 @@ pub unsafe fn instr_660F5A(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F5A_reg(r1: i32, r2: i32) { instr_660F5A(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F5A_mem(addr: i32, r: i32) {
-    instr_660F5A(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F5A(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F5A(source: u64, r: i32) {
@@ -2136,7 +2144,7 @@ pub unsafe fn instr_0F5B(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F5B_reg(r1: i32, r2: i32) { instr_0F5B(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F5B_mem(addr: i32, r: i32) {
-    instr_0F5B(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F5B(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F5B(source: reg128, r: i32) {
@@ -2154,7 +2162,7 @@ pub unsafe fn instr_660F5B(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F5B_reg(r1: i32, r2: i32) { instr_660F5B(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F5B_mem(addr: i32, r: i32) {
-    instr_660F5B(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F5B(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F30F5B(source: reg128, r: i32) {
@@ -2171,7 +2179,7 @@ pub unsafe fn instr_F30F5B(source: reg128, r: i32) {
 }
 pub unsafe fn instr_F30F5B_reg(r1: i32, r2: i32) { instr_F30F5B(read_xmm128s(r1), r2); }
 pub unsafe fn instr_F30F5B_mem(addr: i32, r: i32) {
-    instr_F30F5B(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_F30F5B(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -2190,7 +2198,7 @@ pub unsafe fn instr_0F5C(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F5C_reg(r1: i32, r2: i32) { instr_0F5C(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F5C_mem(addr: i32, r: i32) {
-    instr_0F5C(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F5C(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F5C(source: reg128, r: i32) {
@@ -2206,7 +2214,7 @@ pub unsafe fn instr_660F5C(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F5C_reg(r1: i32, r2: i32) { instr_660F5C(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F5C_mem(addr: i32, r: i32) {
-    instr_660F5C(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F5C(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F5C(source: u64, r: i32) {
@@ -2245,7 +2253,7 @@ pub unsafe fn instr_0F5D(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F5D_reg(r1: i32, r2: i32) { instr_0F5D(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F5D_mem(addr: i32, r: i32) {
-    instr_0F5D(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F5D(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F5D(source: reg128, r: i32) {
@@ -2261,7 +2269,7 @@ pub unsafe fn instr_660F5D(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F5D_reg(r1: i32, r2: i32) { instr_660F5D(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F5D_mem(addr: i32, r: i32) {
-    instr_660F5D(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F5D(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F5D(source: u64, r: i32) {
@@ -2303,7 +2311,7 @@ pub unsafe fn instr_0F5E(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F5E_reg(r1: i32, r2: i32) { instr_0F5E(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F5E_mem(addr: i32, r: i32) {
-    instr_0F5E(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F5E(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F5E(source: reg128, r: i32) {
@@ -2319,7 +2327,7 @@ pub unsafe fn instr_660F5E(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F5E_reg(r1: i32, r2: i32) { instr_660F5E(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F5E_mem(addr: i32, r: i32) {
-    instr_660F5E(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F5E(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F5E(source: u64, r: i32) {
@@ -2358,7 +2366,7 @@ pub unsafe fn instr_0F5F(source: reg128, r: i32) {
 }
 pub unsafe fn instr_0F5F_reg(r1: i32, r2: i32) { instr_0F5F(read_xmm128s(r1), r2); }
 pub unsafe fn instr_0F5F_mem(addr: i32, r: i32) {
-    instr_0F5F(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_0F5F(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_660F5F(source: reg128, r: i32) {
@@ -2374,7 +2382,7 @@ pub unsafe fn instr_660F5F(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F5F_reg(r1: i32, r2: i32) { instr_660F5F(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F5F_mem(addr: i32, r: i32) {
-    instr_660F5F(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F5F(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F5F(source: u64, r: i32) {
@@ -2432,7 +2440,7 @@ pub unsafe fn instr_660F60(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F60_reg(r1: i32, r2: i32) { instr_660F60(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F60_mem(addr: i32, r: i32) {
-    instr_660F60(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F60(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F61(source: i32, r: i32) {
@@ -2465,7 +2473,7 @@ pub unsafe fn instr_660F61(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F61_reg(r1: i32, r2: i32) { instr_660F61(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F61_mem(addr: i32, r: i32) {
-    instr_660F61(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F61(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F62(source: i32, r: i32) {
@@ -2495,7 +2503,7 @@ pub unsafe fn instr_660F62(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F62_reg(r1: i32, r2: i32) { instr_660F62(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F62_mem(addr: i32, r: i32) {
-    instr_660F62(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F62(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F63(source: u64, r: i32) {
@@ -2528,7 +2536,7 @@ pub unsafe fn instr_660F63(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F63_reg(r1: i32, r2: i32) { instr_660F63(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F63_mem(addr: i32, r: i32) {
-    instr_660F63(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F63(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F64(source: u64, r: i32) {
@@ -2559,7 +2567,7 @@ pub unsafe fn instr_660F64(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F64_reg(r1: i32, r2: i32) { instr_660F64(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F64_mem(addr: i32, r: i32) {
-    instr_660F64(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F64(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F65(source: u64, r: i32) {
@@ -2590,7 +2598,7 @@ pub unsafe fn instr_660F65(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F65_reg(r1: i32, r2: i32) { instr_660F65(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F65_mem(addr: i32, r: i32) {
-    instr_660F65(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F65(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F66(source: u64, r: i32) {
@@ -2623,7 +2631,7 @@ pub unsafe fn instr_660F66(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F66_reg(r1: i32, r2: i32) { instr_660F66(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F66_mem(addr: i32, r: i32) {
-    instr_660F66(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F66(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F67(source: u64, r: i32) {
@@ -2656,7 +2664,7 @@ pub unsafe fn instr_660F67(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F67_reg(r1: i32, r2: i32) { instr_660F67(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F67_mem(addr: i32, r: i32) {
-    instr_660F67(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F67(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F68(source: u64, r: i32) {
@@ -2689,7 +2697,7 @@ pub unsafe fn instr_660F68(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F68_reg(r1: i32, r2: i32) { instr_660F68(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F68_mem(addr: i32, r: i32) {
-    instr_660F68(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F68(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F69(source: u64, r: i32) {
@@ -2718,7 +2726,7 @@ pub unsafe fn instr_660F69(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F69_reg(r1: i32, r2: i32) { instr_660F69(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F69_mem(addr: i32, r: i32) {
-    instr_660F69(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F69(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F6A(source: u64, r: i32) {
@@ -2746,7 +2754,7 @@ pub unsafe fn instr_660F6A(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F6A_reg(r1: i32, r2: i32) { instr_660F6A(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F6A_mem(addr: i32, r: i32) {
-    instr_660F6A(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F6A(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F6B(source: u64, r: i32) {
@@ -2779,7 +2787,7 @@ pub unsafe fn instr_660F6B(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F6B_reg(r1: i32, r2: i32) { instr_660F6B(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F6B_mem(addr: i32, r: i32) {
-    instr_660F6B(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F6B(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F6C_mem(_addr: i32, _r: i32) { trigger_ud(); }
@@ -2800,7 +2808,7 @@ pub unsafe fn instr_660F6C(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F6C_reg(r1: i32, r2: i32) { instr_660F6C(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F6C_mem(addr: i32, r: i32) {
-    instr_660F6C(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F6C(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F6D_mem(_addr: i32, _r: i32) { trigger_ud(); }
@@ -2821,7 +2829,7 @@ pub unsafe fn instr_660F6D(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F6D_reg(r1: i32, r2: i32) { instr_660F6D(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F6D_mem(addr: i32, r: i32) {
-    instr_660F6D(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F6D(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -2860,7 +2868,7 @@ pub unsafe fn instr_660F6F(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F6F_reg(r1: i32, r2: i32) { instr_660F6F(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F6F_mem(addr: i32, r: i32) {
-    instr_660F6F(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F6F(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_F30F6F(source: reg128, r: i32) {
     // movdqu xmm, xmm/m128
@@ -2900,7 +2908,7 @@ pub unsafe fn instr_660F70_reg(r1: i32, r2: i32, imm: i32) {
     instr_660F70(read_xmm128s(r1), r2, imm);
 }
 pub unsafe fn instr_660F70_mem(addr: i32, r: i32, imm: i32) {
-    instr_660F70(return_on_pagefault!(safe_read128s(addr)), r, imm);
+    instr_660F70(return_on_pagefault!(safe_read128s_aligned(addr)), r, imm);
 }
 
 #[no_mangle]
@@ -2921,7 +2929,7 @@ pub unsafe fn instr_F20F70_reg(r1: i32, r2: i32, imm: i32) {
     instr_F20F70(read_xmm128s(r1), r2, imm);
 }
 pub unsafe fn instr_F20F70_mem(addr: i32, r: i32, imm: i32) {
-    instr_F20F70(return_on_pagefault!(safe_read128s(addr)), r, imm);
+    instr_F20F70(return_on_pagefault!(safe_read128s_aligned(addr)), r, imm);
 }
 #[no_mangle]
 pub unsafe fn instr_F30F70(source: reg128, r: i32, imm8: i32) {
@@ -2941,7 +2949,7 @@ pub unsafe fn instr_F30F70_reg(r1: i32, r2: i32, imm: i32) {
     instr_F30F70(read_xmm128s(r1), r2, imm);
 }
 pub unsafe fn instr_F30F70_mem(addr: i32, r: i32, imm: i32) {
-    instr_F30F70(return_on_pagefault!(safe_read128s(addr)), r, imm);
+    instr_F30F70(return_on_pagefault!(safe_read128s_aligned(addr)), r, imm);
 }
 pub unsafe fn instr_0F71_2_mem(_addr: i32, _r: i32) { trigger_ud(); }
 pub unsafe fn instr_0F71_4_mem(_addr: i32, _r: i32) { trigger_ud(); }
@@ -3109,7 +3117,7 @@ pub unsafe fn instr_660F74(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F74_reg(r1: i32, r2: i32) { instr_660F74(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F74_mem(addr: i32, r: i32) {
-    instr_660F74(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F74(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F75(source: u64, r: i32) {
@@ -3141,7 +3149,7 @@ pub unsafe fn instr_660F75(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F75_reg(r1: i32, r2: i32) { instr_660F75(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F75_mem(addr: i32, r: i32) {
-    instr_660F75(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F75(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F76(source: u64, r: i32) {
@@ -3172,7 +3180,7 @@ pub unsafe fn instr_660F76(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F76_reg(r1: i32, r2: i32) { instr_660F76(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F76_mem(addr: i32, r: i32) {
-    instr_660F76(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F76(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0F77() {
@@ -3205,7 +3213,7 @@ pub unsafe fn instr_660FD0(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FD0_reg(r1: i32, r2: i32) { instr_660FD0(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FD0_mem(addr: i32, r: i32) {
-    instr_660FD0(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FD0(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_F20FD0(source: reg128, r: i32) {
     // addsubps xmm, xmm/m128
@@ -3224,7 +3232,7 @@ pub unsafe fn instr_F20FD0(source: reg128, r: i32) {
 }
 pub unsafe fn instr_F20FD0_reg(r1: i32, r2: i32) { instr_F20FD0(read_xmm128s(r1), r2); }
 pub unsafe fn instr_F20FD0_mem(addr: i32, r: i32) {
-    instr_F20FD0(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_F20FD0(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_F20FF0_reg(_r1: i32, _r2: i32) { trigger_ud(); }
 pub unsafe fn instr_F20FF0_mem(addr: i32, r: i32) {
@@ -3248,7 +3256,7 @@ pub unsafe fn instr_660F7C(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F7C_reg(r1: i32, r2: i32) { instr_660F7C(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F7C_mem(addr: i32, r: i32) {
-    instr_660F7C(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F7C(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F7C(source: reg128, r: i32) {
@@ -3268,7 +3276,7 @@ pub unsafe fn instr_F20F7C(source: reg128, r: i32) {
 }
 pub unsafe fn instr_F20F7C_reg(r1: i32, r2: i32) { instr_F20F7C(read_xmm128s(r1), r2); }
 pub unsafe fn instr_F20F7C_mem(addr: i32, r: i32) {
-    instr_F20F7C(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_F20F7C(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -3287,7 +3295,7 @@ pub unsafe fn instr_660F7D(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660F7D_reg(r1: i32, r2: i32) { instr_660F7D(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660F7D_mem(addr: i32, r: i32) {
-    instr_660F7D(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660F7D(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -3308,7 +3316,7 @@ pub unsafe fn instr_F20F7D(source: reg128, r: i32) {
 }
 pub unsafe fn instr_F20F7D_reg(r1: i32, r2: i32) { instr_F20F7D(read_xmm128s(r1), r2); }
 pub unsafe fn instr_F20F7D_mem(addr: i32, r: i32) {
-    instr_F20F7D(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_F20F7D(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -3361,7 +3369,7 @@ pub unsafe fn instr_0F7F_reg(r1: i32, r2: i32) {
 pub unsafe fn instr_660F7F_mem(addr: i32, r: i32) {
     // movdqa xmm/m128, xmm
     // XXX: Aligned write or #gp
-    mov_r_m128(addr, r);
+    mov_r_m128_aligned(addr, r);
 }
 pub unsafe fn instr_660F7F_reg(r1: i32, r2: i32) {
     // movdqa xmm/m128, xmm
@@ -3497,7 +3505,10 @@ pub unsafe fn instr_0FA2() {
         1 => {
             eax = 3 | 7 << 4 | 6 << 8; // pentium3
             ebx = 1 << 16 | 8 << 8; // cpu count, clflush size
-            ecx = 1 << 0 | 1 << 13 | 1 << 23 | 1 << 30; // sse3, cx16, popcnt, rdrand
+            ecx = 1 << 0 | 1 << 13 | 1 << 23 | 1 << 26 | 1 << 30; // sse3, cx16, popcnt, xsave, rdrand
+            if *cr.offset(4) & CR4_OSXSAVE != 0 {
+                ecx |= 1 << 27; // osxsave
+            }
             let vme = 0 << 1;
             if config::VMWARE_HYPERVISOR_PORT {
                 ecx |= 1 << 31
@@ -3561,6 +3572,22 @@ pub unsafe fn instr_0FA2() {
                 ebx = 1 << 9; // enhanced REP MOVSB/STOSB
                 ecx = 0;
                 edx = 0;
+            }
+        },
+
+        0xD => {
+            // processor extended state enumeration
+            let sub = read_reg32(ECX);
+            if sub == 0 {
+                eax = crate::cpu::misc_instr::XCR0_SUPPORTED as i32; // supported xcr0 bits
+                ebx = 576; // size for the enabled features
+                ecx = 576; // size for all supported features
+            }
+            else if sub == 1 {
+                eax = 1; // xsaveopt
+            }
+            else if sub == 2 {
+                // no ymm
             }
         },
 
@@ -3785,25 +3812,19 @@ pub unsafe fn instr_0FAE_3_mem(addr: i32) {
 #[no_mangle]
 pub unsafe fn instr_0FAE_4_reg(_r: i32) { trigger_ud(); }
 #[no_mangle]
-pub unsafe fn instr_0FAE_4_mem(_addr: i32) {
-    // xsave
-    undefined_instruction();
-}
+pub unsafe fn instr_0FAE_4_mem(addr: i32) { crate::cpu::misc_instr::xsave(addr); }
 pub unsafe fn instr_0FAE_5_reg(_r: i32) {
     // lfence
 }
-pub unsafe fn instr_0FAE_5_mem(_addr: i32) {
-    // xrstor
-    undefined_instruction();
-}
+pub unsafe fn instr_0FAE_5_mem(addr: i32) { crate::cpu::misc_instr::xrstor(addr); }
 #[no_mangle]
 pub unsafe fn instr_0FAE_6_reg(_r: i32) {
     // mfence
 }
 #[no_mangle]
-pub unsafe fn instr_0FAE_6_mem(_addr: i32) {
-    // xsaveopt
-    undefined_instruction();
+pub unsafe fn instr_0FAE_6_mem(addr: i32) {
+    // xsaveopt: same as xsave, the optimisation is optional
+    crate::cpu::misc_instr::xsave(addr);
 }
 #[no_mangle]
 pub unsafe fn instr_0FAE_7_reg(_r: i32) {
@@ -4047,7 +4068,7 @@ pub unsafe fn instr_0FC2(source: reg128, r: i32, imm8: i32) {
 }
 pub unsafe fn instr_0FC2_reg(r1: i32, r2: i32, imm: i32) { instr_0FC2(read_xmm128s(r1), r2, imm); }
 pub unsafe fn instr_0FC2_mem(addr: i32, r: i32, imm: i32) {
-    instr_0FC2(return_on_pagefault!(safe_read128s(addr)), r, imm);
+    instr_0FC2(return_on_pagefault!(safe_read128s_aligned(addr)), r, imm);
 }
 #[no_mangle]
 pub unsafe fn instr_660FC2(source: reg128, r: i32, imm8: i32) {
@@ -4065,7 +4086,7 @@ pub unsafe fn instr_660FC2_reg(r1: i32, r2: i32, imm: i32) {
     instr_660FC2(read_xmm128s(r1), r2, imm);
 }
 pub unsafe fn instr_660FC2_mem(addr: i32, r: i32, imm: i32) {
-    instr_660FC2(return_on_pagefault!(safe_read128s(addr)), r, imm);
+    instr_660FC2(return_on_pagefault!(safe_read128s_aligned(addr)), r, imm);
 }
 #[no_mangle]
 pub unsafe fn instr_F20FC2(source: u64, r: i32, imm8: i32) {
@@ -4165,7 +4186,7 @@ pub unsafe fn instr_0FC6(source: reg128, r: i32, imm8: i32) {
 }
 pub unsafe fn instr_0FC6_reg(r1: i32, r2: i32, imm: i32) { instr_0FC6(read_xmm128s(r1), r2, imm); }
 pub unsafe fn instr_0FC6_mem(addr: i32, r: i32, imm: i32) {
-    instr_0FC6(return_on_pagefault!(safe_read128s(addr)), r, imm);
+    instr_0FC6(return_on_pagefault!(safe_read128s_aligned(addr)), r, imm);
 }
 
 #[no_mangle]
@@ -4184,7 +4205,7 @@ pub unsafe fn instr_660FC6_reg(r1: i32, r2: i32, imm: i32) {
     instr_660FC6(read_xmm128s(r1), r2, imm);
 }
 pub unsafe fn instr_660FC6_mem(addr: i32, r: i32, imm: i32) {
-    instr_660FC6(return_on_pagefault!(safe_read128s(addr)), r, imm);
+    instr_660FC6(return_on_pagefault!(safe_read128s_aligned(addr)), r, imm);
 }
 
 pub unsafe fn instr16_0FC7_1_reg(_r: i32) { trigger_ud(); }
@@ -4269,7 +4290,7 @@ pub unsafe fn instr_660FD1(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FD1_reg(r1: i32, r2: i32) { instr_660FD1(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FD1_mem(addr: i32, r: i32) {
-    instr_660FD1(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FD1(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FD2(source: u64, r: i32) {
@@ -4288,7 +4309,7 @@ pub unsafe fn instr_660FD2(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FD2_reg(r1: i32, r2: i32) { instr_660FD2(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FD2_mem(addr: i32, r: i32) {
-    instr_660FD2(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FD2(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FD3(source: u64, r: i32) {
@@ -4306,7 +4327,7 @@ pub unsafe fn instr_660FD3(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FD3_reg(r1: i32, r2: i32) { instr_660FD3(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FD3_mem(addr: i32, r: i32) {
-    instr_660FD3(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FD3(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FD4(source: u64, r: i32) {
@@ -4331,7 +4352,7 @@ pub unsafe fn instr_660FD4(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FD4_reg(r1: i32, r2: i32) { instr_660FD4(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FD4_mem(addr: i32, r: i32) {
-    instr_660FD4(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FD4(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FD5(source: u64, r: i32) {
@@ -4362,7 +4383,7 @@ pub unsafe fn instr_660FD5(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FD5_reg(r1: i32, r2: i32) { instr_660FD5(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FD5_mem(addr: i32, r: i32) {
-    instr_660FD5(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FD5(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -4449,7 +4470,7 @@ pub unsafe fn instr_660FD8(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FD8_reg(r1: i32, r2: i32) { instr_660FD8(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FD8_mem(addr: i32, r: i32) {
-    instr_660FD8(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FD8(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FD9(source: u64, r: i32) {
@@ -4479,7 +4500,7 @@ pub unsafe fn instr_660FD9(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FD9_reg(r1: i32, r2: i32) { instr_660FD9(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FD9_mem(addr: i32, r: i32) {
-    instr_660FD9(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FD9(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FDA(source: u64, r: i32) {
@@ -4510,7 +4531,7 @@ pub unsafe fn instr_660FDA(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FDA_reg(r1: i32, r2: i32) { instr_660FDA(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FDA_mem(addr: i32, r: i32) {
-    instr_660FDA(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FDA(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FDB(source: u64, r: i32) {
@@ -4531,7 +4552,7 @@ pub unsafe fn instr_660FDB(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FDB_reg(r1: i32, r2: i32) { instr_660FDB(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FDB_mem(addr: i32, r: i32) {
-    instr_660FDB(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FDB(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FDC(source: u64, r: i32) {
@@ -4562,7 +4583,7 @@ pub unsafe fn instr_660FDC(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FDC_reg(r1: i32, r2: i32) { instr_660FDC(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FDC_mem(addr: i32, r: i32) {
-    instr_660FDC(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FDC(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FDD(source: u64, r: i32) {
@@ -4593,7 +4614,7 @@ pub unsafe fn instr_660FDD(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FDD_reg(r1: i32, r2: i32) { instr_660FDD(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FDD_mem(addr: i32, r: i32) {
-    instr_660FDD(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FDD(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FDE(source: u64, r: i32) {
@@ -4624,7 +4645,7 @@ pub unsafe fn instr_660FDE(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FDE_reg(r1: i32, r2: i32) { instr_660FDE(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FDE_mem(addr: i32, r: i32) {
-    instr_660FDE(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FDE(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FDF(source: u64, r: i32) {
@@ -4645,7 +4666,7 @@ pub unsafe fn instr_660FDF(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FDF_reg(r1: i32, r2: i32) { instr_660FDF(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FDF_mem(addr: i32, r: i32) {
-    instr_660FDF(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FDF(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FE0(source: u64, r: i32) {
@@ -4676,7 +4697,7 @@ pub unsafe fn instr_660FE0(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FE0_reg(r1: i32, r2: i32) { instr_660FE0(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FE0_mem(addr: i32, r: i32) {
-    instr_660FE0(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE0(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FE1(source: u64, r: i32) {
@@ -4695,7 +4716,7 @@ pub unsafe fn instr_660FE1(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FE1_reg(r1: i32, r2: i32) { instr_660FE1(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FE1_mem(addr: i32, r: i32) {
-    instr_660FE1(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE1(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FE2(source: u64, r: i32) {
@@ -4714,7 +4735,7 @@ pub unsafe fn instr_660FE2(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FE2_reg(r1: i32, r2: i32) { instr_660FE2(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FE2_mem(addr: i32, r: i32) {
-    instr_660FE2(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE2(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FE3(source: u64, r: i32) {
@@ -4744,7 +4765,7 @@ pub unsafe fn instr_660FE3(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FE3_reg(r1: i32, r2: i32) { instr_660FE3(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FE3_mem(addr: i32, r: i32) {
-    instr_660FE3(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE3(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FE4(source: u64, r: i32) {
@@ -4775,7 +4796,7 @@ pub unsafe fn instr_660FE4(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FE4_reg(r1: i32, r2: i32) { instr_660FE4(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FE4_mem(addr: i32, r: i32) {
-    instr_660FE4(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE4(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FE5(source: u64, r: i32) {
@@ -4806,7 +4827,7 @@ pub unsafe fn instr_660FE5(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FE5_reg(r1: i32, r2: i32) { instr_660FE5(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FE5_mem(addr: i32, r: i32) {
-    instr_660FE5(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE5(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 #[no_mangle]
@@ -4828,7 +4849,7 @@ pub unsafe fn instr_660FE6(source: reg128, r: i32) {
     write_xmm_reg128(r, result);
 }
 pub unsafe fn instr_660FE6_mem(addr: i32, r: i32) {
-    instr_660FE6(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE6(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_660FE6_reg(r1: i32, r2: i32) { instr_660FE6(read_xmm128s(r1), r2); }
 
@@ -4847,7 +4868,7 @@ pub unsafe fn instr_F20FE6(source: reg128, r: i32) {
     write_xmm_reg128(r, result);
 }
 pub unsafe fn instr_F20FE6_mem(addr: i32, r: i32) {
-    instr_F20FE6(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_F20FE6(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_F20FE6_reg(r1: i32, r2: i32) { instr_F20FE6(read_xmm128s(r1), r2); }
 
@@ -4878,7 +4899,7 @@ pub unsafe fn instr_0FE7_reg(_r1: i32, _r2: i32) { trigger_ud(); }
 pub unsafe fn instr_660FE7_reg(_r1: i32, _r2: i32) { trigger_ud(); }
 pub unsafe fn instr_660FE7_mem(addr: i32, r: i32) {
     // movntdq m128, xmm
-    mov_r_m128(addr, r);
+    mov_r_m128_aligned(addr, r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FE8(source: u64, r: i32) {
@@ -4909,7 +4930,7 @@ pub unsafe fn instr_660FE8(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FE8_reg(r1: i32, r2: i32) { instr_660FE8(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FE8_mem(addr: i32, r: i32) {
-    instr_660FE8(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE8(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FE9(source: u64, r: i32) {
@@ -4940,7 +4961,7 @@ pub unsafe fn instr_660FE9(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FE9_reg(r1: i32, r2: i32) { instr_660FE9(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FE9_mem(addr: i32, r: i32) {
-    instr_660FE9(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FE9(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FEA(source: u64, r: i32) {
@@ -4971,7 +4992,7 @@ pub unsafe fn instr_660FEA(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FEA_reg(r1: i32, r2: i32) { instr_660FEA(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FEA_mem(addr: i32, r: i32) {
-    instr_660FEA(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FEA(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FEB(source: u64, r: i32) {
@@ -4992,7 +5013,7 @@ pub unsafe fn instr_660FEB(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FEB_reg(r1: i32, r2: i32) { instr_660FEB(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FEB_mem(addr: i32, r: i32) {
-    instr_660FEB(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FEB(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FEC(source: u64, r: i32) {
@@ -5023,7 +5044,7 @@ pub unsafe fn instr_660FEC(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FEC_reg(r1: i32, r2: i32) { instr_660FEC(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FEC_mem(addr: i32, r: i32) {
-    instr_660FEC(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FEC(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FED(source: u64, r: i32) {
@@ -5054,7 +5075,7 @@ pub unsafe fn instr_660FED(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FED_reg(r1: i32, r2: i32) { instr_660FED(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FED_mem(addr: i32, r: i32) {
-    instr_660FED(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FED(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FEE(source: u64, r: i32) {
@@ -5085,7 +5106,7 @@ pub unsafe fn instr_660FEE(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FEE_reg(r1: i32, r2: i32) { instr_660FEE(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FEE_mem(addr: i32, r: i32) {
-    instr_660FEE(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FEE(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FEF(source: u64, r: i32) {
@@ -5106,7 +5127,7 @@ pub unsafe fn instr_660FEF(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FEF_reg(r1: i32, r2: i32) { instr_660FEF(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FEF_mem(addr: i32, r: i32) {
-    instr_660FEF(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FEF(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FF1(source: u64, r: i32) {
@@ -5125,7 +5146,7 @@ pub unsafe fn instr_660FF1(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FF1_reg(r1: i32, r2: i32) { instr_660FF1(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FF1_mem(addr: i32, r: i32) {
-    instr_660FF1(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FF1(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FF2(source: u64, r: i32) {
@@ -5144,7 +5165,7 @@ pub unsafe fn instr_660FF2(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FF2_reg(r1: i32, r2: i32) { instr_660FF2(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FF2_mem(addr: i32, r: i32) {
-    instr_660FF2(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FF2(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FF3(source: u64, r: i32) {
@@ -5163,7 +5184,7 @@ pub unsafe fn instr_660FF3(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FF3_reg(r1: i32, r2: i32) { instr_660FF3(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FF3_mem(addr: i32, r: i32) {
-    instr_660FF3(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FF3(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FF4(source: u64, r: i32) {
@@ -5188,7 +5209,7 @@ pub unsafe fn instr_660FF4(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FF4_reg(r1: i32, r2: i32) { instr_660FF4(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FF4_mem(addr: i32, r: i32) {
-    instr_660FF4(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FF4(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FF5(source: u64, r: i32) {
@@ -5222,7 +5243,7 @@ pub unsafe fn instr_660FF5(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FF5_reg(r1: i32, r2: i32) { instr_660FF5(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FF5_mem(addr: i32, r: i32) {
-    instr_660FF5(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FF5(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FF6(source: u64, r: i32) {
@@ -5255,7 +5276,7 @@ pub unsafe fn instr_660FF6(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FF6_reg(r1: i32, r2: i32) { instr_660FF6(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FF6_mem(addr: i32, r: i32) {
-    instr_660FF6(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FF6(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 
 pub unsafe fn instr_0FF7_mem(_addr: i32, _r: i32) { trigger_ud(); }
@@ -5325,7 +5346,7 @@ pub unsafe fn instr_660FF8(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FF8_reg(r1: i32, r2: i32) { instr_660FF8(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FF8_mem(addr: i32, r: i32) {
-    instr_660FF8(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FF8(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FF9(source: u64, r: i32) {
@@ -5356,7 +5377,7 @@ pub unsafe fn instr_660FF9(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FF9_reg(r1: i32, r2: i32) { instr_660FF9(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FF9_mem(addr: i32, r: i32) {
-    instr_660FF9(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FF9(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FFA(source: u64, r: i32) {
@@ -5389,7 +5410,7 @@ pub unsafe fn instr_660FFA(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FFA_reg(r1: i32, r2: i32) { instr_660FFA(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FFA_mem(addr: i32, r: i32) {
-    instr_660FFA(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FFA(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FFB(source: u64, r: i32) {
@@ -5412,7 +5433,7 @@ pub unsafe fn instr_660FFB(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FFB_reg(r1: i32, r2: i32) { instr_660FFB(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FFB_mem(addr: i32, r: i32) {
-    instr_660FFB(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FFB(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FFC(source: u64, r: i32) {
@@ -5443,7 +5464,7 @@ pub unsafe fn instr_660FFC(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FFC_reg(r1: i32, r2: i32) { instr_660FFC(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FFC_mem(addr: i32, r: i32) {
-    instr_660FFC(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FFC(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FFD(source: u64, r: i32) {
@@ -5474,7 +5495,7 @@ pub unsafe fn instr_660FFD(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FFD_reg(r1: i32, r2: i32) { instr_660FFD(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FFD_mem(addr: i32, r: i32) {
-    instr_660FFD(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FFD(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FFE(source: u64, r: i32) {
@@ -5505,7 +5526,7 @@ pub unsafe fn instr_660FFE(source: reg128, r: i32) {
 }
 pub unsafe fn instr_660FFE_reg(r1: i32, r2: i32) { instr_660FFE(read_xmm128s(r1), r2); }
 pub unsafe fn instr_660FFE_mem(addr: i32, r: i32) {
-    instr_660FFE(return_on_pagefault!(safe_read128s(addr)), r);
+    instr_660FFE(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 #[no_mangle]
 pub unsafe fn instr_0FFF() {

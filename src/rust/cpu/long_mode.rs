@@ -1164,6 +1164,12 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                     }
                     invlpg64(a);
                 },
+                (2, Loc::Reg(n)) => {
+                    // xgetbv / xsetbv
+                    instructions_0f::xcr_instruction((n & 7) as i32);
+                    *reg_hi.offset(0) = 0;
+                    *reg_hi.offset(2) = 0;
+                },
                 (7, Loc::Reg(0)) => {
                     // swapgs
                     if *cpl != 0 || !*is_64 {
@@ -1281,6 +1287,9 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                 (1, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_1_mem(w))?,
                 (2, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_2_mem(w))?,
                 (3, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_3_mem(w))?,
+                (4, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_4_mem(w))?,
+                (5, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_5_mem(w))?,
+                (6, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_6_mem(w))?,
                 (5, Loc::Reg(_)) | (6, Loc::Reg(_)) | (7, Loc::Reg(_)) => {}, // lfence mfence sfence
                 (7, Loc::Mem(_)) => {},                                       // clflush
                 (r @ 0..=3, Loc::Reg(n)) if p.rep == 0xF3 => {

@@ -181,6 +181,7 @@ pub const CR0_PG: i32 = 1 << 31;
 pub const CR4_VME: i32 = 1;
 pub const CR4_PVI: i32 = 1 << 1;
 pub const CR4_TSD: i32 = 1 << 2;
+pub const CR4_OSXSAVE: i32 = 1 << 18;
 pub const CR4_PSE: i32 = 1 << 4;
 pub const CR4_DE: i32 = 1 << 3;
 pub const CR4_PAE: i32 = 1 << 5;
@@ -3770,6 +3771,25 @@ pub unsafe fn safe_read64s(addr: i32) -> OrPageFault<u64> {
     else {
         Ok(memory::read64s(translate_address_read(addr)?) as u64)
     }
+}
+
+/// 128 bit load of legacy SSE instructions, the address must be 16 byte aligned
+pub unsafe fn safe_read128s_aligned(addr: i32) -> OrPageFault<reg128> {
+    if addr & 15 != 0 {
+        dbg_log!("#gp: unaligned 128 bit sse load at {:x}", addr);
+        trigger_gp(0);
+        return Err(());
+    }
+    safe_read128s(addr)
+}
+
+pub unsafe fn safe_write128_aligned(addr: i32, value: reg128) -> OrPageFault<()> {
+    if addr & 15 != 0 {
+        dbg_log!("#gp: unaligned 128 bit sse store at {:x}", addr);
+        trigger_gp(0);
+        return Err(());
+    }
+    safe_write128(addr, value)
 }
 
 pub unsafe fn safe_read128s(addr: i32) -> OrPageFault<reg128> {

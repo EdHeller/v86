@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: XSETBV/XGETBV and XSAVE/XRSTOR/XSAVEOPT with x87+SSE state (CR4.OSXSAVE)
 %include "inc/real.inc"
 

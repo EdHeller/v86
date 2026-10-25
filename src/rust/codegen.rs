@@ -540,6 +540,28 @@ pub fn gen_modrm_resolve_safe_read128(
     });
 }
 
+/// Like `gen_modrm_resolve_safe_read128` for legacy SSE instructions, which raise #GP for
+/// operands that are not 16 byte aligned
+pub fn gen_modrm_resolve_safe_read128_aligned(
+    ctx: &mut JitContext,
+    modrm_byte: ModrmByte,
+    where_to_write: u32,
+) {
+    gen_modrm_resolve_with_local(ctx, modrm_byte, &|ctx, addr| {
+        gen_check_aligned_128(ctx, addr);
+        gen_safe_read128(ctx, addr, where_to_write)
+    });
+}
+
+pub fn gen_check_aligned_128(ctx: &mut JitContext, address_local: &WasmLocal) {
+    ctx.builder.get_local(address_local);
+    ctx.builder.const_i32(15);
+    ctx.builder.and_i32();
+    ctx.builder.if_void();
+    gen_trigger_gp(ctx, 0);
+    ctx.builder.block_end();
+}
+
 pub fn gen_safe_read8(ctx: &mut JitContext, address_local: &WasmLocal) {
     gen_safe_read(ctx, BitSize::BYTE, address_local, None);
 }

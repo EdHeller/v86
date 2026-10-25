@@ -17,6 +17,9 @@ pub unsafe fn mov_r_r128(r1: i32, r2: i32) {
     let data = read_xmm128s(r2);
     write_xmm_reg128(r1, data);
 }
+pub unsafe fn mov_r_m128_aligned(addr: i32, r: i32) {
+    return_on_pagefault!(safe_write128_aligned(addr, read_xmm128s(r)));
+}
 pub unsafe fn mov_r_m128(addr: i32, r: i32) {
     // mov* m128, xmm
     let data = read_xmm128s(r);

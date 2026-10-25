@@ -173,7 +173,7 @@ fn sse_read64_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
 
 fn sse_read128_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, r: u32) {
     let dest = global_pointers::sse_scratch_register as u32;
-    codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, dest);
+    codegen::gen_modrm_resolve_safe_read128_aligned(ctx, modrm_byte, dest);
     ctx.builder.const_i32(dest as i32);
     ctx.builder.const_i32(r as i32);
     ctx.builder.call_fn2(name);
@@ -186,7 +186,7 @@ fn sse_read128_xmm_mem_imm(
     imm: u32,
 ) {
     let dest = global_pointers::sse_scratch_register as u32;
-    codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, dest);
+    codegen::gen_modrm_resolve_safe_read128_aligned(ctx, modrm_byte, dest);
     ctx.builder.const_i32(dest as i32);
     ctx.builder.const_i32(r as i32);
     ctx.builder.const_i32(imm as i32);
@@ -5836,19 +5836,19 @@ pub fn instr_660F17_reg_jit(ctx: &mut JitContext, _r1: u32, _r2: u32) {
 
 pub fn instr_0F28_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     let dest = global_pointers::get_reg_xmm_offset(r);
-    codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, dest);
+    codegen::gen_modrm_resolve_safe_read128_aligned(ctx, modrm_byte, dest);
 }
 pub fn instr_0F28_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) { sse_mov_xmm_xmm(ctx, r1, r2) }
 pub fn instr_660F28_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     let dest = global_pointers::get_reg_xmm_offset(r);
-    codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, dest);
+    codegen::gen_modrm_resolve_safe_read128_aligned(ctx, modrm_byte, dest);
 }
 pub fn instr_660F28_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) { sse_mov_xmm_xmm(ctx, r1, r2) }
 
 pub fn instr_0F29_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    // XXX: Aligned write or #gp
     codegen::gen_modrm_resolve(ctx, modrm_byte);
     let address_local = ctx.builder.set_new_local();
+    codegen::gen_check_aligned_128(ctx, &address_local);
     ctx.builder
         .const_i32(global_pointers::get_reg_xmm_offset(r) as i32);
     ctx.builder.load_aligned_i64(0);
@@ -6388,7 +6388,7 @@ pub fn instr_660F61_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
 }
 pub fn instr_660F62_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     let src = global_pointers::sse_scratch_register as u32;
-    codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, src);
+    codegen::gen_modrm_resolve_safe_read128_aligned(ctx, modrm_byte, src);
     ctx.builder.const_i32(0);
     ctx.builder.load_fixed_i32(src + 4);
     ctx.builder
@@ -6526,7 +6526,6 @@ pub fn instr_660F6E_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
 }
 
 pub fn instr_0F6F_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    // XXX: Aligned read or #gp
     codegen::gen_modrm_resolve_safe_read64(ctx, modrm_byte);
     ctx.builder.const_i32(r as i32);
     ctx.builder.call_fn2_i64_i32("instr_0F6F")
@@ -6538,9 +6537,8 @@ pub fn instr_0F6F_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
 }
 
 pub fn instr_660F6F_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    // XXX: Aligned read or #gp
     let dest = global_pointers::get_reg_xmm_offset(r);
-    codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, dest);
+    codegen::gen_modrm_resolve_safe_read128_aligned(ctx, modrm_byte, dest);
 }
 pub fn instr_660F6F_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) { sse_mov_xmm_xmm(ctx, r1, r2) }
 pub fn instr_F30F6F_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
@@ -6565,7 +6563,7 @@ pub fn instr_0F70_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32, imm8: u32) {
 }
 pub fn instr_660F70_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32, imm8: u32) {
     let src = global_pointers::sse_scratch_register as u32;
-    codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, src);
+    codegen::gen_modrm_resolve_safe_read128_aligned(ctx, modrm_byte, src);
     for i in 0..4 {
         ctx.builder.const_i32(0);
         ctx.builder.load_fixed_i32(src + 4 * (imm8 >> 2 * i & 3));

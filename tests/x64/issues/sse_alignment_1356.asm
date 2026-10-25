@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; ISSUE: copy/v86#1356
 ; DESC: legacy SSE instructions with 16-byte memory operands raise #GP on misaligned addresses
 %include "inc/real.inc"

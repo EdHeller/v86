@@ -367,7 +367,11 @@ pub unsafe fn setcc_mem(condition: bool, addr: i32) {
 }
 
 pub unsafe fn fxsave(addr: i32) {
-    dbg_assert!(addr & 0xF == 0, "TODO: #gp");
+    if addr & 0xF != 0 {
+        dbg_log!("#gp fxsave with unaligned address");
+        trigger_gp(0);
+        return;
+    }
     let xmm_count = if *is_64 { 16 } else { 8 };
     return_on_pagefault!(writable_or_pagefault(addr, 160 + 16 * xmm_count));
 
@@ -396,7 +400,11 @@ pub unsafe fn fxsave(addr: i32) {
     }
 }
 pub unsafe fn fxrstor(addr: i32) {
-    dbg_assert!(addr & 0xF == 0, "TODO: #gp");
+    if addr & 0xF != 0 {
+        dbg_log!("#gp fxrstor with unaligned address");
+        trigger_gp(0);
+        return;
+    }
     let xmm_count = if *is_64 { 16 } else { 8 };
     return_on_pagefault!(readable_or_pagefault(addr, 160 + 16 * xmm_count));
 
@@ -427,6 +435,181 @@ pub unsafe fn fxrstor(addr: i32) {
     for i in 0..xmm_count {
         *reg_xmm.offset(i as isize) = safe_read128s(addr + 160 + (i << 4)).unwrap();
     }
+}
+
+/// XCR0: the enabled state components. Only the x87 (bit 0) and SSE (bit 1) components exist.
+pub static mut XCR0: u64 = 1;
+pub const XCR0_SUPPORTED: u64 = 3;
+const XSAVE_AREA_SIZE: i32 = 576;
+
+unsafe fn xsave_common_checks(addr: i32) -> bool {
+    if *cr.offset(4) & CR4_OSXSAVE == 0 {
+        trigger_ud();
+        return false;
+    }
+    if *cr & CR0_TS != 0 {
+        trigger_nm();
+        return false;
+    }
+    if addr & 63 != 0 {
+        dbg_log!("#gp xsave area is not 64 byte aligned");
+        trigger_gp(0);
+        return false;
+    }
+    true
+}
+
+unsafe fn requested_features() -> u64 {
+    ((read_reg32(EDX) as u32 as u64) << 32 | read_reg32(EAX) as u32 as u64) & XCR0
+}
+
+pub unsafe fn xsave(addr: i32) {
+    if !xsave_common_checks(addr) {
+        return;
+    }
+    let rfbm = requested_features();
+    return_on_pagefault!(writable_or_pagefault(addr, XSAVE_AREA_SIZE));
+    let xmm_count = if *is_64 { 16 } else { 8 };
+
+    let mut in_use = 0u64;
+    if rfbm & 1 != 0 {
+        safe_write16(addr + 0, (*fpu_control_word).into()).unwrap();
+        safe_write16(addr + 2, fpu_load_status_word().into()).unwrap();
+        safe_write8(addr + 4, !*fpu_stack_empty as i32 & 0xFF).unwrap();
+        safe_write16(addr + 6, *fpu_opcode).unwrap();
+        safe_write32(addr + 8, *fpu_ip).unwrap();
+        safe_write16(addr + 12, *fpu_ip_selector).unwrap();
+        safe_write32(addr + 16, *fpu_dp).unwrap();
+        safe_write16(addr + 20, *fpu_dp_selector).unwrap();
+        for i in 0..8 {
+            let reg_index = i + *fpu_stack_ptr as i32 & 7;
+            fpu_store_m80(addr + 32 + (i << 4), *fpu_st.offset(reg_index as isize));
+        }
+        if *fpu_control_word != 0x37F || fpu_load_status_word() != 0 || *fpu_stack_empty != 0xFF {
+            in_use |= 1;
+        }
+    }
+    if rfbm & 3 != 0 {
+        safe_write32(addr + 24, *mxcsr).unwrap();
+        safe_write32(addr + 28, MXCSR_MASK).unwrap();
+    }
+    if rfbm & 2 != 0 {
+        let mut any = *mxcsr != 0x1F80;
+        for i in 0..xmm_count {
+            let x = *reg_xmm.offset(i as isize);
+            any |= x.u64[0] != 0 || x.u64[1] != 0;
+            safe_write128(addr + 160 + (i << 4), x).unwrap();
+        }
+        if any {
+            in_use |= 2;
+        }
+    }
+
+    // header: XSTATE_BV, the rest is reserved
+    let old = safe_read64s(addr + 512).unwrap();
+    safe_write64(addr + 512, old & !rfbm | in_use).unwrap();
+    for i in 1..8 {
+        safe_write64(addr + 512 + 8 * i, 0).unwrap();
+    }
+}
+
+pub unsafe fn xrstor(addr: i32) {
+    if !xsave_common_checks(addr) {
+        return;
+    }
+    let rfbm = requested_features();
+    return_on_pagefault!(readable_or_pagefault(addr, XSAVE_AREA_SIZE));
+    let xmm_count = if *is_64 { 16 } else { 8 };
+
+    let xstate_bv = safe_read64s(addr + 512).unwrap();
+    let xcomp_bv = safe_read64s(addr + 520).unwrap();
+    if xcomp_bv != 0 || xstate_bv & !XCR0 != 0 {
+        dbg_log!("#gp xrstor with a compacted or invalid header");
+        trigger_gp(0);
+        return;
+    }
+    if rfbm & 2 != 0 && xstate_bv & 2 != 0 {
+        let new_mxcsr = safe_read32s(addr + 24).unwrap();
+        if 0 != new_mxcsr & !MXCSR_MASK {
+            dbg_log!("#gp Invalid mxcsr bits");
+            trigger_gp(0);
+            return;
+        }
+    }
+
+    if rfbm & 1 != 0 {
+        if xstate_bv & 1 != 0 {
+            set_control_word(safe_read16(addr + 0).unwrap() as u16);
+            fpu_set_status_word(safe_read16(addr + 2).unwrap() as u16);
+            *fpu_stack_empty = !safe_read8(addr + 4).unwrap() as u8;
+            *fpu_opcode = safe_read16(addr + 6).unwrap();
+            *fpu_ip = safe_read32s(addr + 8).unwrap();
+            *fpu_ip_selector = safe_read16(addr + 12).unwrap();
+            *fpu_dp = safe_read32s(addr + 16).unwrap();
+            *fpu_dp_selector = safe_read16(addr + 20).unwrap();
+            for i in 0..8 {
+                let reg_index = *fpu_stack_ptr as i32 + i & 7;
+                *fpu_st.offset(reg_index as isize) = fpu_load_m80(addr + 32 + (i << 4)).unwrap();
+            }
+        }
+        else {
+            // initial x87 state
+            set_control_word(0x37F);
+            fpu_set_status_word(0);
+            *fpu_stack_empty = 0xFF;
+            *fpu_stack_ptr = 0;
+            *fpu_opcode = 0;
+            *fpu_ip = 0;
+            *fpu_ip_selector = 0;
+            *fpu_dp = 0;
+            *fpu_dp_selector = 0;
+        }
+    }
+    if rfbm & 2 != 0 {
+        if xstate_bv & 2 != 0 {
+            set_mxcsr(safe_read32s(addr + 24).unwrap());
+            for i in 0..xmm_count {
+                *reg_xmm.offset(i as isize) = safe_read128s(addr + 160 + (i << 4)).unwrap();
+            }
+        }
+        else {
+            set_mxcsr(0x1F80);
+            for i in 0..xmm_count {
+                *reg_xmm.offset(i as isize) = reg128 { u64: [0, 0] };
+            }
+        }
+    }
+}
+
+pub unsafe fn xgetbv() {
+    if *cr.offset(4) & CR4_OSXSAVE == 0 {
+        trigger_ud();
+        return;
+    }
+    if read_reg32(ECX) != 0 {
+        trigger_gp(0);
+        return;
+    }
+    write_reg32(EAX, XCR0 as i32);
+    write_reg32(EDX, (XCR0 >> 32) as i32);
+}
+
+pub unsafe fn xsetbv() {
+    if *cr.offset(4) & CR4_OSXSAVE == 0 {
+        trigger_ud();
+        return;
+    }
+    if *cpl != 0 || read_reg32(ECX) != 0 {
+        trigger_gp(0);
+        return;
+    }
+    let value = (read_reg32(EDX) as u32 as u64) << 32 | read_reg32(EAX) as u32 as u64;
+    if value & 1 == 0 || value & !XCR0_SUPPORTED != 0 {
+        dbg_log!("#gp xsetbv with invalid value {:#x}", value);
+        trigger_gp(0);
+        return;
+    }
+    XCR0 = value;
 }
 
 pub unsafe fn xchg8(data: i32, r8: i32) -> i32 {

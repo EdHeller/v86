@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; QEMU: xfail  (qemu only enforces alignment for the plain move instructions)
 ; ISSUE: copy/v86#1356
 ; DESC: legacy SSE arithmetic/shuffle instructions with misaligned 16-byte memory operands raise #GP
