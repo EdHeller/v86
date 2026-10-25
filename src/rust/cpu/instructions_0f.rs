@@ -1252,7 +1252,7 @@ pub unsafe fn instr_0F30() {
         MSR_STAR => *msr_star = (high as u32 as u64) << 32 | low as u32 as u64,
         MSR_LSTAR | MSR_CSTAR | MSR_FS_BASE | MSR_GS_BASE | MSR_KERNEL_GS_BASE => {
             let value = (high as u32 as u64) << 32 | low as u32 as u64;
-            if !crate::cpu::long_mode::is_canonical(value) {
+            if !crate::cpu::long_mem::is_canonical(value) {
                 dbg_log!("#gp: wrmsr {:x} with non-canonical address {:#x}", index, value);
                 trigger_gp(0);
                 return;

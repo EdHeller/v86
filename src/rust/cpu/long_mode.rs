@@ -16,13 +16,13 @@
 //!   and raise #UD otherwise
 
 use crate::cpu::cpu::*;
+use crate::cpu::long_mem::*;
 use crate::cpu::sse_instr::sse_integer_round;
 use crate::gen;
 use crate::prefix;
 use crate::cpu::global_pointers::*;
 use crate::cpu::instructions;
 use crate::cpu::instructions_0f;
-use crate::cpu::memory;
 use crate::cpu::misc_instr::{verr, verw};
 use crate::paging::OrPageFault;
 
@@ -136,34 +136,6 @@ struct ModRM {
     loc: Loc,
 }
 
-/// Slow path for fetching code at a rip above 4GB, which the 32-bit instruction pointer logic of
-/// `read_imm8` cannot translate
-unsafe fn fetch8_high() -> OrPageFault<u64> {
-    let phys = walk64(rip(), false, *cpl == 3, true)?;
-    let b = memory::read8(phys) as u64;
-    let (low, carry) = (*instruction_pointer as u32).overflowing_add(1);
-    *instruction_pointer = low as i32;
-    if carry {
-        *rip_hi = rip_hi.read().wrapping_add(1);
-    }
-    Ok(b)
-}
-
-unsafe fn fetch8() -> OrPageFault<u64> {
-    if *rip_hi != 0 { fetch8_high() } else { Ok(crate::cpu::cpu::read_imm8()? as u8 as u64) }
-}
-unsafe fn fetch16() -> OrPageFault<u64> {
-    if *rip_hi != 0 { Ok(fetch8()? | fetch8()? << 8) } else { Ok(crate::cpu::cpu::read_imm16()? as u16 as u64) }
-}
-unsafe fn fetch32() -> OrPageFault<u64> {
-    if *rip_hi != 0 { Ok(fetch16()? | fetch16()? << 16) } else { Ok(crate::cpu::cpu::read_imm32s()? as u32 as u64) }
-}
-unsafe fn fetch64() -> OrPageFault<u64> { Ok(fetch32()? | fetch32()? << 32) }
-
-pub fn is_canonical(a: u64) -> bool {
-    let top = (a as i64) >> 47;
-    top == 0 || top == -1
-}
 unsafe fn fetch_imm(bits: u32) -> OrPageFault<u64> {
     // immediates are at most 32 bits, sign extended to the operand size
     Ok(match bits {
@@ -173,7 +145,6 @@ unsafe fn fetch_imm(bits: u32) -> OrPageFault<u64> {
     })
 }
 
-unsafe fn rip() -> u64 { *instruction_pointer as u32 as u64 | (*rip_hi as u32 as u64) << 32 }
 
 unsafe fn set_rip(target: u64) -> OrPageFault<()> {
     if !is_canonical(target) {
@@ -242,171 +213,6 @@ unsafe fn decode_modrm_byte(p: &Prefixes, m: u8, imm_len: u64) -> OrPageFault<Mo
 
 // ---------------------------------------------------------------------------------------------
 // memory
-
-unsafe fn seg_base(seg: i32) -> u64 { if seg == FS { *fs_base } else { *gs_base } }
-
-// ---- page walk for virtual addresses above 4GB (the shared tlb only covers 32 bits)
-
-const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
-// physical address bits 51:40 are reserved (MAXPHYADDR is 40)
-const PTE_RESERVED: u64 = 0x000F_FF00_0000_0000;
-
-unsafe fn raise_pf64(addr: u64, present: bool, write: bool, user: bool, fetch: bool, rsvd: bool) {
-    *cr.offset(2) = addr as i32;
-    *cr2_hi = (addr >> 32) as i32;
-    let nx_visible = *cr.offset(4) & CR4_SMEP != 0 || *efer & EFER_NXE != 0;
-    let error_code = (fetch && nx_visible) as i32 * 16
-        | rsvd as i32 * 8
-        | user as i32 * 4
-        | write as i32 * 2
-        | present as i32;
-    *instruction_pointer = *previous_ip;
-    if DEBUG && js::cpu_exception_hook(CPU_EXCEPTION_PF) {
-        return;
-    }
-    call_interrupt_vector(CPU_EXCEPTION_PF, false, Some(error_code));
-}
-
-/// 4-level page table walk for any canonical address. Returns the physical address.
-unsafe fn walk64(addr: u64, write: bool, user: bool, fetch: bool) -> OrPageFault<u32> {
-    let nxe = *efer & EFER_NXE != 0;
-    let wp = *cr & CR0_WP != 0;
-    let mut table = (*cr.offset(3) as u32 & 0xFFFFF000) as u64;
-    let mut user_ok = true;
-    let mut write_ok = true;
-    let mut no_exec = false;
-    let mut entries = [(0u32, 0u64); 4];
-    let mut count = 0;
-    let phys;
-
-    let mut level = 0;
-    loop {
-        let shift = 39 - 9 * level;
-        let entry_addr = table + (addr >> shift & 0x1FF) * 8;
-        dbg_assert!(entry_addr >> 32 == 0, "page table above 4GB");
-        let entry = memory::read64s(entry_addr as u32) as u64;
-        if entry & 1 == 0 {
-            raise_pf64(addr, false, write, user, fetch, false);
-            return Err(());
-        }
-        let ps = entry & 0x80 != 0;
-        let reserved = entry & PTE_RESERVED != 0
-            || !nxe && entry >> 63 != 0
-            || level == 0 && ps
-            || level == 2 && ps && entry & 0x1FE000 != 0;
-        if reserved {
-            raise_pf64(addr, true, write, user, fetch, true);
-            return Err(());
-        }
-        user_ok &= entry & 4 != 0;
-        write_ok &= entry & 2 != 0;
-        no_exec |= entry >> 63 != 0;
-        entries[count] = (entry_addr as u32, entry);
-        count += 1;
-
-        if level == 1 && ps {
-            dbg_assert!(false, "Unsupported: 1GB pages");
-        }
-        if level == 2 && ps {
-            phys = (entry & PTE_ADDR_MASK & !0x1FFFFF) | (addr & 0x1FFFFF);
-            break;
-        }
-        if level == 3 {
-            phys = (entry & PTE_ADDR_MASK) | (addr & 0xFFF);
-            break;
-        }
-        table = entry & PTE_ADDR_MASK;
-        level += 1;
-    }
-
-    let denied = write && !write_ok && (user || wp) || user && !user_ok || fetch && nxe && no_exec;
-    if denied {
-        raise_pf64(addr, true, write, user, fetch, false);
-        return Err(());
-    }
-    dbg_assert!(phys >> 32 == 0, "physical address above 4GB");
-
-    // accessed and dirty bits
-    for (i, &(entry_addr, entry)) in entries[..count].iter().enumerate() {
-        let new = entry | 0x20 | if write && i == count - 1 { 0x40 } else { 0 };
-        if new != entry {
-            memory::write8(entry_addr, new as i32);
-        }
-    }
-    Ok(phys as u32)
-}
-
-/// Translates all pages touched by an access, so that faults happen before any side effect
-unsafe fn translate64(addr: u64, bytes: u64, write: bool) -> OrPageFault<[u32; 2]> {
-    if !is_canonical(addr) || !is_canonical(addr.wrapping_add(bytes - 1)) {
-        dbg_log!("#gp: non-canonical address {:#x}", addr);
-        trigger_gp(0);
-        return Err(());
-    }
-    let user = *cpl == 3;
-    let first = walk64(addr, write, user, false)?;
-    let second = if (addr & 0xFFF) + bytes > 0x1000 {
-        walk64((addr & !0xFFF) + 0x1000, write, user, false)?
-    }
-    else {
-        0
-    };
-    Ok([first, second])
-}
-
-unsafe fn phys_of(pages: &[u32; 2], addr: u64, i: u64) -> u32 {
-    let off = (addr & 0xFFF) + i;
-    if off < 0x1000 { pages[0] & !0xFFF | off as u32 } else { pages[1] & !0xFFF | (off - 0x1000) as u32 }
-}
-
-/// 32-bit address for leaf instruction implementations that cannot handle more yet
-unsafe fn lin(addr: u64) -> OrPageFault<i32> {
-    if addr >> 32 != 0 {
-        dbg_log!("long mode: unsupported linear address {:#x} for this instruction", addr);
-        trigger_gp(0);
-        return Err(());
-    }
-    Ok(addr as i32)
-}
-
-unsafe fn is_low(addr: u64, bits: u32) -> bool { addr >> 32 == 0 && (addr + bits as u64 / 8 - 1) >> 32 == 0 }
-
-unsafe fn mem_read(addr: u64, bits: u32) -> OrPageFault<u64> {
-    if is_low(addr, bits) {
-        let a = addr as i32;
-        return Ok(match bits {
-            8 => safe_read8(a)? as u64,
-            16 => safe_read16(a)? as u64,
-            32 => safe_read32s(a)? as u32 as u64,
-            _ => safe_read64s(a)?,
-        });
-    }
-    let bytes = bits as u64 / 8;
-    let pages = translate64(addr, bytes, false)?;
-    let mut v = 0u64;
-    for i in 0..bytes {
-        v |= (memory::read8(phys_of(&pages, addr, i)) as u64 & 0xFF) << (8 * i);
-    }
-    Ok(v)
-}
-
-unsafe fn mem_write(addr: u64, bits: u32, v: u64) -> OrPageFault<()> {
-    if is_low(addr, bits) {
-        let a = addr as i32;
-        return match bits {
-            8 => safe_write8(a, v as i32),
-            16 => safe_write16(a, v as i32),
-            32 => safe_write32(a, v as i32),
-            _ => safe_write64(a, v),
-        };
-    }
-    let bytes = bits as u64 / 8;
-    let pages = translate64(addr, bytes, true)?;
-    for i in 0..bytes {
-        memory::write8(phys_of(&pages, addr, i), (v >> (8 * i)) as u8 as i32);
-    }
-    Ok(())
-}
 
 unsafe fn rm_read(p: &Prefixes, m: &ModRM, bits: u32) -> OrPageFault<u64> {
     match m.loc {
@@ -898,7 +704,7 @@ unsafe fn exec() -> OrPageFault<()> {
             let b = fetch_imm(if osz == 16 { 16 } else { 32 })?;
             alu(4, get_reg(RAX, osz, true), b, osz);
         },
-        0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB | 0xAC | 0xAD | 0xAE | 0xAF => {
+        0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB | 0xAC | 0xAD | 0xAE | 0xAF | 0x6C..=0x6F => {
             string_op(&p, opcode)?;
         },
         0xA0..=0xA3 => {
@@ -914,6 +720,29 @@ unsafe fn exec() -> OrPageFault<()> {
             }
             else {
                 mem_write(addr, bits, get_reg(RAX, bits, true))?;
+            }
+        },
+        0xE4 | 0xE5 | 0xE6 | 0xE7 | 0xEC | 0xED | 0xEE | 0xEF => {
+            let port = if opcode < 0xE8 { fetch8()? as i32 } else { (r64(RDX) & 0xFFFF) as i32 };
+            let bits = if opcode & 1 == 0 { 8 } else if p.osz16 { 16 } else { 32 };
+            if !test_privileges_for_io(port, bits as i32 / 8) {
+                return Err(());
+            }
+            if matches!(opcode, 0xE4 | 0xE5 | 0xEC | 0xED) {
+                let v = match bits {
+                    8 => io_port_read8(port),
+                    16 => io_port_read16(port),
+                    _ => io_port_read32(port),
+                };
+                set_reg(RAX, bits, true, v as u32 as u64 & mask(bits));
+            }
+            else {
+                let v = get_reg(RAX, bits, true) as i32;
+                match bits {
+                    8 => io_port_write8(port, v),
+                    16 => io_port_write16(port, v),
+                    _ => io_port_write32(port, v),
+                }
             }
         },
         0xB0..=0xB7 => {
@@ -1095,9 +924,10 @@ unsafe fn group3(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
     let imm_len = if bits == 8 { 1 } else if bits == 16 { 2 } else { 4 };
     // test has an immediate, which matters for rip-relative addressing
     let peek_reg = {
-        let ip = *instruction_pointer;
-        let b = crate::cpu::cpu::read_imm8()? as u8 >> 3 & 7;
+        let (ip, hi) = (*instruction_pointer, *rip_hi);
+        let b = fetch8()? as u8 >> 3 & 7;
         *instruction_pointer = ip;
+        *rip_hi = hi;
         b
     };
     let m = decode_modrm(p, if peek_reg < 2 { imm_len } else { 0 })?;
@@ -1186,7 +1016,20 @@ unsafe fn group3(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
 }
 
 unsafe fn string_op(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
-    let bits = if opcode & 1 == 0 { 8 } else { p.opsize() };
+    let is_io = (0x6C..=0x6F).contains(&opcode);
+    let bits = if opcode & 1 == 0 {
+        8
+    }
+    else if is_io && p.opsize() == 64 {
+        32
+    }
+    else {
+        p.opsize()
+    };
+    let port = (r64(RDX) & 0xFFFF) as i32;
+    if is_io && !test_privileges_for_io(port, bits as i32 / 8) {
+        return Err(());
+    }
     let step = bits as u64 / 8;
     let abits = if p.asz32 { 32 } else { 64 };
     let df = *flags & FLAG_DIRECTION != 0;
@@ -1213,6 +1056,24 @@ unsafe fn string_op(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
                 alu(7, a, b, bits);
                 set_reg(RSI, abits, true, si.wrapping_add(delta));
                 set_reg(RDI, abits, true, di.wrapping_add(delta));
+            },
+            0x6C | 0x6D => {
+                let v = match bits {
+                    8 => io_port_read8(port),
+                    16 => io_port_read16(port),
+                    _ => io_port_read32(port),
+                };
+                mem_write(di, bits, v as u32 as u64 & mask(bits))?;
+                set_reg(RDI, abits, true, di.wrapping_add(delta));
+            },
+            0x6E | 0x6F => {
+                let v = mem_read(si.wrapping_add(seg_base), bits)? as i32;
+                match bits {
+                    8 => io_port_write8(port, v),
+                    16 => io_port_write16(port, v),
+                    _ => io_port_write32(port, v),
+                }
+                set_reg(RSI, abits, true, si.wrapping_add(delta));
             },
             0xAA | 0xAB => {
                 mem_write(di, bits, get_reg(RAX, bits, true))?;
@@ -1293,9 +1154,7 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                         trigger_gp(0);
                         return Err(());
                     }
-                    if a >> 32 == 0 {
-                        invlpg(a as i32);
-                    }
+                    invlpg64(a);
                 },
                 (7, Loc::Reg(0)) => {
                     // swapgs
@@ -1410,10 +1269,10 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
         0xAE => {
             let m = decode_modrm(p, 0)?;
             match (m.reg & 7, m.loc) {
-                (0, Loc::Mem(a)) => instructions_0f::instr_0FAE_0_mem(lin(a)?),
-                (1, Loc::Mem(a)) => instructions_0f::instr_0FAE_1_mem(lin(a)?),
-                (2, Loc::Mem(a)) => instructions_0f::instr_0FAE_2_mem(lin(a)?),
-                (3, Loc::Mem(a)) => instructions_0f::instr_0FAE_3_mem(lin(a)?),
+                (0, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_0_mem(w))?,
+                (1, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_1_mem(w))?,
+                (2, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_2_mem(w))?,
+                (3, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_3_mem(w))?,
                 (5, Loc::Reg(_)) | (6, Loc::Reg(_)) | (7, Loc::Reg(_)) => {}, // lfence mfence sfence
                 (7, Loc::Mem(_)) => {},                                       // clflush
                 (r @ 0..=3, Loc::Reg(n)) if p.rep == 0xF3 => {
@@ -1658,8 +1517,14 @@ unsafe fn bit_op(p: &Prefixes, opcode: u8, imm_form: bool) -> OrPageFault<()> {
 pub unsafe fn call_interrupt_vector_64(nr: i32, is_software_int: bool, error_code: Option<i32>) {
     let _ = is_software_int;
     if (nr as u32) * 16 + 15 > *idtr_size as u32 {
-        dbg_log!("long mode: interrupt {} outside of idt limit {:#x}", nr, *idtr_size);
-        panic!("Unimplemented: #GP handler in long mode");
+        panic!(
+            "long mode: exception/interrupt {} (error code {:?}) outside of idt limit {:#x}, rip={:#x} cr2={:#x}",
+            nr,
+            error_code,
+            *idtr_size,
+            rip(),
+            (*cr2_hi as u32 as u64) << 32 | *cr.offset(2) as u32 as u64
+        );
     }
     let gate_addr = *idtr_offset + nr * 16;
     let low = match translate_address_system_read(gate_addr) {
@@ -1673,8 +1538,15 @@ pub unsafe fn call_interrupt_vector_64(nr: i32, is_software_int: bool, error_cod
     let present = low >> 47 & 1 != 0;
     let gate_type = low >> 40 & 0xF;
     if !present || (gate_type != 0xE && gate_type != 0xF) {
-        dbg_log!("long mode: bad idt gate for interrupt {}: {:#x}", nr, low);
-        panic!("Unimplemented: #NP / #GP for bad IDT gate in long mode");
+        panic!(
+            "long mode: bad idt gate for exception/interrupt {} (error code {:?}): {:#x}, rip={:#x} cr2={:#x} rsp={:#x}",
+            nr,
+            error_code,
+            low,
+            rip(),
+            (*cr2_hi as u32 as u64) << 32 | *cr.offset(2) as u32 as u64,
+            r64(RSP)
+        );
     }
     let selector = (low >> 16 & 0xFFFF) as i32;
     let ist = low >> 32 & 7;
@@ -1874,7 +1746,7 @@ pub unsafe fn read_imm32s() -> OrPageFault<i32> { Ok(fetch32()? as i32) }
 pub unsafe fn modrm_resolve64(modrm_byte: i32) -> OrPageFault<i32> {
     let p = BRIDGE_PREFIXES;
     match decode_modrm_byte(&p, modrm_byte as u8, BRIDGE_IMM_LEN)?.loc {
-        Loc::Mem(a) => lin(a),
+        Loc::Mem(a) => window(a),
         Loc::Reg(_) => unreachable!(),
     }
 }
@@ -1910,6 +1782,7 @@ unsafe fn bridge_0f(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
     let size_bit = if p.osz16 && !p.w() { 0 } else { 0x100 };
     gen::interpreter0f64::run(opcode as u32 | size_bit);
     *prefixes = 0;
+    window_close();
     Ok(())
 }
 
@@ -1918,6 +1791,7 @@ unsafe fn bridge_x87(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
     BRIDGE_IMM_LEN = 0;
     *prefixes = 0;
     gen::interpreter64::run(opcode as u32 | 0x100);
+    window_close();
     Ok(())
 }
 
@@ -2075,4 +1949,12 @@ unsafe fn sse_gpr(p: &Prefixes, opcode: u8) -> OrPageFault<bool> {
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// Runs an instruction implementation that takes a 32-bit address on the operand at `addr`
+unsafe fn with_window(addr: u64, f: impl FnOnce(i32)) -> OrPageFault<()> {
+    let w = window(addr)?;
+    f(w);
+    window_close();
+    Ok(())
 }

@@ -2394,6 +2394,7 @@ pub unsafe fn do_page_walk(
 
 #[no_mangle]
 pub unsafe fn full_clear_tlb() {
+    super::long_mem::flush();
     profiler::stat_increment(stat::FULL_CLEAR_TLB);
     // clear tlb including global pages
     *last_virt_eip = -1;
@@ -2414,6 +2415,7 @@ pub unsafe fn full_clear_tlb() {
 
 #[no_mangle]
 pub unsafe fn clear_tlb() {
+    super::long_mem::flush();
     profiler::stat_increment(stat::CLEAR_TLB);
     // clear tlb excluding global pages
     *last_virt_eip = -1;
@@ -2759,7 +2761,18 @@ pub unsafe fn switch_seg(reg: i32, selector_raw: i32) -> bool {
         match return_on_pagefault!(lookup_segment_selector(selector), false) {
             Ok(desc) => desc,
             Err(SelectorNullOrInvalid::IsNull) => {
-                if reg == SS {
+                if reg == SS && *is_64 && *cpl != 3 {
+                    // a null ss is valid in 64-bit mode: the segment is flat and ignored
+                    *sreg.offset(SS as isize) = selector_raw as u16;
+                    *segment_is_null.offset(SS as isize) = false;
+                    *segment_offsets.offset(SS as isize) = 0;
+                    *segment_limits.offset(SS as isize) = 0xFFFF_FFFF;
+                    *segment_access_bytes.offset(SS as isize) = 0x80 | 0x10 | 0x02;
+                    *stack_size_32 = true;
+                    update_state_flags();
+                    return true;
+                }
+                else if reg == SS {
                     dbg_log!("#GP for loading 0 in SS sel={:x}", selector_raw);
                     trigger_gp(0);
                     return false;
@@ -3093,6 +3106,8 @@ pub unsafe fn update_cs_mode(d: &SegmentDescriptor) {
     let long = *efer & EFER_LMA != 0 && d.is_long() && !d.is_32();
     update_cs_size(d.is_32());
     *is_64 = long;
+    // callers load the instruction pointer from a 32-bit offset
+    *rip_hi = 0;
 }
 
 #[inline(never)]
