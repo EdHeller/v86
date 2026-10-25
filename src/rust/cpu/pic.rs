@@ -37,6 +37,9 @@ struct Pic0 {
 
     irq_value: u8,
     special_mask_mode: bool,
+
+    // irq that was acknowledged last, only used to keep irq 0 from starving the others
+    last_irq: u8,
 }
 
 struct Pic {
@@ -63,6 +66,7 @@ static PIC: Mutex<Pic> = Mutex::new(Pic {
         read_isr: false,
         auto_eoi: false,
         special_mask_mode: false,
+        last_irq: 0,
         elcr: 0,
         master: true,
         dummy: 0,
@@ -85,6 +89,7 @@ static PIC: Mutex<Pic> = Mutex::new(Pic {
         read_isr: false,
         auto_eoi: false,
         special_mask_mode: false,
+        last_irq: 0,
         elcr: 0,
         master: false,
         dummy: 0,
@@ -115,7 +120,14 @@ impl Pic0 {
             return None;
         }
 
-        let irq_mask = enabled_irr & (!enabled_irr + 1);
+        let mut irq_mask = enabled_irr & (!enabled_irr + 1);
+        if self.master && self.last_irq == 0 && irq_mask == 1 && enabled_irr != 1 {
+            // Real hardware is fast enough to run a lower priority handler between two timer ticks.
+            // An emulated guest that spends a whole tick in its irq 0 handler would otherwise
+            // get irq 0 again every time and never see another interrupt (e.g. the keyboard).
+            let others = enabled_irr & !1;
+            irq_mask = others & (!others + 1);
+        }
         let special_mask = if self.special_mask_mode { self.irq_mask } else { 0xFF };
 
         if self.isr != 0 && (self.isr & (!self.isr + 1) & special_mask) <= irq_mask {
@@ -315,12 +327,11 @@ pub fn pic_acknowledge_irq() -> Option<u8> {
     if !pic.master.auto_eoi {
         pic.master.isr |= mask;
     }
+    pic.master.last_irq = irq;
 
     if PIC_LOG_VERBOSE {
         dbg_log!("[PIC] master> acknowledge {}", irq);
     }
-
-    dbg_assert!(pic.master.get_irq().is_none());
 
     if irq == 2 {
         acknowledge_irq_slave(&mut pic)

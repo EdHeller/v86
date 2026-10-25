@@ -104,22 +104,6 @@ PIT.prototype.set_state = function(state)
     this.counter_start_value = state[8];
 };
 
-/**
- * Real hardware is fast enough to take a lower priority interrupt (e.g. the keyboard) between two
- * timer ticks. If the guest is slower than the timer (an interpreter running a guest that uses a
- * 1000 Hz timer), the 8259 would give irq 0 priority again before the interrupt handler returns
- * and every other interrupt would starve (TempleOS then reads keyboard bytes as mouse data). So
- * a tick is dropped (as if the guest had missed it) while a lower priority interrupt is waiting.
- *
- * @return {boolean}
- */
-PIT.prototype.timer_would_starve_lower_irqs = function()
-{
-    const pic = new Uint8Array(this.cpu.wasm_memory.buffer, this.cpu.get_pic_addr_master(), 4);
-    const irq_mask = pic[0], irr = pic[3];
-    return (irr & irq_mask & 0xFE) !== 0;
-};
-
 PIT.prototype.timer = function(now, no_irq)
 {
     var time_to_next_interrupt = 100;
@@ -140,11 +124,9 @@ PIT.prototype.timer = function(now, no_irq)
             // This isn't strictly correct, but it's necessary since browsers
             // may sleep longer than necessary to trigger the else branch below
             // and clear the irq
-            if(!this.timer_would_starve_lower_irqs())
-            {
-                this.cpu.device_lower_irq(0);
-                this.cpu.device_raise_irq(0);
-            }
+            this.cpu.device_lower_irq(0);
+
+            this.cpu.device_raise_irq(0);
             var mode = this.counter_mode[0];
 
             if(mode === 0)
