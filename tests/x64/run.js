@@ -42,7 +42,7 @@ function find_tests(dir, out = [])
     {
         const p = path.join(dir, e.name);
         if(e.isDirectory()) { if(e.name !== "inc" && e.name !== "build") find_tests(p, out); }
-        else if(e.name.endsWith(".asm") || e.name.endsWith(".js") && dir.includes("issues")) out.push(p);
+        else if(e.name.endsWith(".asm") || e.name.endsWith(".js") && (dir.includes("issues") || dir.includes("/js"))) out.push(p);
     }
     return out.sort();
 }
