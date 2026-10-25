@@ -53,6 +53,21 @@ function rand64()
     return BigInt(rint(0x100000000)) << 32n | BigInt(rint(0x100000000));
 }
 
+const f32buf = new DataView(new ArrayBuffer(8));
+function rand_float_bits(kind)
+{
+    const specials = [0, -0, 1, -1, 0.5, 2, 3.5, -7.25, 1e10, -1e10, 123456.789, 1e-3];
+    const v = () => rnd() < 0.2 ? pick(specials) : (rnd() - 0.5) * Math.pow(10, rint(8) - 2);
+    if(kind === "ps")
+    {
+        f32buf.setFloat32(0, v(), true);
+        f32buf.setFloat32(4, v(), true);
+        return f32buf.getBigUint64(0, true);
+    }
+    f32buf.setFloat64(0, v(), true);
+    return f32buf.getBigUint64(0, true);
+}
+
 // ---------------------------------------------------------------------------------------------
 // instruction templates
 
@@ -80,7 +95,107 @@ function sext32(v) { return v & 0x80000000n ? v - 0x100000000n : v; }
 
 // each generator returns { asm, mask } (mask: flags that are defined after the instruction, undefined
 // flags are not compared; `sets` lists registers whose value is undefined and must not be compared)
+const XMM = n => "xmm" + n;
+const xr = () => XMM(rint(16));
+const xsrc = () => rint(4) === 0 ? memAligned() : xr();
+const memAligned = () => `[rel scratch + ${rint(2) * 16}]`;
+const CC = ["o", "no", "b", "ae", "e", "ne", "be", "a", "s", "ns", "p", "np", "l", "ge", "le", "g"];
+
+const sse_int_ops = ["pand", "pandn", "por", "pxor", "paddb", "paddw", "paddd", "paddq", "psubb", "psubw", "psubd", "psubq",
+    "paddsb", "paddsw", "paddusb", "paddusw", "psubsb", "psubsw", "psubusb", "psubusw", "pmullw", "pmulhw", "pmulhuw", "pmuludq",
+    "pmaddwd", "pavgb", "pavgw", "psadbw", "pminub", "pmaxub", "pminsw", "pmaxsw", "pcmpeqb", "pcmpeqw", "pcmpeqd", "pcmpgtb",
+    "pcmpgtw", "pcmpgtd", "packsswb", "packssdw", "packuswb", "punpcklbw", "punpcklwd", "punpckldq", "punpcklqdq", "punpckhbw",
+    "punpckhwd", "punpckhdq", "punpckhqdq", "psllw", "pslld", "psllq", "psrlw", "psrld", "psrlq", "psraw", "psrad"];
+const ssse3_ops = ["pshufb", "phaddw", "phaddd", "phaddsw", "phsubw", "phsubd", "phsubsw", "pmaddubsw", "psignb", "psignw", "psignd",
+    "pmulhrsw", "pabsb", "pabsw", "pabsd"];
+const sse41_ops = ["pmuldq", "pcmpeqq", "packusdw", "pminsb", "pminsd", "pminuw", "pminud", "pmaxsb", "pmaxsd", "pmaxuw", "pmaxud",
+    "pmulld", "pcmpgtq", "pmovsxbw", "pmovsxbd", "pmovsxbq", "pmovsxwd", "pmovsxwq", "pmovsxdq", "pmovzxbw", "pmovzxbd", "pmovzxbq",
+    "pmovzxwd", "pmovzxwq", "pmovzxdq", "phminposuw"];
+
 const families = {
+    sse_int() {
+        const op = pick(sse_int_ops);
+        const d = xr();
+        // shifts by an immediate use the group forms
+        if(rint(4) === 0 && /^ps(ll|rl|ra)[wdq]$/.test(op) && !/psraq/.test(op)) return { asm: `${op} ${d}, ${rint(70)}`, mask: 0, xmm: true };
+        return { asm: `${op} ${d}, ${xsrc()}`, mask: 0, xmm: true };
+    },
+    sse_imm() {
+        const kind = pick(["pshufd", "pshufhw", "pshuflw", "pslldq", "psrldq", "palignr", "pblendw", "mpsadbw", "shufps", "shufpd", "pinsrw", "pextrw", "pextrb", "pextrd", "pinsrb", "pinsrd", "insertps", "blendps", "blendpd", "roundps", "roundpd", "roundss", "roundsd"]);
+        const d = xr(), src = xsrc(), imm = rint(256);
+        switch(kind) {
+            case "pslldq": case "psrldq": return { asm: `${kind} ${d}, ${rint(20)}`, mask: 0, xmm: true };
+            case "pinsrw": return { asm: `pinsrw ${d}, ${rn(32, reg(32))}, ${imm}`, mask: 0, xmm: true };
+            case "pinsrb": return { asm: `pinsrb ${d}, ${rn(32, reg(32))}, ${imm}`, mask: 0, xmm: true };
+            case "pinsrd": return { asm: `pinsrd ${d}, ${rn(32, reg(32))}, ${imm}`, mask: 0, xmm: true };
+            case "pextrw": case "pextrb": case "pextrd": return { asm: `${kind} ${rn(32, reg(32))}, ${d}, ${imm}`, mask: 0, xmm: true };
+            case "roundps": case "roundpd": return { asm: `${kind} ${d}, ${xsrc()}, ${imm & 3 | 8}`, mask: 0, xmm: true, floats: kind.endsWith("d") ? "pd" : "ps" };
+            case "roundss": return { asm: `roundss ${d}, ${rint(3) ? xr() : "dword [rel scratch + 4]"}, ${imm & 3 | 8}`, mask: 0, xmm: true, floats: "ps" };
+            case "roundsd": return { asm: `roundsd ${d}, ${rint(3) ? xr() : "qword [rel scratch + 8]"}, ${imm & 3 | 8}`, mask: 0, xmm: true, floats: "pd" };
+            case "insertps": return { asm: `insertps ${d}, ${rint(3) ? xr() : "dword [rel scratch + 4]"}, ${imm}`, mask: 0, xmm: true };
+            case "shufps": case "shufpd": return { asm: `${kind} ${d}, ${src}, ${imm}`, mask: 0, xmm: true };
+            default: return { asm: `${kind} ${d}, ${src}, ${imm}`, mask: 0, xmm: true };
+        }
+    },
+    ssse3() {
+        const op = pick(ssse3_ops);
+        return { asm: `${op} ${xr()}, ${xsrc()}`, mask: 0, xmm: true };
+    },
+    sse41() {
+        const op = pick(sse41_ops);
+        const mem = rint(4) === 0;
+        // pmovsx / pmovzx read a partial operand from memory
+        const PMOV = { bw: "qword", bd: "dword", bq: "word", wd: "qword", wq: "dword", dq: "qword" };
+        const operand = !mem ? xr() : /pmov/.test(op) ? `${PMOV[op.slice(-2)]} [rel scratch + 8]` : memAligned();
+        return { asm: `${op} ${xr()}, ${operand}`, mask: 0, xmm: true };
+    },
+    sse41_blend() {
+        const op = pick(["pblendvb", "blendvps", "blendvpd"]);
+        return { asm: `${op} ${xr()}, ${xsrc()}`, mask: 0, xmm: true };
+    },
+    sse_ptest() {
+        return { asm: `ptest ${xr()}, ${xsrc()}`, mask: ALL, xmm: true };
+    },
+    sse_fp() {
+        const kind = pick(["ps", "pd"]);
+        const scalar = rint(3) === 0;
+        const ops = ["add", "sub", "mul", "div", "min", "max"];
+        const op = pick(ops);
+        const suffix = scalar ? (kind === "ps" ? "ss" : "sd") : kind;
+        const src = rint(4) === 0 ? (scalar ? `${kind === "ps" ? "dword" : "qword"} [rel scratch + 8]` : memAligned()) : xr();
+        return { asm: `${op}${suffix} ${xr()}, ${src}`, mask: 0, xmm: true, floats: kind };
+    },
+    sse_fp2() {
+        const kind = pick(["ps", "pd"]);
+        const k = pick(["sqrt", "cmp", "and", "andn", "or", "xor", "unpckl", "unpckh", "hadd", "hsub", "addsub", "cvt", "comi", "ucomi", "movmsk"]);
+        const d = xr();
+        const floats = kind;
+        switch(k) {
+            case "sqrt": return { asm: `sqrt${kind} ${d}, ${xsrc()}`, mask: 0, xmm: true, floats, positive: true };
+            case "cmp": return { asm: `cmp${pick(["eq", "lt", "le", "unord", "neq", "nlt", "nle", "ord"])}${kind} ${d}, ${xsrc()}`, mask: 0, xmm: true, floats };
+            case "and": case "andn": case "or": case "xor": return { asm: `${k}${kind} ${d}, ${xsrc()}`, mask: 0, xmm: true, floats };
+            case "unpckl": case "unpckh": return { asm: `${k}${kind} ${d}, ${xsrc()}`, mask: 0, xmm: true, floats };
+            case "hadd": case "hsub": case "addsub": return { asm: `${k}${kind} ${d}, ${xsrc()}`, mask: 0, xmm: true, floats };
+            case "cvt": return { asm: pick(kind === "ps" ? ["cvtps2pd", "cvtps2dq", "cvttps2dq", "cvtdq2ps", "cvtss2sd"] : ["cvtpd2ps", "cvtpd2dq", "cvttpd2dq", "cvtdq2pd", "cvtsd2ss"]) + ` ${d}, ${xr()}`, mask: 0, xmm: true, floats };
+            case "comi": case "ucomi": return { asm: `${k}${kind === "ps" ? "ss" : "sd"} ${d}, ${xr()}`, mask: CF | PF | ZF | SF | OF | AF, xmm: true, floats };
+            case "movmsk": return { asm: `movmsk${kind} ${rn(32, reg(32))}, ${xr()}`, mask: 0, xmm: true, floats };
+            // rcpps / rsqrtps return implementation specific approximations
+            default: return { asm: `${k}ps ${d}, ${xr()}`, mask: 0, xmm: true, floats: "ps", approx: true };
+        }
+    },
+    sse_move() {
+        const k = pick(["movd", "movq", "movdqa", "movaps", "movhlps", "movlhps", "movss", "movsd", "movddup", "movshdup", "movsldup", "pmovmskb", "movq2", "cvtsi", "cvttsd"]);
+        const d = xr(), s = xr();
+        switch(k) {
+            case "movd": return { asm: rint(2) ? `movd ${d}, ${rn(32, reg(32))}` : `movd ${rn(32, reg(32))}, ${s}`, mask: 0, xmm: true };
+            case "movq": return { asm: rint(2) ? `movq ${d}, ${rn(64, reg(64))}` : `movq ${rn(64, reg(64))}, ${s}`, mask: 0, xmm: true };
+            case "movq2": return { asm: rint(2) ? `movq ${d}, ${s}` : `movq ${d}, qword [rel scratch + 8]`, mask: 0, xmm: true };
+            case "pmovmskb": return { asm: `pmovmskb ${rn(32, reg(32))}, ${s}`, mask: 0, xmm: true };
+            case "cvtsi": return { asm: `cvtsi2${pick(["sd", "ss"])} ${d}, ${rn(pick([32, 64]), reg(32))}`, mask: 0, xmm: true, floats: "ps" };
+            case "cvttsd": return { asm: `${pick(["cvttsd2si", "cvtsd2si"])} ${rn(pick([32, 64]), reg(32))}, ${s}`, mask: 0, xmm: true, floats: "pd" };
+            default: return { asm: `${k} ${d}, ${s}`, mask: 0, xmm: true };
+        }
+    },
     high8() {
         // legacy high byte registers (only encodable without a REX prefix)
         const op = pick(["add", "sub", "adc", "sbb", "and", "or", "xor", "cmp", "test", "mov", "xchg"]);
@@ -230,7 +345,9 @@ const families = {
 // building and running
 
 const SCRATCH_QWORDS = 16;
-const CASE_QWORDS = 16 + 1 + SCRATCH_QWORDS;     // registers, flags, scratch memory
+const XINIT_SLOTS = 128;
+const XMM_QWORDS = 32;
+const CASE_QWORDS = 16 + 1 + SCRATCH_QWORDS + XMM_QWORDS;     // registers, flags, scratch memory, xmm0-15
 
 function build_case(i, spec, initial)
 {
@@ -238,6 +355,9 @@ function build_case(i, spec, initial)
     // flags
     lines.push(`mov rax, 0x${initial.flags.toString(16)}`, "push rax", "popfq");
     for(let k = 0; k < SCRATCH_QWORDS; k++) lines.push(`mov rax, 0x${initial.mem[k].toString(16)}`, `mov [rel scratch + ${k * 8}], rax`);
+    if(spec.xmm) {
+        for(let k = 0; k < 16; k++) lines.push(`movdqu xmm${k}, [rel xinit + ${(i % XINIT_SLOTS) * 256 + k * 16}]`);
+    }
     REG64.forEach((r, k) => lines.push(`mov ${r}, 0x${initial.regs[k].toString(16)}`));
     if(spec.cl) {
         // an interesting shift count in cl
@@ -251,6 +371,7 @@ function build_case(i, spec, initial)
     REG64.forEach((r, k) => lines.push(`mov [rel results + ${i * CASE_QWORDS * 8 + k * 8}], ${r}`));
     lines.push(`mov [rel results + ${i * CASE_QWORDS * 8 + 15 * 8}], rsp`);
     for(let k = 0; k < SCRATCH_QWORDS; k++) lines.push(`mov rax, [rel scratch + ${k * 8}]`, `mov [rel results + ${i * CASE_QWORDS * 8 + (17 + k) * 8}], rax`);
+    if(spec.xmm) for(let k = 0; k < 16; k++) lines.push(`movdqu [rel results + ${i * CASE_QWORDS * 8 + (17 + SCRATCH_QWORDS) * 8 + k * 16}], xmm${k}`);
     return lines.join("\n");
 }
 
@@ -269,13 +390,17 @@ function make_cases(count, family_names)
             regs[rcl] = (regs[rcl] & ~0xFFn) | BigInt(rint(72));
         }
         const mem = Array.from({ length: SCRATCH_QWORDS }, () => rand64());
-        cases.push({ spec, initial: { flags, regs, mem } });
+        const xmm = spec.xmm ? Array.from({ length: 32 }, () => spec.floats ? rand_float_bits(spec.floats) : rand64()) : null;
+        cases.push({ spec, initial: { flags, regs, mem, xmm } });
     }
     return cases;
 }
 
 function program(cases, native)
 {
+    // xmm initial values, one 256 byte slot per case (slots are reused when a batch has more cases)
+    const xinit = [];
+    for(let i = 0; i < Math.min(cases.length, XINIT_SLOTS); i++) xinit.push(...(cases[i].initial.xmm || new Array(32).fill(0n)));
     const body = cases.map((c, i) => `; case ${i}: ${c.spec.asm.replace(/\n/g, "; ")}\n` + build_case(i, c.spec, c.initial)).join("\n");
     const size = cases.length * CASE_QWORDS * 8;
     return `%include "inc/long.inc"
@@ -295,6 +420,7 @@ ${body}
     PASS
 section .data
 align 16
+xinit: dq ${xinit.map(v => "0x" + v.toString(16)).join(", ")}
 scratch: times ${SCRATCH_QWORDS} dq 0
 results: times ${cases.length * CASE_QWORDS} dq 0
 `;
@@ -302,11 +428,26 @@ results: times ${cases.length * CASE_QWORDS} dq 0
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "v86-fuzz-"));
 
+function nasm(args)
+{
+    try { execFileSync("nasm", args, { stdio: "pipe" }); }
+    catch(e)
+    {
+        const lines = e.stderr.toString().split("\n").filter(l => /error/.test(l)).slice(0, 5);
+        for(const l of lines)
+        {
+            const m = /^(.*\.asm):(\d+):/.exec(l);
+            console.error(l, m ? "\n    > " + fs.readFileSync(m[1], "utf8").split("\n")[+m[2] - 1] : "");
+        }
+        throw e;
+    }
+}
+
 function run_native(cases)
 {
     const asm = path.join(tmp, "native.asm");
     fs.writeFileSync(asm, program(cases, true));
-    execFileSync("nasm", ["-f", "elf64", "-DNATIVE", "-i", __dirname + "/", asm, "-o", path.join(tmp, "native.o")]);
+    nasm(["-f", "elf64", "-DNATIVE", "-i", __dirname + "/", asm, "-o", path.join(tmp, "native.o")]);
     execFileSync("ld", ["-o", path.join(tmp, "native.elf"), path.join(tmp, "native.o")]);
     return execFileSync(path.join(tmp, "native.elf"), [], { maxBuffer: 1 << 26 });
 }
@@ -317,7 +458,7 @@ async function run_guest(cases)
 {
     const asm = path.join(tmp, "guest.asm");
     fs.writeFileSync(asm, program(cases, false));
-    execFileSync("nasm", ["-f", "bin", "-i", __dirname + "/", asm, "-o", path.join(tmp, "guest.bin")]);
+    nasm(["-f", "bin", "-i", __dirname + "/", asm, "-o", path.join(tmp, "guest.bin")]);
     const bin = fs.readFileSync(path.join(tmp, "guest.bin"));
     if(!emulator)
     {
@@ -368,12 +509,21 @@ function compare(cases, expected, actual)
             const e = q(expected, base + 17 + k), a = q(actual, base + 17 + k);
             if(e !== a) diffs.push(`mem[${k}]: expected ${e.toString(16)} actual ${a.toString(16)}`);
         }
+        if(c.spec.xmm)
+        {
+            for(let k = 0; k < 32; k++)
+            {
+                const e = q(expected, base + 17 + SCRATCH_QWORDS + k), a = q(actual, base + 17 + SCRATCH_QWORDS + k);
+                if(e !== a) diffs.push(`xmm${k >> 1}.${k & 1}: expected ${e.toString(16)} actual ${a.toString(16)}`);
+            }
+        }
         if(diffs.length && !c.spec.skip16over)
         {
             // destination of bsf/bsr is undefined for a zero source
             if(c.spec.weakWhenZero && diffs.every(d => !d.startsWith("flags") && !d.startsWith("mem")) && (q(expected, base + 16) & 64n)) return;
             failures++;
             console.log(`FAIL [${c.spec.family}] ${c.spec.asm.replace(/\n\s*/g, "; ")}`);
+            if(c.initial.xmm) console.log(`   initial xmm: ${c.initial.xmm.map((v, k) => (k & 1 ? "" : " xmm" + (k >> 1) + "=") + v.toString(16).padStart(16, "0") + (k & 1 ? "" : ":")).join("")}`);
             console.log(`   initial flags ${c.initial.flags.toString(16)} regs ${c.initial.regs.map((r, k) => REG64[k] + "=" + r.toString(16)).join(" ")}`);
             diffs.forEach(d => console.log("   " + d));
         }

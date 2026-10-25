@@ -13,9 +13,9 @@
 ;   0x00600  result block (see harness.inc)
 ;   0x00620  last exception: vector, error code, rip, count, resume address
 ;   0x07C00  test image
-;   0x20000  IDT (32 * 16); test images may grow up to there
+;   0x800000  IDT (32 * 16); test images may grow up to there (8MB)
 ;   0x02000  PML4, 0x03000 PDPT, 0x04000 PD (tests may use 0x5000-0x6fff)
-;   0x70000  initial stack top
+;   0x1000000  initial stack top (16MB)
 
 %include "inc/harness.inc"
 %include "inc/user.inc"
@@ -29,8 +29,8 @@
 %define PML4        0x2000
 %define PDPT        0x3000
 %define PD          0x4000
-%define IDT_BASE    0x20000
-%define STACK64     0x70000
+%define IDT_BASE    0x800000
+%define STACK64     0x1000000
 
 %ifdef NATIVE
 

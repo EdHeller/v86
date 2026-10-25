@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: SSE3 ADDSUBPS/PD, HADDPS/PD, HSUBPS/PD (0F D0, 0F 7C, 0F 7D stubs), LDDQU (F2 0F F0), MOVDDUP/MOVSHDUP/MOVSLDUP
 %include "inc/real.inc"
 

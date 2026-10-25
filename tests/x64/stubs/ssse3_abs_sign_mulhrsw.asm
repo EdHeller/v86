@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: SSSE3 PABSB/W/D, PSIGNB/D, PMULHRSW (0F 38 08..0B, 1C..1E)
 ; ISSUE: copy/v86#1038
 %include "inc/real.inc"

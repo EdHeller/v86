@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: BOUND raises #BR (int 5) when the index is outside [lower, upper], else falls through
 %include "inc/real.inc"
 

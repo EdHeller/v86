@@ -523,14 +523,31 @@ pub unsafe fn instr32_61() { popa32(); }
 
 #[no_mangle]
 pub unsafe fn instr_62_reg(_r2: i32, _r: i32) {
-    // bound
-    dbg_log!("Unimplemented BOUND instruction");
-    dbg_assert!(false);
+    // bound with a register operand
+    trigger_ud();
 }
 #[no_mangle]
-pub unsafe fn instr_62_mem(_addr: i32, _r: i32) {
-    dbg_log!("Unimplemented BOUND instruction");
-    dbg_assert!(false);
+pub unsafe fn instr_62_mem(addr: i32, r: i32) {
+    // bound: raises #BR if the signed index is outside of [lower, upper] read from memory
+    let (index, lower, upper) = if is_osize_32() {
+        (
+            read_reg32(r),
+            return_on_pagefault!(safe_read32s(addr)),
+            return_on_pagefault!(safe_read32s(addr + 4)),
+        )
+    }
+    else {
+        (
+            read_reg16(r) as i16 as i32,
+            return_on_pagefault!(safe_read16(addr)) as i16 as i32,
+            return_on_pagefault!(safe_read16(addr + 2)) as i16 as i32,
+        )
+    };
+    if index < lower || index > upper {
+        dbg_log!("#br: bound index={} lower={} upper={}", index, lower, upper);
+        *instruction_pointer = *previous_ip;
+        call_interrupt_vector(CPU_EXCEPTION_BR, false, None);
+    }
 }
 
 pub unsafe fn arpl(seg: i32, r16: i32) -> i32 {
@@ -1000,7 +1017,10 @@ pub unsafe fn instr16_9A(new_ip: i32, new_cs: i32) {
 pub unsafe fn instr32_9A(new_ip: i32, new_cs: i32) {
     if !*protected_mode || vm86_mode() {
         if 0 != new_ip as u32 & 0xFFFF0000 {
-            dbg_assert!(false);
+            // the offset exceeds the 64k segment limit
+            dbg_log!("#gp: far jump/call offset {:x} beyond the segment limit", new_ip);
+            trigger_gp(0);
+            return;
         }
     }
     far_jump(new_ip, new_cs, true, true);
@@ -2077,6 +2097,11 @@ pub unsafe fn instr16_EA(new_ip: i32, cs: i32) {
 #[no_mangle]
 pub unsafe fn instr32_EA(new_ip: i32, cs: i32) {
     // jmpf
+    if (!*protected_mode || vm86_mode()) && 0 != new_ip as u32 & 0xFFFF0000 {
+        dbg_log!("#gp: far jump offset {:x} beyond the segment limit", new_ip);
+        trigger_gp(0);
+        return;
+    }
     far_jump(new_ip, cs, false, true);
 }
 
@@ -2147,9 +2172,9 @@ pub unsafe fn instr_F0() {
 
 #[no_mangle]
 pub unsafe fn instr_F1() {
-    // INT1
+    // INT1 / ICEBP: a trap that raises #DB
     // https://code.google.com/p/corkami/wiki/x86oddities#IceBP
-    dbg_assert!(false);
+    call_interrupt_vector(CPU_EXCEPTION_DB, false, None);
 }
 
 pub unsafe fn instr_F2() {
@@ -2463,7 +2488,10 @@ pub unsafe fn instr32_FF_3_mem(addr: i32) {
     let new_cs = return_on_pagefault!(safe_read16(addr + 4));
     if !*protected_mode || vm86_mode() {
         if 0 != new_ip as u32 & 0xFFFF0000 {
-            dbg_assert!(false);
+            // the offset exceeds the 64k segment limit
+            dbg_log!("#gp: far jump/call offset {:x} beyond the segment limit", new_ip);
+            trigger_gp(0);
+            return;
         }
     }
     far_jump(new_ip, new_cs, true, true);
@@ -2491,7 +2519,10 @@ pub unsafe fn instr32_FF_5_mem(addr: i32) {
     let new_cs = return_on_pagefault!(safe_read16(addr + 4));
     if !*protected_mode || vm86_mode() {
         if 0 != new_ip as u32 & 0xFFFF0000 {
-            dbg_assert!(false);
+            // the offset exceeds the 64k segment limit
+            dbg_log!("#gp: far jump/call offset {:x} beyond the segment limit", new_ip);
+            trigger_gp(0);
+            return;
         }
     }
     far_jump(new_ip, new_cs, false, true);

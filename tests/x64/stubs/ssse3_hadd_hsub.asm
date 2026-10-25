@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: SSSE3 PHADDW/D, PHSUBW/D, PHADDSW, PMADDUBSW (0F 38 01..07, 04)
 ; ISSUE: copy/v86#1038
 %include "inc/real.inc"

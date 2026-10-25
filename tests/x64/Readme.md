@@ -30,6 +30,24 @@ exits non-zero for `FAIL`, `XPASS` and `error`.
 Options: `TEST_NAME=regex`, `--show-xfail` (print why each xfail fails),
 `DISABLE_JIT=1`, `TEST_RELEASE_BUILD=1`, `MAX_PARALLEL_TESTS=n`.
 
+## Differential fuzzing
+
+    node tests/x64/fuzz.js [--seed n] [--count n] [--family regex]
+
+`fuzz.js` generates random instances of integer, SSE and SSSE3/SSE4.1 instructions (random
+register contents and flags), runs them on the host cpu and in v86 long mode, and compares all
+registers, flags, a scratch memory area and xmm0-15 (undefined flags are masked). It needs
+nasm, ld and an x86-64 Linux host. `rcpps`/`rsqrtps` (implementation specific approximations)
+and x87 are not covered.
+
+## Booting a real kernel
+
+`manual/linux64-direct.js` boots an x86_64 Linux `vmlinux` straight into 64-bit mode (the
+self-decompressing bzImage stub is extremely slow without a jit for 64-bit code). It is not
+part of the automated run because it needs a kernel and an initramfs. An Ubuntu
+`linux-image-*-generic` package with a busybox initramfs boots to userspace in about 100
+seconds. `manual/boot64.asm` is the real-mode to long-mode trampoline it uses.
+
 ## Layout
 
 | Directory | Mode | Content |

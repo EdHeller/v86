@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; QEMU: xfail  (qemu 8.2 TCG computes the 32-bit form wrongly; expected value verified on host hardware)
 ; DESC: SSE4.2 CRC32 r32, r/m32 and r32, r/m8 (F2 0F 38 F0/F1)
 %include "inc/real.inc"

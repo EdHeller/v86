@@ -355,7 +355,13 @@ match opcode {
         after_block_boundary();
     },
     0x0D | 0x10D => {
-        instructions_0f::instr_0F0D();
+        let modrm_byte = match read_imm8() { Ok(o) => o, Err(()) => return };
+        if modrm_byte < 0xC0 {
+            instructions_0f::instr_0F0D_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+        }
+        else {
+            instructions_0f::instr_0F0D_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+        }
         after_block_boundary();
     },
     0x0E | 0x10E => {
@@ -2900,7 +2906,15 @@ match opcode {
         }
         else {
             dbg_assert!((prefixes_ & (prefix::PREFIX_66 | prefix::PREFIX_F2 | prefix::PREFIX_F3)) == 0);
-            instructions_0f::instr_0F7C();
+            if !task_switch_test_mmx() {
+                return;
+            }
+            if modrm_byte < 0xC0 {
+                instructions_0f::instr_0F7C_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            else {
+                instructions_0f::instr_0F7C_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+            }
             after_block_boundary();
         }
     },
@@ -2931,7 +2945,15 @@ match opcode {
         }
         else {
             dbg_assert!((prefixes_ & (prefix::PREFIX_66 | prefix::PREFIX_F2 | prefix::PREFIX_F3)) == 0);
-            instructions_0f::instr_0F7D();
+            if !task_switch_test_mmx() {
+                return;
+            }
+            if modrm_byte < 0xC0 {
+                instructions_0f::instr_0F7D_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            else {
+                instructions_0f::instr_0F7D_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+            }
             after_block_boundary();
         }
     },
@@ -4117,11 +4139,45 @@ match opcode {
         instructions_0f::instr_0FCF();
     },
     0xD0 | 0x1D0 => {
-        if !task_switch_test_mmx() {
-            return;
+        let prefixes_ = *prefixes;
+        let modrm_byte = match read_imm8() { Ok(o) => o, Err(()) => return };
+        if prefixes_ & prefix::PREFIX_66 != 0 {
+            if !task_switch_test_mmx() {
+                return;
+            }
+            if modrm_byte < 0xC0 {
+                instructions_0f::instr_660FD0_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            else {
+                instructions_0f::instr_660FD0_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            after_block_boundary();
         }
-        instructions_0f::instr_0FD0();
-        after_block_boundary();
+        else if prefixes_ & prefix::PREFIX_F2 != 0 {
+            if !task_switch_test_mmx() {
+                return;
+            }
+            if modrm_byte < 0xC0 {
+                instructions_0f::instr_F20FD0_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            else {
+                instructions_0f::instr_F20FD0_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            after_block_boundary();
+        }
+        else {
+            dbg_assert!((prefixes_ & (prefix::PREFIX_66 | prefix::PREFIX_F2 | prefix::PREFIX_F3)) == 0);
+            if !task_switch_test_mmx() {
+                return;
+            }
+            if modrm_byte < 0xC0 {
+                instructions_0f::instr_0FD0_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            else {
+                instructions_0f::instr_0FD0_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            after_block_boundary();
+        }
     },
     0xD1 | 0x1D1 => {
         let prefixes_ = *prefixes;
@@ -5010,11 +5066,33 @@ match opcode {
         }
     },
     0xF0 | 0x1F0 => {
-        if !task_switch_test_mmx() {
-            return;
+        let prefixes_ = *prefixes;
+        let modrm_byte = match read_imm8() { Ok(o) => o, Err(()) => return };
+        if prefixes_ & prefix::PREFIX_F2 != 0 {
+            if !task_switch_test_mmx() {
+                return;
+            }
+            if modrm_byte < 0xC0 {
+                instructions_0f::instr_F20FF0_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            else {
+                instructions_0f::instr_F20FF0_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            after_block_boundary();
         }
-        instructions_0f::instr_0FF0();
-        after_block_boundary();
+        else {
+            dbg_assert!((prefixes_ & (prefix::PREFIX_66 | prefix::PREFIX_F2 | prefix::PREFIX_F3)) == 0);
+            if !task_switch_test_mmx() {
+                return;
+            }
+            if modrm_byte < 0xC0 {
+                instructions_0f::instr_0FF0_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            else {
+                instructions_0f::instr_0FF0_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+            }
+            after_block_boundary();
+        }
     },
     0xF1 | 0x1F1 => {
         let prefixes_ = *prefixes;

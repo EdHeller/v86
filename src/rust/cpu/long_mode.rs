@@ -1308,6 +1308,7 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                 _ => return unimplemented_opcode(0x0FAE),
             }
         },
+        0x38 | 0x3A => return sse_three_byte(p, opcode),
         0x05 => syscall(p)?,
         0x07 => sysret(p)?,
         0xC7 => {
@@ -2100,4 +2101,104 @@ unsafe fn with_window(addr: u64, f: impl FnOnce(i32)) -> OrPageFault<()> {
     f(w);
     window_close();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// three byte sse opcodes (0F 38 / 0F 3A), see sse_0f38.rs
+
+unsafe fn sse_three_byte(p: &Prefixes, esc: u8) -> OrPageFault<()> {
+    use crate::cpu::sse_0f38::{crc32c, exec_0f38, exec_0f3a, Mandatory, Src};
+    let op = fetch8()? as u8;
+    let mandatory = match p.rep {
+        0xF2 => Mandatory::F2,
+        0xF3 => Mandatory::F3,
+        _ if p.osz16 => Mandatory::P66,
+        _ => Mandatory::None,
+    };
+    let m = decode_modrm(p, if esc == 0x3A { 1 } else { 0 })?;
+    let wide = p.w();
+
+    if esc == 0x38 && (op == 0xF0 || op == 0xF1) {
+        if mandatory == Mandatory::F2 {
+            // crc32
+            let bits = if op == 0xF0 { 8 } else if wide { 64 } else if p.osz16 { 16 } else { 32 };
+            let data = rm_read(p, &m, bits)?;
+            let crc = crc32c(get_reg(m.reg, 32, true) as u32, data, bits / 8);
+            set_reg(m.reg, 32, true, crc as u64);
+        }
+        else {
+            // movbe
+            let Loc::Mem(a) = m.loc else { return ud() };
+            let bits = if wide { 64 } else if p.osz16 { 16 } else { 32 };
+            if op == 0xF0 {
+                let v = mem_read(a, bits)?;
+                let v = match bits {
+                    16 => (v as u16).swap_bytes() as u64,
+                    32 => (v as u32).swap_bytes() as u64,
+                    _ => v.swap_bytes(),
+                };
+                set_reg(m.reg, bits, true, v);
+            }
+            else {
+                let v = get_reg(m.reg, bits, true);
+                let v = match bits {
+                    16 => (v as u16).swap_bytes() as u64,
+                    32 => (v as u32).swap_bytes() as u64,
+                    _ => v.swap_bytes(),
+                };
+                mem_write(a, bits, v)?;
+            }
+        }
+        return Ok(());
+    }
+
+    if esc == 0x3A && mandatory == Mandatory::P66 && matches!(op, 0x14..=0x17 | 0x20 | 0x22) {
+        let imm = fetch8()? as usize;
+        if op >= 0x20 {
+            // pinsrb / pinsrd / pinsrq
+            let bits = match op {
+                0x20 => 8,
+                _ if wide => 64,
+                _ => 32,
+            };
+            let v = rm_read(p, &m, if matches!(m.loc, Loc::Reg(_)) && op == 0x20 { 32 } else { bits })?;
+            let mut x = read_xmm128s(m.reg as i32);
+            match bits {
+                8 => x.u8[imm & 15] = v as u8,
+                32 => x.u32[imm & 3] = v as u32,
+                _ => x.u64[imm & 1] = v,
+            }
+            write_xmm_reg128(m.reg as i32, x);
+        }
+        else {
+            // pextrb / pextrw / pextrd / pextrq / extractps
+            let x = read_xmm128s(m.reg as i32);
+            let (v, bits) = match op {
+                0x14 => (x.u8[imm & 15] as u64, 8),
+                0x15 => (x.u16[imm & 7] as u64, 16),
+                0x16 if wide => (x.u64[imm & 1], 64),
+                _ => (x.u32[imm & 3] as u64, 32),
+            };
+            match m.loc {
+                Loc::Reg(n) => set_reg(n, if bits == 64 { 64 } else { 32 }, true, v),
+                Loc::Mem(a) => mem_write(a, bits, v)?,
+            }
+        }
+        return Ok(());
+    }
+
+    let reg = if mandatory == Mandatory::None { (m.reg & 7) as i32 } else { m.reg as i32 };
+    let src = match m.loc {
+        Loc::Reg(n) => Src::Reg(if mandatory == Mandatory::None { (n & 7) as i32 } else { n as i32 }),
+        Loc::Mem(a) => Src::Mem(window(a)?),
+    };
+    let result = if esc == 0x38 {
+        exec_0f38(op, mandatory, reg, src)
+    }
+    else {
+        let imm = fetch8()? as i32;
+        exec_0f3a(op, mandatory, reg, src, imm)
+    };
+    window_close();
+    result
 }

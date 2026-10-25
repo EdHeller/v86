@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: INVD and PREFETCHW execute (as cache-control / hint) instead of being treated as undefined
 %include "inc/real.inc"
 

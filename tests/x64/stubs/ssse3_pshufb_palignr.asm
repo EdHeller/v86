@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: SSSE3 PSHUFB (xmm and mmx), PALIGNR (0F 38 00 / 0F 3A 0F stubs)
 ; ISSUE: copy/v86#1038
 %include "inc/real.inc"

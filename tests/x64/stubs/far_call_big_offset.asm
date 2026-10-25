@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; QEMU: xfail  (qemu does not deliver #DB for ICEBP / does not limit-check far offsets in real mode)
 ; DESC: far call/jmp with a 32-bit offset above 0xffff in real mode raises #GP instead of being ignored
 %include "inc/real.inc"

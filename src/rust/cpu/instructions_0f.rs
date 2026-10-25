@@ -431,8 +431,11 @@ pub unsafe fn instr_0F06() {
 pub unsafe fn instr_0F07() { undefined_instruction(); }
 #[no_mangle]
 pub unsafe fn instr_0F08() {
-    // invd
-    undefined_instruction();
+    // invd: there are no caches to invalidate
+    if 0 != *cpl {
+        dbg_log!("invd #gp");
+        trigger_gp(0);
+    }
 }
 #[no_mangle]
 pub unsafe fn instr_0F09() {
@@ -453,10 +456,11 @@ pub unsafe fn instr_0F0B() {
 #[no_mangle]
 pub unsafe fn instr_0F0C() { undefined_instruction(); }
 #[no_mangle]
-pub unsafe fn instr_0F0D() {
-    // nop
-    undefined_instruction();
+pub unsafe fn instr_0F0D_mem(_addr: i32, _r: i32) {
+    // prefetch / prefetchw: a hint without architectural effect
 }
+#[no_mangle]
+pub unsafe fn instr_0F0D_reg(_r1: i32, _r2: i32) { trigger_ud(); }
 #[no_mangle]
 pub unsafe fn instr_0F0E() { undefined_instruction(); }
 #[no_mangle]
@@ -1471,12 +1475,143 @@ pub unsafe fn instr_0F37() {
     // getsec
     undefined_instruction();
 }
+pub unsafe fn mandatory_prefix() -> crate::cpu::sse_0f38::Mandatory {
+    use crate::cpu::sse_0f38::Mandatory;
+    let p = *prefixes;
+    if p & crate::prefix::PREFIX_F2 != 0 {
+        Mandatory::F2
+    }
+    else if p & crate::prefix::PREFIX_F3 != 0 {
+        Mandatory::F3
+    }
+    else if p & crate::prefix::PREFIX_66 != 0 {
+        Mandatory::P66
+    }
+    else {
+        Mandatory::None
+    }
+}
+
 #[no_mangle]
-pub unsafe fn instr_0F38() { unimplemented_sse(); }
+pub unsafe fn instr_0F38() {
+    // three byte opcodes: ssse3, sse4.1, sse4.2 (crc32), movbe
+    use crate::cpu::sse_0f38::{crc32c, exec_0f38, Mandatory, Src};
+    let op = return_on_pagefault!(read_imm8()) as u8;
+    let modrm_byte = return_on_pagefault!(read_imm8());
+    let mandatory = mandatory_prefix();
+    let r = modrm_byte >> 3 & 7;
+    let is_mem = modrm_byte < 0xC0;
+    let addr = if is_mem { return_on_pagefault!(modrm_resolve(modrm_byte)) } else { 0 };
+    match (op, mandatory) {
+        (0xF0, Mandatory::F2) | (0xF1, Mandatory::F2) => {
+            // crc32 r32, r/m8 / r/m16 / r/m32
+            let bits = if op == 0xF0 { 8 } else if is_osize_32() { 32 } else { 16 };
+            let data = match (bits, is_mem) {
+                (8, true) => return_on_pagefault!(safe_read8(addr)),
+                (8, false) => read_reg8(modrm_byte & 7),
+                (16, true) => return_on_pagefault!(safe_read16(addr)),
+                (16, false) => read_reg16(modrm_byte & 7),
+                (_, true) => return_on_pagefault!(safe_read32s(addr)),
+                (_, false) => read_reg32(modrm_byte & 7),
+            };
+            let crc = crc32c(read_reg32(r) as u32, data as u32 as u64, bits / 8);
+            write_reg32(r, crc as i32);
+        },
+        (0xF0, Mandatory::None) | (0xF1, Mandatory::None) => {
+            // movbe
+            if !is_mem {
+                trigger_ud();
+                return;
+            }
+            if is_osize_32() {
+                if op == 0xF0 {
+                    let v = return_on_pagefault!(safe_read32s(addr));
+                    write_reg32(r, v.swap_bytes());
+                }
+                else {
+                    return_on_pagefault!(safe_write32(addr, read_reg32(r).swap_bytes()));
+                }
+            }
+            else if op == 0xF0 {
+                let v = return_on_pagefault!(safe_read16(addr)) as u16;
+                write_reg16(r, v.swap_bytes() as i32);
+            }
+            else {
+                return_on_pagefault!(safe_write16(addr, (read_reg16(r) as u16).swap_bytes() as i32));
+            }
+        },
+        _ => {
+            if !task_switch_test_mmx() {
+                return;
+            }
+            let src = if is_mem { Src::Mem(addr) } else { Src::Reg(modrm_byte & 7) };
+            let _ = exec_0f38(op, mandatory, r, src);
+        },
+    }
+}
 #[no_mangle]
 pub unsafe fn instr_0F39() { unimplemented_sse(); }
 #[no_mangle]
-pub unsafe fn instr_0F3A() { unimplemented_sse(); }
+pub unsafe fn instr_0F3A() {
+    // three byte opcodes: palignr, sse4.1 rounding / blending / insert / extract
+    use crate::cpu::sse_0f38::{exec_0f3a, Mandatory, Src};
+    let op = return_on_pagefault!(read_imm8()) as u8;
+    let modrm_byte = return_on_pagefault!(read_imm8());
+    let mandatory = mandatory_prefix();
+    let r = modrm_byte >> 3 & 7;
+    let is_mem = modrm_byte < 0xC0;
+    let addr = if is_mem { return_on_pagefault!(modrm_resolve(modrm_byte)) } else { 0 };
+    let imm = return_on_pagefault!(read_imm8());
+    if mandatory != Mandatory::P66 && op != 0x0F {
+        trigger_ud();
+        return;
+    }
+    if !task_switch_test_mmx() {
+        return;
+    }
+    match op {
+        0x14 | 0x15 | 0x16 | 0x17 => {
+            // pextrb / pextrw / pextrd / extractps: xmm register r to r/m
+            let x = read_xmm128s(r);
+            let v = match op {
+                0x14 => x.u8[(imm & 15) as usize] as i32,
+                0x15 => x.u16[(imm & 7) as usize] as i32,
+                _ => x.u32[(imm & 3) as usize] as i32,
+            };
+            if is_mem {
+                return_on_pagefault!(match op {
+                    0x14 => safe_write8(addr, v),
+                    0x15 => safe_write16(addr, v),
+                    _ => safe_write32(addr, v),
+                });
+            }
+            else {
+                write_reg32(modrm_byte & 7, v);
+            }
+        },
+        0x20 | 0x22 => {
+            // pinsrb / pinsrd: r/m to an element of xmm register r
+            let v = if is_mem {
+                if op == 0x20 { return_on_pagefault!(safe_read8(addr)) } else { return_on_pagefault!(safe_read32s(addr)) }
+            }
+            else {
+                read_reg32(modrm_byte & 7)
+            };
+            let mut x = read_xmm128s(r);
+            if op == 0x20 {
+                x.u8[(imm & 15) as usize] = v as u8;
+            }
+            else {
+                x.u32[(imm & 3) as usize] = v as u32;
+            }
+            write_xmm_reg128(r, x);
+        },
+        _ => {
+            let src = if is_mem { Src::Mem(addr) } else { Src::Reg(modrm_byte & 7) };
+            let _ = exec_0f3a(op, mandatory, r, src, imm);
+        },
+    }
+}
 #[no_mangle]
 pub unsafe fn instr_0F3B() { unimplemented_sse(); }
 #[no_mangle]
@@ -3054,10 +3189,48 @@ pub unsafe fn instr_0F7A() { unimplemented_sse(); }
 #[no_mangle]
 pub unsafe fn instr_0F7B() { unimplemented_sse(); }
 
-#[no_mangle]
-pub unsafe fn instr_0F7C() { unimplemented_sse(); }
-#[no_mangle]
-pub unsafe fn instr_0F7D() { unimplemented_sse(); }
+pub unsafe fn instr_0F7C_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+pub unsafe fn instr_0F7C_mem(_addr: i32, _r: i32) { trigger_ud(); }
+pub unsafe fn instr_0F7D_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+pub unsafe fn instr_0F7D_mem(_addr: i32, _r: i32) { trigger_ud(); }
+pub unsafe fn instr_0FD0_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+pub unsafe fn instr_0FD0_mem(_addr: i32, _r: i32) { trigger_ud(); }
+pub unsafe fn instr_0FF0_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+pub unsafe fn instr_0FF0_mem(_addr: i32, _r: i32) { trigger_ud(); }
+
+pub unsafe fn instr_660FD0(source: reg128, r: i32) {
+    // addsubpd xmm, xmm/m128
+    let d = read_xmm128s(r);
+    write_xmm_reg128(r, reg128 { f64: [d.f64[0] - source.f64[0], d.f64[1] + source.f64[1]] });
+}
+pub unsafe fn instr_660FD0_reg(r1: i32, r2: i32) { instr_660FD0(read_xmm128s(r1), r2); }
+pub unsafe fn instr_660FD0_mem(addr: i32, r: i32) {
+    instr_660FD0(return_on_pagefault!(safe_read128s(addr)), r);
+}
+pub unsafe fn instr_F20FD0(source: reg128, r: i32) {
+    // addsubps xmm, xmm/m128
+    let d = read_xmm128s(r);
+    write_xmm_reg128(
+        r,
+        reg128 {
+            f32: [
+                d.f32[0] - source.f32[0],
+                d.f32[1] + source.f32[1],
+                d.f32[2] - source.f32[2],
+                d.f32[3] + source.f32[3],
+            ],
+        },
+    );
+}
+pub unsafe fn instr_F20FD0_reg(r1: i32, r2: i32) { instr_F20FD0(read_xmm128s(r1), r2); }
+pub unsafe fn instr_F20FD0_mem(addr: i32, r: i32) {
+    instr_F20FD0(return_on_pagefault!(safe_read128s(addr)), r);
+}
+pub unsafe fn instr_F20FF0_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+pub unsafe fn instr_F20FF0_mem(addr: i32, r: i32) {
+    // lddqu xmm, m128: unaligned 128 bit load
+    write_xmm_reg128(r, return_on_pagefault!(safe_read128s(addr)));
+}
 
 #[no_mangle]
 pub unsafe fn instr_660F7C(source: reg128, r: i32) {
@@ -4080,8 +4253,6 @@ pub unsafe fn instr_0FCE() { bswap(ESI); }
 #[no_mangle]
 pub unsafe fn instr_0FCF() { bswap(EDI); }
 #[no_mangle]
-pub unsafe fn instr_0FD0() { unimplemented_sse(); }
-#[no_mangle]
 pub unsafe fn instr_0FD1(source: u64, r: i32) {
     // psrlw mm, mm/m64
     psrlw_r64(r, source);
@@ -4937,8 +5108,6 @@ pub unsafe fn instr_660FEF_reg(r1: i32, r2: i32) { instr_660FEF(read_xmm128s(r1)
 pub unsafe fn instr_660FEF_mem(addr: i32, r: i32) {
     instr_660FEF(return_on_pagefault!(safe_read128s(addr)), r);
 }
-#[no_mangle]
-pub unsafe fn instr_0FF0() { unimplemented_sse(); }
 #[no_mangle]
 pub unsafe fn instr_0FF1(source: u64, r: i32) {
     // psllw mm, mm/m64
