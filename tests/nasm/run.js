@@ -374,7 +374,7 @@ else {
 
         const evaluated_fpu_regs = new Float64Array(8).map((_, i) => cpu.fpu_get_sti_f64(i));
         const evaluated_mmxs = new Int32Array(16).map((_, i) => cpu.fpu_st[(i & ~1) << 1 | (i & 1)]);
-        const evaluated_xmms = cpu.reg_xmm32s;
+        const evaluated_xmms = cpu.reg_xmm32s.subarray(0, 32);
         const evaluated_memory = new Int32Array(cpu.mem8.buffer, cpu.mem8.byteOffset + BSS, STACK_TOP - BSS >> 2);
         const evaluated_fpu_tag = cpu.fpu_load_tag_word();
         const evaluated_fpu_status = cpu.fpu_load_status_word() & FPU_STATUS_MASK;
