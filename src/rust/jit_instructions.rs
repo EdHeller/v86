@@ -144,11 +144,21 @@ pub fn instr_F3_jit(ctx: &mut JitContext, instr_flags: &mut u32) {
     jit_handle_prefix(ctx, instr_flags)
 }
 
+fn sse_fp_exception_check(ctx: &mut JitContext, name: &str) {
+    // arithmetic instructions (sqrt, add, mul, sub, min, div, max) can raise #XM
+    let is_arith = name.starts_with("instr_")
+        && matches!(&name[name.len() - 2..], "51" | "58" | "59" | "5C" | "5D" | "5E" | "5F");
+    if is_arith {
+        codegen::gen_sse_exception_check(ctx);
+    }
+}
+
 fn sse_read_f32_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read32(ctx, modrm_byte);
     ctx.builder.reinterpret_i32_as_f32();
     ctx.builder.const_i32(r as i32);
     ctx.builder.call_fn2_f32_i32(name);
+    sse_fp_exception_check(ctx, name);
 }
 fn sse_read_f32_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
     ctx.builder
@@ -156,12 +166,14 @@ fn sse_read_f32_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
     ctx.builder.load_aligned_f32(0);
     ctx.builder.const_i32(r2 as i32);
     ctx.builder.call_fn2_f32_i32(name);
+    sse_fp_exception_check(ctx, name);
 }
 
 fn sse_read64_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read64(ctx, modrm_byte);
     ctx.builder.const_i32(r as i32);
     ctx.builder.call_fn2_i64_i32(name);
+    sse_fp_exception_check(ctx, name);
 }
 fn sse_read64_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
     ctx.builder
@@ -169,6 +181,7 @@ fn sse_read64_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
     ctx.builder.load_aligned_i64(0);
     ctx.builder.const_i32(r2 as i32);
     ctx.builder.call_fn2_i64_i32(name);
+    sse_fp_exception_check(ctx, name);
 }
 
 fn sse_read128_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, r: u32) {
@@ -177,6 +190,7 @@ fn sse_read128_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, 
     ctx.builder.const_i32(dest as i32);
     ctx.builder.const_i32(r as i32);
     ctx.builder.call_fn2(name);
+    sse_fp_exception_check(ctx, name);
 }
 fn sse_read128_xmm_mem_imm(
     ctx: &mut JitContext,
@@ -200,6 +214,7 @@ fn sse_read128_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
     ctx.builder.const_i32(dest as i32);
     ctx.builder.const_i32(r2 as i32);
     ctx.builder.call_fn2(name);
+    sse_fp_exception_check(ctx, name);
 }
 fn sse_read128_xmm_xmm_imm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32, imm: u32) {
     // Make a copy to avoid aliasing problems: Called function expects a reg128, which must not

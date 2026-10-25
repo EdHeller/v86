@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; QEMU: xfail  (qemu's TCG never delivers #XM / SIMD FP exceptions; expected values follow the SDM)
 ; DESC: unmasked SIMD FP exceptions raise #XM (int 19), or #UD when CR4.OSXMMEXCPT is clear; reserved MXCSR bits #GP
 %include "inc/real.inc"

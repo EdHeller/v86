@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: MXCSR.FTZ (bit 15) flushes denormal results, MXCSR.DAZ (bit 6) treats denormal inputs as zero
 %include "inc/real.inc"
 

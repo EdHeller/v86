@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: MXCSR sticky exception flags with masked exceptions (IEEE default results)
 %include "inc/real.inc"
 

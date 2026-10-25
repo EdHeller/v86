@@ -2586,6 +2586,23 @@ pub fn gen_trigger_de(ctx: &mut JitContext) {
     ctx.builder.br(ctx.exit_with_fault_label);
 }
 
+pub fn gen_sse_exception_check(ctx: &mut JitContext) {
+    // if(sse_exception_pending) { trigger_xm_jit(); goto exit_with_fault; }
+    ctx.builder
+        .load_fixed_i32(global_pointers::sse_exception_pending as u32);
+    ctx.builder.if_void();
+    {
+        gen_debug_track_jit_exit(ctx.builder, ctx.start_of_current_instruction);
+        gen_fn1_const(
+            ctx.builder,
+            "trigger_xm_jit",
+            ctx.start_of_current_instruction & 0xFFF,
+        );
+        ctx.builder.br(ctx.exit_with_fault_label);
+    }
+    ctx.builder.block_end();
+}
+
 pub fn gen_trigger_ud(ctx: &mut JitContext) {
     gen_fn1_const(
         ctx.builder,

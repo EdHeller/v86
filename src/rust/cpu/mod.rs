@@ -14,6 +14,7 @@ pub mod misc_instr;
 pub mod modrm;
 pub mod pic;
 pub mod sse_0f38;
+pub mod sse_fp;
 pub mod sse_instr;
 pub mod string;
 pub mod vga;
