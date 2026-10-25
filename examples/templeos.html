@@ -1,0 +1,97 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TempleOS (x86_64)</title>
+<style>
+    body { font: 14px sans-serif; margin: 16px; background: #222; color: #ddd; }
+    #screen_container { display: inline-block; background: #000; }
+    #screen_container canvas { image-rendering: pixelated; }
+    #log { font: 12px monospace; white-space: pre; height: 8em; overflow: auto; background: #111; padding: 4px; margin-top: 8px; }
+    button, input { margin-right: 8px; }
+</style>
+
+<p>
+    <input type="file" id="iso" accept=".iso,.ISO">
+    <button id="start" disabled>Boot</button>
+    <button id="n">send "n"</button>
+    <button id="save">save state</button>
+    <label><input type="checkbox" id="autoanswer"> answer install prompt with n</label>
+</p>
+<div id="screen_container">
+    <div style="white-space: pre; font: 14px monospace; line-height: 14px"></div>
+    <canvas style="display: none"></canvas>
+</div>
+<div id="status"></div>
+<div id="log"></div>
+
+<script src="../build/libv86.js"></script>
+<script>
+"use strict";
+
+const log = text => {
+    const el = document.getElementById("log");
+    el.textContent += text + "\n";
+    el.scrollTop = el.scrollHeight;
+};
+
+let iso_buffer = null;
+let emulator = null;
+
+document.getElementById("iso").onchange = async function()
+{
+    iso_buffer = await this.files[0].arrayBuffer();
+    document.getElementById("start").disabled = false;
+};
+
+document.getElementById("start").onclick = function()
+{
+    emulator = window.emulator = new V86({
+        wasm_path: "../build/v86.wasm",
+        memory_size: 512 * 1024 * 1024,
+        vga_memory_size: 8 * 1024 * 1024,
+        screen_container: document.getElementById("screen_container"),
+        bios: { url: "../bios/seabios.bin" },
+        vga_bios: { url: "../bios/vgabios.bin" },
+        cdrom: { buffer: iso_buffer },
+        autostart: true,
+    });
+
+    // every scancode that reaches the emulated keyboard controller
+    emulator.bus.register("keyboard-code", code => log("kbd scancode 0x" + code.toString(16)));
+    emulator.bus.register("mouse-click", c => log("mouse buttons " + c));
+
+    setInterval(() => {
+        const cpu = emulator.v86.cpu;
+        const mem = new Uint8Array(cpu.wasm_memory.buffer);
+        document.getElementById("status").textContent =
+            "eip=" + (cpu.instruction_pointer[0] >>> 0).toString(16) + " is_64=" + mem[1444] +
+            " instructions=" + cpu.instruction_counter[0];
+    }, 1000);
+
+    // The install prompt is only accepted reliably when the key arrives while the prompt is up,
+    // and only TempleOS knows when that is: poll the screen for the prompt's pixels.
+    setInterval(() => {
+        if(!document.getElementById("autoanswer").checked || !emulator) return;
+        const vga = emulator.v86.cpu.devices.vga;
+        if(!vga.graphical_mode) return;
+        let ink = 0;
+        for(let y = 132; y < 146; y++) for(let x = 8; x < 280; x += 8) ink += vga.plane0[y * 80 + (x >> 3)] ? 1 : 0;
+        if(ink > 15) { log("prompt seen, sending n"); sendKey("n"); document.getElementById("autoanswer").checked = false; }
+    }, 2000);
+};
+
+function sendKey(c)
+{
+    const code = { n: 0x31, y: 0x15, "\n": 0x1C }[c];
+    emulator.bus.send("keyboard-code", code);
+    setTimeout(() => emulator.bus.send("keyboard-code", code | 0x80), 150);
+}
+
+document.getElementById("n").onclick = () => sendKey("n");
+document.getElementById("save").onclick = async () => {
+    const state = await emulator.save_state();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([state]));
+    a.download = "templeos.state";
+    a.click();
+};
+</script>
