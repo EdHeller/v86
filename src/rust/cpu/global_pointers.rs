@@ -90,6 +90,9 @@ pub const gs_base: *mut u64 = 1488 as *mut u64;
 pub const kernel_gs_base: *mut u64 = 1496 as *mut u64;
 pub const cr2_hi: *mut i32 = 1504 as *mut i32; // upper half of cr2
 pub const cr8_tpr: *mut i32 = 1508 as *mut i32; // cr8 (task priority), 4 bits
+pub const gdtr_hi: *mut i32 = 1512 as *mut i32; // upper halves of the 64-bit descriptor table bases
+pub const idtr_hi: *mut i32 = 1516 as *mut i32;
+pub const tr_base_hi: *mut i32 = 1520 as *mut i32;
 
 pub fn get_reg32_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);

@@ -1115,14 +1115,14 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
             match (m.reg & 7, m.loc) {
                 (0, Loc::Mem(a)) | (1, Loc::Mem(a)) => {
                     // sgdt / sidt: 2 byte limit, 8 byte base
-                    let (size, off) = if m.reg & 7 == 0 {
-                        (*gdtr_size, *gdtr_offset)
+                    let (size, off, hi) = if m.reg & 7 == 0 {
+                        (*gdtr_size, *gdtr_offset, *gdtr_hi)
                     }
                     else {
-                        (*idtr_size, *idtr_offset)
+                        (*idtr_size, *idtr_offset, *idtr_hi)
                     };
                     mem_write(a, 16, size as u64 & 0xFFFF)?;
-                    mem_write(a + 2, 64, off as u32 as u64)?;
+                    mem_write(a + 2, 64, (hi as u32 as u64) << 32 | off as u32 as u64)?;
                 },
                 (2, Loc::Mem(a)) | (3, Loc::Mem(a)) => {
                     if *cpl != 0 {
@@ -1131,18 +1131,19 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                     }
                     let size = mem_read(a, 16)? as i32;
                     let base = mem_read(a + 2, 64)?;
-                    if base >> 32 != 0 {
-                        dbg_log!("long mode: unsupported descriptor table base {:#x}", base);
+                    if !is_canonical(base) {
                         trigger_gp(0);
                         return Err(());
                     }
                     if m.reg & 7 == 2 {
                         *gdtr_size = size;
                         *gdtr_offset = base as i32;
+                        *gdtr_hi = (base >> 32) as i32;
                     }
                     else {
                         *idtr_size = size;
                         *idtr_offset = base as i32;
+                        *idtr_hi = (base >> 32) as i32;
                     }
                 },
                 (4, _) => {
@@ -1258,7 +1259,7 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                         load_ldt(sel)?;
                     }
                     else {
-                        load_tr(sel);
+                        load_tr_64(sel)?;
                     }
                 },
                 4 => verr(rm_read(p, &m, 16)? as i32),
@@ -1310,6 +1311,13 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
             let m = decode_modrm(p, 0)?;
             match (m.reg & 7, m.loc) {
                 (1, Loc::Mem(a)) => cmpxchg_double(p, a)?,
+                (6, Loc::Reg(n)) => {
+                    // rdrand
+                    let bits = if p.w() { 64 } else if p.osz16 { 16 } else { 32 };
+                    let v = js::get_rand_int() as u32 as u64 | (js::get_rand_int() as u32 as u64) << 32;
+                    set_reg(n, bits, true, v & mask(bits));
+                    set_eflags_raw(get_eflags() & !FLAGS_ALL | FLAG_CARRY);
+                },
                 _ => return unimplemented_opcode(0x0FC7),
             }
         },
@@ -1512,77 +1520,188 @@ unsafe fn bit_op(p: &Prefixes, opcode: u8, imm_form: bool) -> OrPageFault<()> {
 // ---------------------------------------------------------------------------------------------
 // interrupts
 
-/// Interrupt delivery through a 16 byte IDT gate in 64-bit mode. Only same-privilege delivery
-/// without IST is implemented.
-pub unsafe fn call_interrupt_vector_64(nr: i32, is_software_int: bool, error_code: Option<i32>) {
-    let _ = is_software_int;
-    if (nr as u32) * 16 + 15 > *idtr_size as u32 {
-        panic!(
-            "long mode: exception/interrupt {} (error code {:?}) outside of idt limit {:#x}, rip={:#x} cr2={:#x}",
-            nr,
-            error_code,
-            *idtr_size,
-            rip(),
-            (*cr2_hi as u32 as u64) << 32 | *cr.offset(2) as u32 as u64
-        );
+unsafe fn tr_base() -> u64 { (*tr_base_hi as u32 as u64) << 32 | *segment_offsets.offset(TR as isize) as u32 as u64 }
+
+/// ltr with the 16 byte system descriptor of 64-bit mode
+unsafe fn load_tr_64(selector: i32) -> OrPageFault<()> {
+    let sel = SegmentSelector::of_u16(selector as u16);
+    if sel.is_null() || !sel.is_gdt() {
+        trigger_gp(selector & !3);
+        return Err(());
     }
-    let gate_addr = *idtr_offset + nr * 16;
-    let low = match translate_address_system_read(gate_addr) {
-        Ok(a) => crate::cpu::memory::read64s(a) as u64,
+    let (d, _) = match lookup_segment_selector(sel)? {
+        Ok(x) => x,
+        Err(_) => {
+            trigger_gp(selector & !3);
+            return Err(());
+        },
+    };
+    if !d.is_system() || d.system_type() != 9 {
+        trigger_gp(selector & !3);
+        return Err(());
+    }
+    if !d.is_present() {
+        trigger_np(selector & !3);
+        return Err(());
+    }
+    let vaddr = last_descriptor_address();
+    let high = read_system(vaddr + 8, 32)?;
+    *tss_size_32 = true;
+    *segment_limits.offset(TR as isize) = d.effective_limit();
+    *segment_offsets.offset(TR as isize) = d.base();
+    *tr_base_hi = high as i32;
+    *sreg.offset(TR as isize) = selector as u16;
+    write_system8(vaddr + 5, d.set_busy().access_byte())?;
+    Ok(())
+}
+
+pub unsafe fn test_privileges_for_io_64(port: i32, size: i32) -> bool {
+    if (*cpl as i32) <= getiopl() {
+        return true;
+    }
+    let limit = *segment_limits.offset(TR as isize) as u64;
+    if limit >= 0x67 {
+        let base = tr_base();
+        if let Ok(iomap_base) = read_system(base + 0x66, 16) {
+            let last = (port + size - 1) as u64;
+            if limit >= iomap_base + (last >> 3) {
+                if let Ok(bits) = read_system(base + iomap_base + (port as u64 >> 3), 16) {
+                    let m = ((1u64 << size) - 1) << (port & 7);
+                    if bits & m == 0 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    dbg_log!("#GP for port io  port={:x} size={}", port, size);
+    trigger_gp(0);
+    false
+}
+
+/// Interrupt, exception and software interrupt delivery in IA-32e mode: 16 byte IDT gates,
+/// stack switches through the tss (rsp0-2 and the IST) and a fixed size frame that always
+/// contains ss:rsp.
+pub unsafe fn call_interrupt_vector_64(nr: i32, is_software_int: bool, error_code: Option<i32>) {
+    // errors while delivering an exception end up here again
+    unsafe fn fail(nr: i32, code: i32, vector: i32, what: &str) {
+        dbg_log!("long mode: {} while delivering vector {}", what, nr);
+        // a real cpu raises a double fault when an exception happens while delivering another
+        // one, give up instead of recursing forever
+        if nr == CPU_EXCEPTION_GP || nr == CPU_EXCEPTION_NP || nr == CPU_EXCEPTION_SS {
+            panic!(
+                "long mode: unrecoverable {} while delivering vector {} (rip={:#x} rsp={:#x} cr2={:#x}), would triple fault",
+                what,
+                nr,
+                rip(),
+                r64(RSP),
+                (*cr2_hi as u32 as u64) << 32 | *cr.offset(2) as u32 as u64
+            );
+        }
+        call_interrupt_vector_64(vector, false, Some(code));
+    }
+
+    let idtr = (*idtr_hi as u32 as u64) << 32 | *idtr_offset as u32 as u64;
+    if (nr as u32) * 16 + 15 > *idtr_size as u32 {
+        return fail(nr, nr << 3 | 2, CPU_EXCEPTION_GP, "vector outside of the idt");
+    }
+    let gate_addr = idtr + nr as u64 * 16;
+    let low = match read_system(gate_addr, 64) {
+        Ok(v) => v,
         Err(()) => return,
     };
-    let high = match translate_address_system_read(gate_addr + 8) {
-        Ok(a) => crate::cpu::memory::read64s(a) as u64,
+    let high = match read_system(gate_addr + 8, 64) {
+        Ok(v) => v,
         Err(()) => return,
     };
     let present = low >> 47 & 1 != 0;
     let gate_type = low >> 40 & 0xF;
-    if !present || (gate_type != 0xE && gate_type != 0xF) {
-        panic!(
-            "long mode: bad idt gate for exception/interrupt {} (error code {:?}): {:#x}, rip={:#x} cr2={:#x} rsp={:#x}",
-            nr,
-            error_code,
-            low,
-            rip(),
-            (*cr2_hi as u32 as u64) << 32 | *cr.offset(2) as u32 as u64,
-            r64(RSP)
-        );
+    let gate_dpl = (low >> 45 & 3) as u8;
+    if gate_type != 0xE && gate_type != 0xF {
+        return fail(nr, nr << 3 | 2, CPU_EXCEPTION_GP, "bad idt gate type");
+    }
+    if is_software_int && gate_dpl < *cpl {
+        return fail(nr, nr << 3 | 2, CPU_EXCEPTION_GP, "gate dpl < cpl");
+    }
+    if !present {
+        return fail(nr, nr << 3 | 2, CPU_EXCEPTION_NP, "not present idt gate");
     }
     let selector = (low >> 16 & 0xFFFF) as i32;
-    let ist = low >> 32 & 7;
+    let ist = (low >> 32 & 7) as u64;
     let target = (low & 0xFFFF) | (low >> 48 & 0xFFFF) << 16 | (high & 0xFFFF_FFFF) << 32;
-    dbg_assert!(ist == 0, "Unimplemented: IST");
-    if *cpl != 0 {
-        panic!("Unimplemented: interrupts from CPL > 0 in long mode");
+
+    let cs_desc = match lookup_segment_selector(SegmentSelector::of_u16(selector as u16)) {
+        Ok(Ok((d, _))) => d,
+        Ok(Err(_)) => return fail(nr, selector & !3, CPU_EXCEPTION_GP, "bad gate code segment"),
+        Err(()) => return,
+    };
+    if cs_desc.is_system() || !cs_desc.is_executable() || !cs_desc.is_long() || cs_desc.is_32() {
+        return fail(nr, selector & !3, CPU_EXCEPTION_GP, "gate target is not a 64-bit code segment");
     }
+    if cs_desc.dpl() > *cpl {
+        return fail(nr, selector & !3, CPU_EXCEPTION_GP, "gate target dpl > cpl");
+    }
+    if !cs_desc.is_present() {
+        return fail(nr, selector & !3, CPU_EXCEPTION_NP, "gate target not present");
+    }
+    let new_cpl = if cs_desc.is_dc() { *cpl } else { cs_desc.dpl() };
 
     let old_rsp = r64(RSP);
     let old_ss = *sreg.offset(SS as isize) as u64;
     let old_cs = *sreg.offset(CS as isize) as u64;
     let old_flags = get_eflags() as u32 as u64;
     let old_rip = rip();
+    let old_cpl = *cpl;
 
-    // the stack pointer is aligned to 16 bytes before pushing the frame
-    set_r64(RSP, old_rsp & !0xF);
-    let mut ok = push_val(old_ss, 64).is_ok()
-        && push_val(old_rsp, 64).is_ok()
-        && push_val(old_flags, 64).is_ok()
-        && push_val(old_cs, 64).is_ok()
-        && push_val(old_rip, 64).is_ok();
-    if ok {
-        if let Some(code) = error_code {
-            ok = push_val(code as u32 as u64, 64).is_ok();
+    let new_rsp = if ist != 0 {
+        match read_system(tr_base() + 36 + 8 * (ist - 1), 64) {
+            Ok(v) => v,
+            Err(()) => return,
+        }
+    }
+    else if new_cpl < old_cpl {
+        match read_system(tr_base() + 4 + 8 * new_cpl as u64, 64) {
+            Ok(v) => v,
+            Err(()) => return,
+        }
+    }
+    else {
+        old_rsp
+    } & !0xF;
+
+    // the frame is written with the privilege of the new code segment
+    *cpl = new_cpl;
+    let mut frame = [old_ss, old_rsp, old_flags, old_cs, old_rip, 0].to_vec();
+    if let Some(code) = error_code {
+        frame[5] = code as u32 as u64;
+    }
+    else {
+        frame.pop();
+    }
+    let mut sp = new_rsp;
+    let mut ok = true;
+    for v in frame.iter() {
+        sp = sp.wrapping_sub(8);
+        if mem_write(sp, 64, *v).is_err() {
+            ok = false;
+            break;
         }
     }
     if !ok {
-        set_r64(RSP, old_rsp);
+        *cpl = old_cpl;
         return;
+    }
+    set_r64(RSP, sp);
+    if new_cpl != old_cpl {
+        load_fast_ss(new_cpl as i32, new_cpl);
+        cpl_changed();
     }
 
     if gate_type == 0xE {
         *flags &= !FLAG_INTERRUPT;
     }
     *flags &= !(FLAG_TRAP | FLAG_NT | FLAG_RF | FLAG_VM);
+    *flags_changed = 0;
     let _ = load_cs_64(selector, target);
 }
 
@@ -1610,22 +1729,38 @@ unsafe fn load_cs_64(selector: i32, new_rip: u64) -> OrPageFault<()> {
 
 unsafe fn iretq(p: &Prefixes) -> OrPageFault<()> {
     let bits = if p.w() { 64 } else if p.osz16 { 16 } else { 32 };
+    let step = bits as u64 / 8;
     let sp = r64(RSP);
     let new_rip = mem_read(sp, bits)?;
-    let new_cs = mem_read(sp + bits as u64 / 8, bits)? as i32 & 0xFFFF;
-    let new_flags = mem_read(sp + 2 * (bits as u64 / 8), bits)?;
+    let new_cs = mem_read(sp + step, bits)? as i32 & 0xFFFF;
+    let new_flags = mem_read(sp + 2 * step, bits)?;
     // in 64-bit mode ss:rsp are always popped
-    let new_rsp = mem_read(sp + 3 * (bits as u64 / 8), bits)?;
-    let new_ss = mem_read(sp + 4 * (bits as u64 / 8), bits)? as i32 & 0xFFFF;
-    if new_cs & 3 != *cpl as i32 {
-        panic!("Unimplemented: iretq to a different privilege level");
-    }
-    load_cs_64(new_cs, new_rip)?;
-    update_eflags(new_flags as i32);
-    set_r64(RSP, new_rsp);
-    if !switch_seg(SS, new_ss) {
+    let new_rsp = mem_read(sp + 3 * step, bits)?;
+    let new_ss = mem_read(sp + 4 * step, bits)? as i32 & 0xFFFF;
+    let new_cpl = (new_cs & 3) as u8;
+    if new_cpl < *cpl {
+        trigger_gp(new_cs & !3);
         return Err(());
     }
+    let old_cpl = *cpl;
+    // eflags are restored with the privilege of the code executing iret
+    update_eflags(new_flags as i32);
+    *cpl = new_cpl;
+    if new_cpl != old_cpl {
+        cpl_changed();
+    }
+    if let Err(()) = load_cs_64(new_cs, new_rip) {
+        *cpl = old_cpl;
+        return Err(());
+    }
+    if new_ss & !3 == 0 && new_cpl != 3 {
+        load_fast_ss(new_ss, new_cpl);
+    }
+    else if !switch_seg(SS, new_ss) {
+        *cpl = old_cpl;
+        return Err(());
+    }
+    set_r64(RSP, new_rsp);
     Ok(())
 }
 

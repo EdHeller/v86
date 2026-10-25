@@ -306,6 +306,10 @@ pub unsafe fn write_system8(addr: u64, v: u8) -> OrPageFault<()> {
     Ok(())
 }
 
+static mut LAST_DESCRIPTOR_ADDRESS: u64 = 0;
+pub unsafe fn set_last_descriptor_address(a: u64) { LAST_DESCRIPTOR_ADDRESS = a; }
+pub unsafe fn last_descriptor_address() -> u64 { LAST_DESCRIPTOR_ADDRESS }
+
 // ---------------------------------------------------------------------------------------------
 // instruction fetch
 
@@ -342,40 +346,70 @@ pub unsafe fn fetch64() -> OrPageFault<u64> { Ok(fetch32()? | fetch32()? << 32) 
 // window into the shared tlb for 32-bit instruction implementations
 
 const WINDOW_PAGE: i32 = 0xFFFF8;
+static mut WINDOW_ACTIVE: bool = false;
+static mut WINDOW_TARGET: u64 = 0;
 
-unsafe fn window_install(index: i32, phys: u32, writable: bool) {
-    let page = WINDOW_PAGE + index;
-    let high = phys & !0xFFF;
-    let mapped = memory::in_mapped_range(high);
-    let has_code = !mapped && jit::jit_page_has_code(Page::page_of(high));
-    let info = TLB_VALID
-        | if writable { 0 } else { TLB_READONLY }
-        | if mapped { TLB_IN_MAPPED_RANGE } else { 0 }
-        | if has_code { TLB_HAS_CODE } else { 0 };
-    tlb_data[page as usize] = (high.wrapping_add(memory::mem8 as u32)) as i32 ^ page << 12 | info;
+fn window_entry(page: i32, phys: u32, writable: bool) -> i32 {
+    unsafe {
+        let high = phys & !0xFFF;
+        let mapped = memory::in_mapped_range(high);
+        let has_code = !mapped && jit::jit_page_has_code(Page::page_of(high));
+        let info = TLB_VALID
+            | if writable { 0 } else { TLB_READONLY }
+            | if mapped { TLB_IN_MAPPED_RANGE } else { 0 }
+            | if has_code { TLB_HAS_CODE } else { 0 };
+        (high.wrapping_add(memory::mem8 as u32)) as i32 ^ page << 12 | info
+    }
 }
 
 /// Returns a 32-bit address through which the operand at `addr` can be accessed by instruction
-/// implementations that use the shared tlb. The window is valid until `window_close`.
+/// implementations that use the shared tlb. The two pages of the window are not mapped upfront:
+/// when such an instruction misses in the tlb, `window_walk` (called from the 32-bit page walker)
+/// translates the real 64-bit address with the right access type. The window is valid until
+/// `window_close`.
 pub unsafe fn window(addr: u64) -> OrPageFault<i32> {
     check_canonical(addr, 1)?;
-    let user = *cpl == 3;
-    // Map the operand writable if the page allows it. The accessed/dirty bits are set as if it
-    // was written, because it is not known whether the instruction stores to it.
-    let writable = probe(addr, true, user).is_some();
-    let first = translate(addr, writable, user, false)?;
-    window_install(0, first, writable);
-    let next = (addr & !0xFFF).wrapping_add(0x1000);
-    if (addr & 0xFFF) > 0xF00 {
-        // the operand may extend into the next page
-        if let Some(p) = probe(next, false, user) {
-            window_install(1, p, probe(next, true, user).is_some());
-        }
-    }
+    WINDOW_TARGET = addr & !0xFFF;
+    WINDOW_ACTIVE = true;
+    tlb_data[WINDOW_PAGE as usize] = 0;
+    tlb_data[WINDOW_PAGE as usize + 1] = 0;
     Ok((WINDOW_PAGE << 12) | (addr & 0xFFF) as i32)
 }
 
 pub unsafe fn window_close() {
+    WINDOW_ACTIVE = false;
     tlb_data[WINDOW_PAGE as usize] = 0;
     tlb_data[WINDOW_PAGE as usize + 1] = 0;
+}
+
+/// Hook for the 32-bit page walker: resolves tlb misses inside the window
+pub unsafe fn window_walk(
+    addr: i32,
+    for_writing: bool,
+    user: bool,
+    fetch: bool,
+    side_effects: bool,
+) -> Option<OrPageFault<std::num::NonZeroI32>> {
+    let page = (addr as u32 >> 12) as i32;
+    if !WINDOW_ACTIVE || page != WINDOW_PAGE && page != WINDOW_PAGE + 1 {
+        return None;
+    }
+    let target = WINDOW_TARGET + (page - WINDOW_PAGE) as u64 * 0x1000 + (addr & 0xFFF) as u64;
+    let phys = if side_effects {
+        match translate(target, for_writing, user, fetch) {
+            Ok(p) => p,
+            Err(()) => return Some(Err(())),
+        }
+    }
+    else {
+        match probe(target, for_writing, user) {
+            Some(p) => p,
+            None => return Some(Err(())),
+        }
+    };
+    let entry = window_entry(page, phys, for_writing);
+    if side_effects {
+        tlb_data[page as usize] = entry;
+    }
+    Some(Ok(std::num::NonZeroI32::new(entry).unwrap()))
 }

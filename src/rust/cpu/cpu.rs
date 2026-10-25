@@ -2084,6 +2084,18 @@ pub unsafe fn do_page_walk(
     side_effects: bool,
     is_instruction_fetch: bool,
 ) -> OrPageFault<std::num::NonZeroI32> {
+    if *efer & EFER_LMA != 0 {
+        if let Some(result) = super::long_mem::window_walk(
+            addr,
+            for_writing,
+            user,
+            is_instruction_fetch,
+            side_effects,
+        ) {
+            return result;
+        }
+    }
+
     let global;
     let mut allow_user = true;
     let page = (addr as u32 >> 12) as i32;
@@ -2696,6 +2708,19 @@ pub unsafe fn is_asize_32() -> bool {
     return *is_32 != (*prefixes & prefix::PREFIX_MASK_ADDRSIZE == prefix::PREFIX_MASK_ADDRSIZE);
 }
 
+/// Writes the access byte of the descriptor returned by the last `lookup_segment_selector`
+pub unsafe fn write_descriptor_access_byte(descriptor_address: i32, value: i32) {
+    if *efer & EFER_LMA != 0 && super::long_mem::last_descriptor_address() as i32 == descriptor_address {
+        let _ = super::long_mem::write_system8(super::long_mem::last_descriptor_address() + 5, value as u8);
+    }
+    else {
+        memory::write8(
+            translate_address_system_write(descriptor_address + 5).unwrap(),
+            value,
+        );
+    }
+}
+
 pub unsafe fn lookup_segment_selector(
     selector: SegmentSelector,
 ) -> OrPageFault<Result<(SegmentDescriptor, i32), SelectorNullOrInvalid>> {
@@ -2722,6 +2747,15 @@ pub unsafe fn lookup_segment_selector(
             table_limit
         );
         return Ok(Err(SelectorNullOrInvalid::OutsideOfTableLimit));
+    }
+
+    if *efer & EFER_LMA != 0 && selector.is_gdt() {
+        // the gdt can be anywhere in the 64-bit address space
+        let vaddr = ((*gdtr_hi as u32 as u64) << 32 | table_offset as u64)
+            + selector.descriptor_offset() as u64;
+        let descriptor = SegmentDescriptor::of_u64(super::long_mem::read_system(vaddr, 64)?);
+        super::long_mem::set_last_descriptor_address(vaddr);
+        return Ok(Ok((descriptor, vaddr as i32)));
     }
 
     let descriptor_address = selector.descriptor_offset() as i32 + table_offset as i32;
@@ -2855,10 +2889,7 @@ pub unsafe fn switch_seg(reg: i32, selector_raw: i32) -> bool {
     if !descriptor.accessed() {
         descriptor = descriptor.set_accessed();
 
-        memory::write8(
-            translate_address_system_write(descriptor_address + 5).unwrap(),
-            descriptor.access_byte() as i32,
-        );
+        write_descriptor_access_byte(descriptor_address, descriptor.access_byte() as i32);
     }
 
     *segment_is_null.offset(reg as isize) = false;
@@ -2920,10 +2951,7 @@ pub unsafe fn load_tr(selector: i32) {
     *sreg.offset(TR as isize) = selector.raw;
 
     // Mark task as busy
-    memory::write8(
-        translate_address_system_write(descriptor_address + 5).unwrap(),
-        descriptor.set_busy().access_byte() as i32,
-    );
+    write_descriptor_access_byte(descriptor_address, descriptor.set_busy().access_byte() as i32);
 }
 
 pub unsafe fn load_ldt(selector: i32) -> OrPageFault<()> {
@@ -3112,6 +3140,9 @@ pub unsafe fn update_cs_mode(d: &SegmentDescriptor) {
 
 #[inline(never)]
 pub unsafe fn test_privileges_for_io(port: i32, size: i32) -> bool {
+    if *efer & EFER_LMA != 0 {
+        return super::long_mode::test_privileges_for_io_64(port, size);
+    }
     if *protected_mode && (*cpl > getiopl() as u8 || (*flags & FLAG_VM != 0)) {
         if !*tss_size_32 {
             dbg_log!("#GP for port io, 16-bit TSS  port={:x} size={}", port, size);
@@ -4854,6 +4885,9 @@ pub unsafe fn reset_cpu() {
     *kernel_gs_base = 0;
     *cr2_hi = 0;
     *cr8_tpr = 0;
+    *gdtr_hi = 0;
+    *idtr_hi = 0;
+    *tr_base_hi = 0;
 
     *last_virt_eip = -1;
 
