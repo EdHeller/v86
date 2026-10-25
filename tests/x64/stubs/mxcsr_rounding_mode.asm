@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: MXCSR.RC rounding control is honoured by cvtss2si/cvtps2dq/cvtsd2si (cpu.rs: "Unimplemented MXCSR rounding mode")
 %include "inc/real.inc"
 

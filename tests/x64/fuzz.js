@@ -97,8 +97,8 @@ function sext32(v) { return v & 0x80000000n ? v - 0x100000000n : v; }
 // flags are not compared; `sets` lists registers whose value is undefined and must not be compared)
 const XMM = n => "xmm" + n;
 const xr = () => XMM(rint(16));
-const xsrc = () => rint(4) === 0 ? memAligned() : xr();
-const memAligned = () => `[rel scratch + ${rint(2) * 16}]`;
+const xsrc = () => rint(4) === 0 ? mem_aligned() : xr();
+const mem_aligned = () => `[rel scratch + ${rint(2) * 16}]`;
 const CC = ["o", "no", "b", "ae", "e", "ne", "be", "a", "s", "ns", "p", "np", "l", "ge", "le", "g"];
 
 const sse_int_ops = ["pand", "pandn", "por", "pxor", "paddb", "paddw", "paddd", "paddq", "psubb", "psubw", "psubd", "psubq",
@@ -146,7 +146,7 @@ const families = {
         const mem = rint(4) === 0;
         // pmovsx / pmovzx read a partial operand from memory
         const PMOV = { bw: "qword", bd: "dword", bq: "word", wd: "qword", wq: "dword", dq: "qword" };
-        const operand = !mem ? xr() : /pmov/.test(op) ? `${PMOV[op.slice(-2)]} [rel scratch + 8]` : memAligned();
+        const operand = !mem ? xr() : /pmov/.test(op) ? `${PMOV[op.slice(-2)]} [rel scratch + 8]` : mem_aligned();
         return { asm: `${op} ${xr()}, ${operand}`, mask: 0, xmm: true };
     },
     sse41_blend() {
@@ -162,7 +162,7 @@ const families = {
         const ops = ["add", "sub", "mul", "div", "min", "max"];
         const op = pick(ops);
         const suffix = scalar ? (kind === "ps" ? "ss" : "sd") : kind;
-        const src = rint(4) === 0 ? (scalar ? `${kind === "ps" ? "dword" : "qword"} [rel scratch + 8]` : memAligned()) : xr();
+        const src = rint(4) === 0 ? (scalar ? `${kind === "ps" ? "dword" : "qword"} [rel scratch + 8]` : mem_aligned()) : xr();
         return { asm: `${op}${suffix} ${xr()}, ${src}`, mask: 0, xmm: true, floats: kind };
     },
     sse_fp2() {
