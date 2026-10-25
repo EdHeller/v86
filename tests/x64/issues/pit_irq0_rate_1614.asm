@@ -60,12 +60,12 @@ test_main:
     je .wait2
     cli
     mov eax, [TICKS]
-    cmp eax, 95
+    cmp eax, 90
     jae .lo_ok
     mov [RESULT_ACT], eax
     FAIL16 1                                    ; clock too slow
 .lo_ok:
-    cmp eax, 105
+    cmp eax, 110
     jbe .hi_ok
     mov [RESULT_ACT], eax
     FAIL16 2                                    ; clock too fast

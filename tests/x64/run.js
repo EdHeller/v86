@@ -41,7 +41,7 @@ function find_tests(dir, out = [])
     for(const e of fs.readdirSync(dir, { withFileTypes: true }))
     {
         const p = path.join(dir, e.name);
-        if(e.isDirectory()) { if(e.name !== "inc" && e.name !== "build") find_tests(p, out); }
+        if(e.isDirectory()) { if(e.name !== "inc" && e.name !== "build" && e.name !== "manual") find_tests(p, out); }
         else if(e.name.endsWith(".asm") || e.name.endsWith(".js") && (dir.includes("issues") || dir.includes("/js"))) out.push(p);
     }
     return out.sort();
