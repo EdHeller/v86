@@ -8,6 +8,8 @@ following list is roughtly sorted from most interesting/useful to least.
 - [kvm-unit-test](kvm-unit-test/): Based on tests from the KVM project, tests
   various CPU features.
 - [full](full/): Starts several OSes and checks if they boot correctly.
+- [x64](x64/): Tests for stubbed-out instructions, open issues and the planned
+  x86_64 (long mode) support. Known failures are marked `xfail`.
 - [jit-paging](jit-paging/): Tests jit and paging interaction.
 - [api](api/): Tests for several API functions of v86.
 - [devices](devices/): Device tests.
