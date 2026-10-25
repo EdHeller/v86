@@ -630,6 +630,10 @@ unsafe fn exec() -> OrPageFault<()> {
             if !switch_seg(reg, sel) {
                 return Err(());
             }
+            if reg == SS {
+                // interrupts are inhibited until the next instruction has completed
+                interrupt_shadow = true;
+            }
             if (reg == FS || reg == GS) && sel & 0xFFFC != 0 {
                 // the 64-bit base is replaced by the (32-bit) base of the descriptor
                 let base = *segment_offsets.offset(reg as isize) as u32 as u64;

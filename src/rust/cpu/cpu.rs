@@ -3268,7 +3268,56 @@ pub unsafe fn run_instruction(opcode: i32) { gen::interpreter::run(opcode as u32
 pub unsafe fn run_instruction0f_16(opcode: i32) { gen::interpreter0f::run(opcode as u32) }
 pub unsafe fn run_instruction0f_32(opcode: i32) { gen::interpreter0f::run(opcode as u32 | 0x100) }
 
+/// Set by instructions that inhibit interrupts until the instruction after them has completed
+/// (mov ss, pop ss)
+pub static mut interrupt_shadow: bool = false;
+
+/// Executes exactly one instruction, bypassing the jit
+unsafe fn single_step_one() {
+    *previous_ip = *instruction_pointer;
+    if *is_64 {
+        super::long_mode::step64();
+    }
+    else {
+        let phys_addr = return_on_pagefault!(get_phys_eip());
+        *prefixes = 0;
+        let opcode = *memory::mem8.offset(phys_addr as isize) as i32;
+        *instruction_pointer += 1;
+        *instruction_counter += 1;
+        run_instruction(opcode | (*is_32 as i32) << 8);
+        *prefixes = 0;
+    }
+}
+
+/// Executes one instruction and raises the single-step trap (#DB) afterwards. Used while
+/// EFLAGS.TF is set.
+unsafe fn single_step_cycle() {
+    single_step_one();
+    // the trap flag is cleared when an exception or interrupt was delivered by the instruction
+    if *flags & FLAG_TRAP != 0 {
+        *dreg.offset(6) |= 1 << 14; // DR6.BS
+        call_interrupt_vector(CPU_EXCEPTION_DB, false, None);
+    }
+}
+
 pub unsafe fn cycle_internal() {
+    if interrupt_shadow {
+        // the instruction after mov ss / pop ss runs before any interrupt is taken
+        interrupt_shadow = false;
+        if *flags & FLAG_TRAP != 0 {
+            single_step_cycle();
+        }
+        else {
+            single_step_one();
+        }
+        return;
+    }
+
+    if *flags & FLAG_TRAP != 0 {
+        single_step_cycle();
+        return;
+    }
+
     if *is_64 {
         // 64-bit code is never jitted
         super::long_mode::step64();
@@ -3462,6 +3511,17 @@ unsafe fn jit_run_interpreted(mut phys_addr: u32) {
         dbg_assert!(*prefixes == 0);
         run_instruction(opcode | (*is_32 as i32) << 8);
         dbg_assert!(*prefixes == 0);
+
+        if *flags & FLAG_TRAP != 0 {
+            // single stepping starts with the next cycle
+            jit_block_boundary = true;
+        }
+
+        if !*is_32 && *instruction_pointer - get_seg_cs() >= 0x10000 {
+            // the instruction pointer of 16-bit code wraps around at 64k
+            *instruction_pointer -= 0x10000;
+            jit_block_boundary = true;
+        }
 
         if jit_block_boundary
             || Page::page_of(start_eip as u32) != Page::page_of(*instruction_pointer as u32)
@@ -4646,10 +4706,6 @@ pub unsafe fn update_eflags(new_flags: i32) {
     *flags = (new_flags ^ (*flags ^ new_flags) & dont_update) & clear | FLAGS_DEFAULT;
     *flags_changed = 0;
 
-    if *flags & FLAG_TRAP != 0 {
-        dbg_log!("Not supported: trap flag");
-    }
-    *flags &= !FLAG_TRAP;
 }
 
 #[no_mangle]
@@ -4713,7 +4769,7 @@ pub unsafe fn store_current_tsc() { *current_tsc = read_tsc(); }
 
 #[no_mangle]
 pub unsafe fn handle_irqs() {
-    if *flags & FLAG_INTERRUPT != 0 {
+    if *flags & FLAG_INTERRUPT != 0 && !interrupt_shadow {
         if let Some(irq) = pic::pic_acknowledge_irq() {
             pic_call_irq(irq)
         }
@@ -4862,6 +4918,9 @@ pub unsafe fn reset_cpu() {
     *dreg.offset(6) = 0xFFFF0FF0u32 as i32;
     *dreg.offset(7) = 0x400;
     *cpl = 0;
+
+    // the local apic is globally enabled at reset
+    *apic_enabled = true;
 
     *is_32 = false;
     *is_64 = false;

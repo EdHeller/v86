@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; ISSUE: copy/v86#103, copy/v86#161
 ; DESC: EFLAGS.TF single stepping: a #DB (int 1) trap is taken after each instruction
 %include "inc/real.inc"

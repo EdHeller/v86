@@ -1366,7 +1366,7 @@ pub unsafe fn instr_0F32() {
         IA32_PLATFORM_ID => {},
         IA32_APIC_BASE => {
             if *acpi_enabled {
-                low = APIC_MEM_ADDRESS as i32;
+                low = APIC_MEM_ADDRESS as i32 | IA32_APIC_BASE_BSP;
                 if *apic_enabled {
                     low |= IA32_APIC_BASE_EN
                 }

@@ -58,6 +58,7 @@ function parse_header(source)
         issue: get("ISSUE", ""),
         desc: get("DESC", ""),
         native: get("NATIVE", "no").toLowerCase().startsWith("yes"),
+        v86_options: get("V86", ""),
         serial: get("SERIAL", "no").toLowerCase().startsWith("yes"),
         qemu_xfail: get("QEMU", "pass").toLowerCase().startsWith("xfail"),
     };
@@ -118,7 +119,7 @@ async function run_one(file)
             try
             {
                 const { stdout } = await exec(process.execPath,
-                    [path.join(__dirname, "worker.js"), base + ".bin"],
+                    [path.join(__dirname, "worker.js"), base + ".bin", meta.v86_options || "{}"],
                     { timeout: 30000, maxBuffer: 1 << 24 });
                 const res = JSON.parse(stdout.trim().split("\n").pop());
                 r.passed = res.status === "pass";

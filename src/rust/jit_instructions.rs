@@ -3,7 +3,7 @@
 use crate::codegen;
 use crate::codegen::{BitSize, ConditionNegate};
 use crate::cpu::cpu::{
-    FLAGS_ALL, FLAGS_DEFAULT, FLAGS_MASK, FLAG_ADJUST, FLAG_CARRY, FLAG_DIRECTION, FLAG_INTERRUPT,
+    FLAGS_ALL, FLAGS_DEFAULT, FLAGS_MASK, FLAG_ADJUST, FLAG_CARRY, FLAG_DIRECTION, FLAG_INTERRUPT, FLAG_TRAP,
     FLAG_IOPL, FLAG_OVERFLOW, FLAG_SUB, FLAG_VM, FLAG_ZERO, OPSIZE_16, OPSIZE_32, OPSIZE_8,
 };
 use crate::cpu::global_pointers;
@@ -4565,6 +4565,20 @@ fn gen_popf(ctx: &mut JitContext, is_32: bool) {
         codegen::gen_move_registers_from_locals_to_memory(ctx);
         codegen::gen_fn0_const(ctx.builder, "handle_irqs");
 
+        codegen::gen_update_instruction_counter(ctx);
+        ctx.builder.return_();
+    }
+    ctx.builder.block_end();
+
+    // the trap flag takes effect after the next instruction, which needs to be single stepped
+    codegen::gen_get_flags(ctx.builder);
+    ctx.builder.const_i32(FLAG_TRAP);
+    ctx.builder.and_i32();
+    ctx.builder.if_void();
+    {
+        codegen::gen_set_eip_to_after_current_instruction(ctx);
+        codegen::gen_debug_track_jit_exit(ctx.builder, ctx.start_of_current_instruction);
+        codegen::gen_move_registers_from_locals_to_memory(ctx);
         codegen::gen_update_instruction_counter(ctx);
         ctx.builder.return_();
     }

@@ -1,5 +1,6 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; ISSUE: copy/v86#247
+; V86: {"acpi": true}
 ; DESC: local APIC: CPUID.1:EDX.APIC, IA32_APIC_BASE, MMIO id/version/TPR/spurious-vector registers at 0xFEE00000
 %include "inc/pm32.inc"
 

@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; ISSUE: copy/v86#1253
 ; DESC: 16-bit instruction pointer wraps from 0xffff to 0 inside the code segment
 %include "inc/real.inc"

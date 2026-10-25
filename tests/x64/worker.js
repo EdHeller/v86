@@ -4,7 +4,7 @@
 // A JS exception or wasm trap (e.g. a dbg_assert in the debug build) makes the
 // process exit non-zero without printing JSON; run.js reports that as a crash.
 //
-// usage: worker.js <test.bin>
+// usage: worker.js <test.bin> [json with extra V86 options]
 
 import fs from "node:fs";
 import url from "node:url";
@@ -27,6 +27,7 @@ const emulator = new V86({
     memory_size: 32 * 1024 * 1024,
     disable_jit: +process.env.DISABLE_JIT,
     log_level: 0,
+    ...JSON.parse(process.argv[3] || "{}"),
 });
 
 let done = false;

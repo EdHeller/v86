@@ -177,6 +177,7 @@ pub unsafe fn instr16_17() {
         return;
     }
     adjust_stack_reg(2);
+    interrupt_shadow = true;
 }
 #[no_mangle]
 pub unsafe fn instr32_17() {
@@ -187,6 +188,7 @@ pub unsafe fn instr32_17() {
         return;
     }
     adjust_stack_reg(4);
+    interrupt_shadow = true;
 }
 
 pub unsafe fn instr_18_mem(addr: i32, r: i32) { safe_read_write8(addr, &|x| sbb8(x, read_reg8(r))) }
@@ -934,6 +936,9 @@ pub unsafe fn instr_8E_mem(addr: i32, r: i32) {
         if !switch_seg(r, return_on_pagefault!(safe_read16(addr))) {
             return;
         }
+        if r == SS {
+            interrupt_shadow = true;
+        }
     }
     else {
         dbg_log!("mov sreg #ud");
@@ -943,7 +948,9 @@ pub unsafe fn instr_8E_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_8E_reg(r1: i32, r: i32) {
     if r == ES || r == SS || r == DS || r == FS || r == GS {
-        switch_seg(r, read_reg16(r1));
+        if switch_seg(r, read_reg16(r1)) && r == SS {
+            interrupt_shadow = true;
+        }
     }
     else {
         dbg_log!("mov sreg #ud");

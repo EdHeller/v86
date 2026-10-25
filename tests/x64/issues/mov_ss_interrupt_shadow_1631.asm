@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; ISSUE: copy/v86#1631
 ; DESC: no interrupt is taken between MOV SS and the following instruction
 ; Statistical: PIT channel 0 fires IRQ0 thousands of times while the main loop
