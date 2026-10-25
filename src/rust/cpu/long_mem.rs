@@ -313,8 +313,11 @@ pub unsafe fn last_descriptor_address() -> u64 { LAST_DESCRIPTOR_ADDRESS }
 // ---------------------------------------------------------------------------------------------
 // instruction fetch
 
+#[inline(always)]
 unsafe fn fetch_byte() -> OrPageFault<u8> {
-    let r = rip();
+    let lo = *instruction_pointer as u32;
+    let hi = *rip_hi as u32;
+    let r = (hi as u64) << 32 | lo as u64;
     let user = *cpl == 3;
     if r >> 12 != FETCH_VPN || user != FETCH_USER {
         if !is_canonical(r) {
@@ -326,17 +329,24 @@ unsafe fn fetch_byte() -> OrPageFault<u8> {
         FETCH_PHYS = phys & !0xFFF;
         FETCH_USER = user;
     }
-    let phys = FETCH_PHYS | (r & 0xFFF) as u32;
+    let phys = FETCH_PHYS | (lo & 0xFFF);
     dbg_assert!(!memory::in_mapped_range(phys), "code in mapped memory");
     let b = *memory::mem8.offset(phys as isize);
-    let (low, carry) = (*instruction_pointer as u32).overflowing_add(1);
-    *instruction_pointer = low as i32;
-    if carry {
-        *rip_hi = (*rip_hi).wrapping_add(1);
+    if lo & 0xFFF != 0xFFF {
+        // cannot carry into the upper half
+        *instruction_pointer = lo.wrapping_add(1) as i32;
+    }
+    else {
+        let (low, carry) = lo.overflowing_add(1);
+        *instruction_pointer = low as i32;
+        if carry {
+            *rip_hi = (*rip_hi).wrapping_add(1);
+        }
     }
     Ok(b)
 }
 
+#[inline(always)]
 pub unsafe fn fetch8() -> OrPageFault<u64> { Ok(fetch_byte()? as u64) }
 pub unsafe fn fetch16() -> OrPageFault<u64> { Ok(fetch8()? | fetch8()? << 8) }
 pub unsafe fn fetch32() -> OrPageFault<u64> { Ok(fetch16()? | fetch16()? << 16) }

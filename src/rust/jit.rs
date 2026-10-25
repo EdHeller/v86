@@ -1033,6 +1033,7 @@ fn jit_analyze_and_generate(
             entry_points: Vec::new(),
             hidden_wasm_table_indices: Vec::new(),
         });
+        maybe_has_code_set(p);
         ctx.entry_points
             .entry(p)
             .or_insert_with(|| (0, HashSet::new()));
@@ -2164,6 +2165,7 @@ pub fn jit_increase_hotness_and_maybe_compile(
     let mut ctx = get_jit_state();
     let is_compiling = ctx.compiling.is_some();
     let page = Page::page_of(phys_address);
+    maybe_has_code_set(page);
     let (hotness, entry_points) = ctx.entry_points.entry(page).or_insert_with(|| {
         cpu::tlb_set_has_code(page, true);
         profiler::stat_increment(stat::RUN_INTERPRETED_NEW_PAGE);
@@ -2238,9 +2240,26 @@ fn free_wasm_table_index(ctx: &mut JitState, wasm_table_index: WasmTableIndex) {
     jit_clear_func(wasm_table_index);
 }
 
+// One bit per 4k page of the 4 GB physical address space: set if the page may have entry points
+// or compiled code. Checked on every memory write, where it replaces two hash lookups.
+static mut MAYBE_HAS_CODE: [u64; 1 << 14] = [0; 1 << 14];
+
+fn maybe_has_code_set(page: Page) {
+    let i = page.to_u32() as usize;
+    unsafe { MAYBE_HAS_CODE[i >> 6] |= 1 << (i & 63) };
+}
+fn maybe_has_code_clear(page: Page) {
+    let i = page.to_u32() as usize;
+    unsafe { MAYBE_HAS_CODE[i >> 6] &= !(1 << (i & 63)) };
+}
+fn maybe_has_code(page: Page) -> bool {
+    let i = page.to_u32() as usize;
+    unsafe { MAYBE_HAS_CODE[i >> 6] >> (i & 63) & 1 != 0 }
+}
+
 /// Register a write in this page: Delete all present code
 fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
-    if ctx.pages.is_empty() && ctx.entry_points.is_empty() {
+    if !maybe_has_code(page) {
         return;
     }
     let mut did_have_code = false;
@@ -2336,6 +2355,8 @@ fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
     check_jit_state_invariants(ctx);
 
     dbg_assert!(!jit_page_has_code_ctx(ctx, page));
+
+    maybe_has_code_clear(page);
 
     if did_have_code {
         cpu::tlb_set_has_code(page, false);

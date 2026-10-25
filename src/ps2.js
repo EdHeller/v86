@@ -70,6 +70,9 @@ PS2.prototype.reset = function()
     /** @type {boolean} */
     this.have_mouse = true;
 
+    /** @type {boolean} */
+    this.mouse_flush_scheduled = false;
+
     /** @type {number} */
     this.mouse_delta_x = 0;
     /** @type {number} */
@@ -313,25 +316,48 @@ PS2.prototype.mouse_send_delta = function(delta_x, delta_y)
     this.mouse_delta_x += delta_x * factor;
     this.mouse_delta_y += delta_y * factor;
 
-    if(this.mouse_stream_active())
+    this.flush_mouse_delta();
+};
+
+/**
+ * Sends the accumulated movement as packets. A packet can hold -255..255 per axis, and a guest
+ * that is slow to handle interrupts (an interpreter) must not get a backlog of stale packets that
+ * make the pointer lag behind, so at most a few packets are queued; the rest of the movement stays
+ * accumulated and is sent when the guest has caught up.
+ */
+PS2.prototype.flush_mouse_delta = function()
+{
+    if(!this.mouse_stream_active())
     {
-        var change_x = this.mouse_delta_x | 0,
-            change_y = this.mouse_delta_y | 0;
+        return;
+    }
 
-        if(change_x || change_y)
+    const MAX_QUEUED_BYTES = 12;
+
+    while(this.mouse_buffer.length < MAX_QUEUED_BYTES)
+    {
+        const change_x = Math.max(-255, Math.min(255, this.mouse_delta_x | 0));
+        const change_y = Math.max(-255, Math.min(255, this.mouse_delta_y | 0));
+
+        if(!change_x && !change_y)
         {
-            //var now = Date.now();
-            //if(now - this.last_mouse_packet < 1000 / this.sample_rate)
-            //{
-            //    // TODO: set timeout
-            //    return;
-            //}
-
-            this.mouse_delta_x -= change_x;
-            this.mouse_delta_y -= change_y;
-
-            this.send_mouse_packet(change_x, change_y);
+            return;
         }
+
+        this.mouse_delta_x -= change_x;
+        this.mouse_delta_y -= change_y;
+
+        this.send_mouse_packet(change_x, change_y);
+    }
+
+    if(!this.mouse_flush_scheduled)
+    {
+        this.mouse_flush_scheduled = true;
+        setTimeout(() =>
+        {
+            this.mouse_flush_scheduled = false;
+            this.flush_mouse_delta();
+        }, 10);
     }
 };
 
