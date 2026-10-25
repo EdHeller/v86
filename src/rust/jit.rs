@@ -16,7 +16,7 @@ use crate::cpu::memory;
 use crate::cpu_context::CpuContext;
 use crate::jit_instructions;
 use crate::opstats;
-use crate::page::Page;
+use crate::page::{Page, PageBuildHasher};
 use crate::profiler;
 use crate::profiler::stat;
 use crate::state_flags::CachedStateFlags;
@@ -122,7 +122,7 @@ struct PageInfo {
 }
 
 enum CompilingPageState {
-    Compiling { pages: HashMap<Page, PageInfo> },
+    Compiling { pages: HashMap<Page, PageInfo, PageBuildHasher> },
     CompilingWritten,
 }
 
@@ -133,8 +133,8 @@ struct JitState {
     // (faster, but uses much more memory)
     // or a compressed bitmap (likely faster)
     // or HashSet<u32> rather than nested
-    entry_points: HashMap<Page, (u32, HashSet<u16>)>,
-    pages: HashMap<Page, PageInfo>,
+    entry_points: HashMap<Page, (u32, HashSet<u16>), PageBuildHasher>,
+    pages: HashMap<Page, PageInfo, PageBuildHasher>,
     wasm_table_index_free_list: Vec<WasmTableIndex>,
     compiling: Option<(WasmTableIndex, CompilingPageState)>,
     #[cfg(debug_assertions)]
@@ -219,8 +219,8 @@ impl JitState {
         JitState {
             wasm_builder: WasmBuilder::new(),
 
-            entry_points: HashMap::new(),
-            pages: HashMap::new(),
+            entry_points: HashMap::default(),
+            pages: HashMap::default(),
 
             wasm_table_index_free_list: Vec::from_iter(wasm_table_indices),
             compiling: None,
@@ -1025,7 +1025,7 @@ fn jit_analyze_and_generate(
     );
     dbg_assert!(!entries.is_empty());
 
-    let mut page_info = HashMap::new();
+    let mut page_info = HashMap::default();
     for &p in &pages {
         page_info.entry(p).or_insert_with(|| PageInfo {
             wasm_table_index,
@@ -2240,6 +2240,9 @@ fn free_wasm_table_index(ctx: &mut JitState, wasm_table_index: WasmTableIndex) {
 
 /// Register a write in this page: Delete all present code
 fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
+    if ctx.pages.is_empty() && ctx.entry_points.is_empty() {
+        return;
+    }
     let mut did_have_code = false;
 
     if let Some(PageInfo {

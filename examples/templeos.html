@@ -14,6 +14,7 @@
     <button id="start" disabled>Boot</button>
     <button id="n">send "n"</button>
     <button id="save">save state</button>
+    <button id="lock">lock mouse</button>
     <label><input type="checkbox" id="autoanswer"> answer install prompt with n</label>
 </p>
 <div id="screen_container">
@@ -57,6 +58,9 @@ document.getElementById("start").onclick = function()
 
     // every scancode that reaches the emulated keyboard controller
     emulator.bus.register("keyboard-code", code => log("kbd scancode 0x" + code.toString(16)));
+    emulator.bus.register("mouse-enable", enabled => log("guest mouse driver enabled: " + enabled));
+    emulator.bus.register("mouse-pointer-lock", locked => log("pointer lock: " + locked));
+    document.getElementById("screen_container").addEventListener("click", () => emulator.lock_mouse());
     emulator.bus.register("mouse-click", c => log("mouse buttons " + c));
 
     setInterval(() => {
@@ -86,6 +90,7 @@ function sendKey(c)
     setTimeout(() => emulator.bus.send("keyboard-code", code | 0x80), 150);
 }
 
+document.getElementById("lock").onclick = () => emulator && emulator.lock_mouse();
 document.getElementById("n").onclick = () => sendKey("n");
 document.getElementById("save").onclick = async () => {
     const state = await emulator.save_state();
