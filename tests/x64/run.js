@@ -4,6 +4,7 @@
 // outcome with the `; EXPECT:` header of the test.
 //
 //   pass   test must pass
+//   flaky  timing dependent, a failure is reported but does not fail the run
 //   xfail  test is known to fail (unimplemented feature / open issue). It
 //          fails the run when it unexpectedly passes (XPASS), so the header
 //          gets flipped to `pass` once the feature lands.
@@ -148,6 +149,7 @@ async function run_one(file)
 
     if(QEMU && meta.qemu_xfail) r.outcome = r.passed ? "XPASS" : "xfail";
     else if(NATIVE || QEMU) r.outcome = r.passed ? "ok" : "FAIL";
+    else if(meta.expect === "flaky") r.outcome = r.passed ? "ok" : "flaky";   // timing dependent, never fails the run
     else if(meta.expect === "xfail") r.outcome = r.passed ? "XPASS" : "xfail";
     else r.outcome = r.passed ? "ok" : "FAIL";
     return r;

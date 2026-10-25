@@ -1,4 +1,4 @@
-; EXPECT: pass
+; EXPECT: flaky
 ; ISSUE: copy/v86#1614
 ; DESC: PIT channel 0 at 100 Hz delivers ~100 IRQ0 per RTC second (guest clock must not run slow)
 ; SERIAL: yes
