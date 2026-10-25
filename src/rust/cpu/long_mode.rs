@@ -711,6 +711,16 @@ unsafe fn exec() -> OrPageFault<()> {
         0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB | 0xAC | 0xAD | 0xAE | 0xAF | 0x6C..=0x6F => {
             string_op(&p, opcode)?;
         },
+        0xD7 => {
+            // xlat
+            let base = r64(3).wrapping_add(r64(RAX) & 0xFF);
+            let mut addr = if p.asz32 { base & 0xFFFF_FFFF } else { base };
+            if p.seg >= 0 {
+                addr = addr.wrapping_add(seg_base(p.seg));
+            }
+            let v = mem_read(addr, 8)?;
+            set_reg(RAX, 8, true, v);
+        },
         0xA0..=0xA3 => {
             // mov al/ax/eax/rax <-> moffs
             let bits = if opcode & 1 == 0 { 8 } else { osz };

@@ -1505,7 +1505,12 @@ pub unsafe fn far_jump(eip: i32, selector: i32, is_call: bool, is_osize_32: bool
             }
         }
 
-        dbg_assert!((eip as u32) <= info.effective_limit(), "todo: #gp");
+        let is_long_cs = *efer & EFER_LMA != 0 && info.is_long();
+        if !is_long_cs && (eip as u32) > info.effective_limit() {
+            dbg_log!("#gp far jump/call beyond cs limit");
+            trigger_gp(0);
+            return;
+        }
 
         update_cs_mode(&info);
 

@@ -1736,6 +1736,13 @@ IDEInterface.prototype.atapi_handle = function()
             this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
             break;
 
+        case 0xBB: // SET CD SPEED: nothing to do for an image
+            dbg_log_extra = "set cd speed";
+            this.data_allocate(0);
+            this.data_end = this.data_length;
+            this.status_reg = ATA_SR_DRDY|ATA_SR_DSC;
+            break;
+
         case ATAPI_CMD_READ_CD:
             dbg_log_extra = "unimplemented";
             this.data_allocate(0);
