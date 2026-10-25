@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: movsxd, movzx/movsx to 64-bit, cdqe/cqo, cmovcc, setcc, xchg, xadd, cmpxchg
 %include "inc/long.inc"

@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: cmpxchg16b with REX.W, lock prefix
 %include "inc/long.inc"

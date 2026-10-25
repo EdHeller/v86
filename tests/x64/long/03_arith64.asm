@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: 64-bit add/sub/adc/sbb/neg/inc/dec with flags
 %include "inc/long.inc"

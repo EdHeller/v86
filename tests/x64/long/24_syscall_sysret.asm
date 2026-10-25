@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: syscall/sysret through STAR/LSTAR/SFMASK, CPL0 -> CPL3 -> CPL0
 %include "inc/long.inc"
 

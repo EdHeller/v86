@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: 64-bit mul/imul/div/idiv (rdx:rax)
 %include "inc/long.inc"

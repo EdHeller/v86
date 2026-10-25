@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: push/pop/call/ret/leave/enter use 8-byte stack slots; push imm32 sign extends
 %include "inc/long.inc"

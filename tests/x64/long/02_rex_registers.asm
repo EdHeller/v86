@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: REX extended registers r8-r15 and byte registers spl/bpl/sil/dil
 %include "inc/long.inc"

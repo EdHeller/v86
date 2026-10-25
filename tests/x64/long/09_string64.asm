@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: REX.W string instructions: movsq/stosq/lodsq/scasq/cmpsq with rep
 %include "inc/long.inc"

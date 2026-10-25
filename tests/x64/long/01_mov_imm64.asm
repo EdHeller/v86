@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: mov r64, imm64 (movabs), 32-bit writes zero-extend, 8/16-bit writes merge
 %include "inc/long.inc"

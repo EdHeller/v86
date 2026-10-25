@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: control registers, cr8/TPR, descriptor table instructions (10-byte sgdt/sidt), ltr/str
 %include "inc/long.inc"
 

@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: indirect/relative branches in 64-bit mode: jmp/call r64, jmp [mem], jrcxz, loop, movabs moffs
 %include "inc/long.inc"

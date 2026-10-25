@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: 64-bit shifts and rotates, shld/shrd, bt family, bsf/bsr/popcnt/bswap
 %include "inc/long.inc"

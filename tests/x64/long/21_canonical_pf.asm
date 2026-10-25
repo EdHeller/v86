@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: page faults and general protection for non-canonical addresses in long mode
 %include "inc/long.inc"
 

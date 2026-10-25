@@ -784,7 +784,11 @@ pub unsafe fn instr_0F22(r: i32, creg: i32) {
         return;
     }
 
-    let data = read_reg32(r);
+    write_cr(creg, read_reg32(r));
+}
+
+/// mov cr, r: the part of the instruction after the privilege check
+pub unsafe fn write_cr(creg: i32, data: i32) {
     // mov cr, addr
     match creg {
         0 => {
@@ -801,7 +805,7 @@ pub unsafe fn instr_0F22(r: i32, creg: i32) {
         4 => {
             dbg_log!("cr4 <- {:x}", data);
             if 0 != data as u32
-                & ((1 << 11 | 1 << 12 | 1 << 15 | 1 << 16 | 1 << 19) as u32 | 0xFFC00000)
+                & ((1 << 11 | 1 << 12 | 1 << 15 | 1 << 19) as u32 | 0xFFC00000)
             {
                 dbg_log!("trigger_gp: Invalid cr4 bit");
                 trigger_gp(0);
@@ -816,6 +820,7 @@ pub unsafe fn instr_0F22(r: i32, creg: i32) {
                 if data & CR4_PAE != 0
                     && 0 != (old_cr4 ^ data) & (CR4_PAE | CR4_PGE | CR4_PSE | CR4_SMEP)
                     && *cr.offset(0) & CR0_PG != 0
+                    && *efer & EFER_LMA == 0
                 {
                     load_pdpte(*cr.offset(3));
                 }
@@ -1198,11 +1203,18 @@ pub unsafe fn instr_0F30() {
     match index {
         MSR_EFER => {
             let value = (high as u64) << 32 | (low as u32) as u64;
-            dbg_assert!(
-                value & !EFER_NXE == 0,
-                "Unimplemented EFER bits: {:#x}",
-                value
-            );
+            // LMA is read-only, set by the cpu when paging is enabled with LME set
+            if value & !(EFER_SCE | EFER_LME | EFER_LMA | EFER_NXE) != 0 {
+                dbg_log!("#gp: wrmsr EFER with reserved bits: {:#x}", value);
+                trigger_gp(0);
+                return;
+            }
+            if (value ^ *efer) & EFER_LME != 0 && *cr & CR0_PG != 0 {
+                dbg_log!("#gp: changing EFER.LME while paging is enabled");
+                trigger_gp(0);
+                return;
+            }
+            let value = value & !EFER_LMA | *efer & EFER_LMA;
             if value != *efer {
                 full_clear_tlb();
             }
@@ -1237,10 +1249,29 @@ pub unsafe fn instr_0F30() {
             // Enable Misc. Processor Features
         },
         IA32_MCG_CAP => {}, // netbsd
-        IA32_KERNEL_GS_BASE => {
-            // Only used in 64 bit mode (by SWAPGS), but set by kvm-unit-test
-            dbg_log!("GS Base written");
+        MSR_STAR => *msr_star = (high as u32 as u64) << 32 | low as u32 as u64,
+        MSR_LSTAR | MSR_CSTAR | MSR_FS_BASE | MSR_GS_BASE | MSR_KERNEL_GS_BASE => {
+            let value = (high as u32 as u64) << 32 | low as u32 as u64;
+            if !crate::cpu::long_mode::is_canonical(value) {
+                dbg_log!("#gp: wrmsr {:x} with non-canonical address {:#x}", index, value);
+                trigger_gp(0);
+                return;
+            }
+            match index {
+                MSR_LSTAR => *msr_lstar = value,
+                MSR_CSTAR => *msr_cstar = value,
+                MSR_FS_BASE => {
+                    *fs_base = value;
+                    *segment_offsets.offset(FS as isize) = value as i32;
+                },
+                MSR_GS_BASE => {
+                    *gs_base = value;
+                    *segment_offsets.offset(GS as isize) = value as i32;
+                },
+                _ => *kernel_gs_base = value,
+            }
         },
+        MSR_SFMASK => *msr_sfmask = low as u32 as u64,
         IA32_PERFEVTSEL0 | IA32_PERFEVTSEL1 => {}, // linux/9legacy
         IA32_PMC0 | IA32_PMC1 => {},               // linux
         IA32_PAT => {
@@ -1303,6 +1334,20 @@ pub unsafe fn instr_0F32() {
             let val = *efer;
             low = val as i32;
             high = (val >> 32) as i32;
+        },
+        MSR_STAR | MSR_LSTAR | MSR_CSTAR | MSR_SFMASK | MSR_FS_BASE | MSR_GS_BASE
+        | MSR_KERNEL_GS_BASE => {
+            let v = match index {
+                MSR_STAR => *msr_star,
+                MSR_LSTAR => *msr_lstar,
+                MSR_CSTAR => *msr_cstar,
+                MSR_SFMASK => *msr_sfmask,
+                MSR_FS_BASE => *fs_base,
+                MSR_GS_BASE => *gs_base,
+                _ => *kernel_gs_base,
+            };
+            low = v as i32;
+            high = (v >> 32) as i32;
         },
         IA32_SYSENTER_CS => low = *sysenter_cs,
         IA32_SYSENTER_EIP => low = *sysenter_eip,
@@ -3279,7 +3324,7 @@ pub unsafe fn instr_0FA2() {
         1 => {
             eax = 3 | 7 << 4 | 6 << 8; // pentium3
             ebx = 1 << 16 | 8 << 8; // cpu count, clflush size
-            ecx = 1 << 0 | 1 << 23 | 1 << 30; // sse3, popcnt, rdrand
+            ecx = 1 << 0 | 1 << 13 | 1 << 23 | 1 << 30; // sse3, cx16, popcnt, rdrand
             let vme = 0 << 1;
             if config::VMWARE_HYPERVISOR_PORT {
                 ecx |= 1 << 31
@@ -3357,7 +3402,8 @@ pub unsafe fn instr_0FA2() {
             edx = (if true /* have fpu */ { 1 } else { 0 }) |      // fpu
                 vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
                 1 << 8 | 1 << 13 | 1 << 15 | 1 << 20 | // cx8, pge, cmov, nx
-                1 << 23 | 1 << 24; // mmx, fxsr
+                1 << 23 | 1 << 24 | // mmx, fxsr
+                1 << 11 | 1 << 29; // syscall, long mode
         },
 
         0x40000000 => {
@@ -3371,7 +3417,7 @@ pub unsafe fn instr_0FA2() {
         },
 
         0x80000008 => {
-            eax = 32 | 32 << 8; // physical and linear address widths
+            eax = 32 | 48 << 8; // physical and linear address widths
             ebx = 0;
             ecx = 0;
             edx = 0;

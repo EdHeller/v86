@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: MSRs: EFER, STAR/LSTAR/CSTAR/SFMASK, FS/GS base round trips, #GP for non-canonical bases
 %include "inc/long.inc"
 

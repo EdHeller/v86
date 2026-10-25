@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: compatibility mode: far jump to a 32-bit code segment under LMA, 32-bit semantics, return to 64-bit
 %include "inc/long.inc"
 

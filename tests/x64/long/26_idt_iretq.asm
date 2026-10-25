@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: int/iretq/exceptions in long mode: 16-byte IDT gates, 5-qword frames, error codes
 %include "inc/long.inc"
 

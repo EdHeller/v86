@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; NATIVE: yes
 ; DESC: RIP-relative addressing, lea, 64-bit addressing modes, SIB, 32-bit address size override
 %include "inc/long.inc"

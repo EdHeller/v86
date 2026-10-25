@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: 4-level paging: 4K page remapping, alias mappings, NX bit, user/supervisor, write protect, invlpg
 %include "inc/long.inc"
 

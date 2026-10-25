@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; ISSUE: copy/v86#133
 ; DESC: switch to long mode (EFER.LME + PAE paging), land in 64-bit code, EFER.LMA set
 %include "inc/long.inc"

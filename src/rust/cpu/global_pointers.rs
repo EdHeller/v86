@@ -76,6 +76,21 @@ pub const fpu_st: *mut F80 = 1152 as *mut F80;
 pub const efer: *mut u64 = 1280 as *mut u64;
 pub const pat: *mut u64 = 1288 as *mut u64;
 
+// Long mode state (see cpu/long_mode.rs). The low 32 bits of rax..rdi live in `reg32`.
+pub const reg_hi: *mut i32 = 1344 as *mut i32; // upper 32 bits of r0..r15 (16 entries)
+pub const reg_ext: *mut i32 = 1408 as *mut i32; // lower 32 bits of r8..r15 (8 entries)
+pub const rip_hi: *mut i32 = 1440 as *mut i32; // upper 32 bits of rip, always 0 for now
+pub const is_64: *mut bool = 1444 as *mut bool; // executing a 64-bit code segment (EFER.LMA && CS.L)
+pub const msr_star: *mut u64 = 1448 as *mut u64;
+pub const msr_lstar: *mut u64 = 1456 as *mut u64;
+pub const msr_cstar: *mut u64 = 1464 as *mut u64;
+pub const msr_sfmask: *mut u64 = 1472 as *mut u64;
+pub const fs_base: *mut u64 = 1480 as *mut u64; // 64-bit fs/gs base, used by 64-bit code
+pub const gs_base: *mut u64 = 1488 as *mut u64;
+pub const kernel_gs_base: *mut u64 = 1496 as *mut u64;
+pub const cr2_hi: *mut i32 = 1504 as *mut i32; // upper half of cr2
+pub const cr8_tpr: *mut i32 = 1508 as *mut i32; // cr8 (task priority), 4 bits
+
 pub fn get_reg32_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);
     (unsafe { reg32.offset(r as isize) }) as u32

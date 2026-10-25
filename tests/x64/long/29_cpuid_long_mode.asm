@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; ISSUE: copy/v86#133
 ; DESC: CPUID extended leaves advertise long mode, SYSCALL/SYSRET, NX and the 48-bit address sizes
 bits 16

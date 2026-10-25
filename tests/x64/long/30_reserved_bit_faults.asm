@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; QEMU: xfail
 ; DESC: #GP(0) for non-canonical MSR bases, reserved EFER bits, clearing LME under paging, reserved CR8 bits
 ; (QEMU's TCG skips these checks, so this test is not validated against it.)

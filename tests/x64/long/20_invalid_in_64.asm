@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: opcodes that are invalid in 64-bit mode raise #UD (push es, pusha, daa, into, bound/les/lds, aam...)
 %include "inc/long.inc"
 

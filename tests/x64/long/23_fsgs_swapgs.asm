@@ -1,4 +1,4 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; DESC: FS/GS segment bases in 64-bit mode, swapgs, rd/wr{fs,gs}base
 %include "inc/long.inc"
 
