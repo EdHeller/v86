@@ -770,7 +770,10 @@ unsafe fn exec() -> OrPageFault<()> {
             };
             let a = rm_read(&p, &m, bits)?;
             let r = shift(m.reg & 7, a, count, bits);
-            if count & if bits == 64 { 63 } else { 31 } != 0 {
+            // a 32-bit register destination is zero extended even if the count is 0
+            if count & if bits == 64 { 63 } else { 31 } != 0
+                || bits == 32 && matches!(m.loc, Loc::Reg(_))
+            {
                 rm_write(&p, &m, bits, r)?;
             }
         },
@@ -1407,7 +1410,8 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
             let v = rm_read(p, &m, osz)?;
             let r = v.count_ones() as u64;
             set_reg(m.reg, osz, true, r);
-            set_flags(false, false, false, r, 32);
+            // all flags are cleared except zf
+            set_eflags_raw(get_eflags() & !FLAGS_ALL | (v == 0) as i32 * FLAG_ZERO);
         },
         0xC8..=0xCF => {
             let n = (opcode & 7) | p.b();
@@ -1460,6 +1464,10 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                 let of = (r >> (osz - 1) & 1) != (a as u64 >> (osz - 1) & 1);
                 set_flags(cf, false, if count == 1 { of } else { false }, r, osz);
                 rm_write(p, &m, osz, r)?;
+            }
+            else if osz == 32 && matches!(m.loc, Loc::Reg(_)) {
+                let v = rm_read(p, &m, 32)?;
+                rm_write(p, &m, 32, v)?;
             }
         },
         _ => {
