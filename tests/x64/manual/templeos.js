@@ -40,6 +40,8 @@ function report()
 {
     const cpu = emulator.v86.cpu;
     const m = new Uint8Array(cpu.wasm_memory.buffer);
+    const ps2 = cpu.devices.ps2;
+    if(process.env.TOS_DEBUG) console.error("ps2 kbd_buffer=%d mouse_buffer=%d stream=%s ready=%s aux=%s cmd=%s", ps2.kbd_buffer.length, ps2.mouse_buffer.length, ps2.enable_keyboard_stream, ps2.next_byte_is_ready, ps2.next_byte_is_aux, ps2.command_register);
     console.error("t=%ds eip=%s cs=%s is_64=%s instr=%d screen=%j", Math.round(process.uptime()),
         (cpu.instruction_pointer[0] >>> 0).toString(16), cpu.sreg[1].toString(16), m[1444],
         cpu.instruction_counter[0], last_screen);
