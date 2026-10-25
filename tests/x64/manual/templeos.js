@@ -153,6 +153,20 @@ for(const [sec, dx, dy, b] of JSON.parse(process.env.TOS_MOUSE || "[]"))
     }, sec * 1000);
 }
 
+// TOS_IRQ0_MS=<n>: deliver at most one timer interrupt per n milliseconds (experiment)
+if(process.env.TOS_IRQ0_MS)
+{
+    emulator.add_listener("emulator-ready", () => {
+        const cpu = emulator.v86.cpu;
+        const raise = cpu.device_raise_irq.bind(cpu);
+        let last = 0;
+        cpu.device_raise_irq = n => {
+            if(n === 0) { const now = performance.now(); if(now - last < +process.env.TOS_IRQ0_MS) return; last = now; }
+            return raise(n);
+        };
+    });
+}
+
 // TOS_SHOTS='[seconds, ...]' writes <screenshot>.<seconds>.png at those uptimes
 for(const sec of JSON.parse(process.env.TOS_SHOTS || "[]"))
 {

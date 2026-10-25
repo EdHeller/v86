@@ -4,11 +4,13 @@
 <style>
     body { font: 14px sans-serif; margin: 16px; background: #222; color: #ddd; }
     #screen_container { display: inline-block; background: #000; }
-    #screen_container canvas { image-rendering: pixelated; }
+    #screen_container canvas { image-rendering: pixelated; cursor: none; }
+    #screen_container { cursor: none; }
     #log { font: 12px monospace; white-space: pre; height: 8em; overflow: auto; background: #111; padding: 4px; margin-top: 8px; }
     button, input { margin-right: 8px; }
 </style>
 
+<p>Click anywhere on the page after booting to capture the mouse; Esc releases it.</p>
 <p>
     <input type="file" id="iso" accept=".iso,.ISO">
     <button id="start" disabled>Boot</button>
@@ -60,7 +62,11 @@ document.getElementById("start").onclick = function()
     emulator.bus.register("keyboard-code", code => log("kbd scancode 0x" + code.toString(16)));
     emulator.bus.register("mouse-enable", enabled => log("guest mouse driver enabled: " + enabled));
     emulator.bus.register("mouse-pointer-lock", locked => log("pointer lock: " + locked));
-    document.getElementById("screen_container").addEventListener("click", () => emulator.lock_mouse());
+    // capture the mouse (pointer lock) on any click on the page; Esc releases it
+    document.addEventListener("click", e => {
+        if(!document.pointerLockElement && e.target.tagName !== "INPUT" && e.target.tagName !== "BUTTON")
+            emulator.lock_mouse();
+    });
     emulator.bus.register("mouse-click", c => log("mouse buttons " + c));
 
     setInterval(() => {
