@@ -84,7 +84,7 @@ const SC = {};
 "QWERTYUIOP{}".split("").forEach((c, i) => SC[c] = [0x10 + i, true]);
 "ASDFGHJKL:\"".split("").forEach((c, i) => SC[c] = [0x1E + i, true]);
 "ZXCVBNM<>?".split("").forEach((c, i) => SC[c] = [0x2C + i, true]);
-SC[" "] = [0x39, false]; SC["\n"] = [0x1C, false]; SC["\\"] = [0x2B, false]; SC["`"] = [0x29, false];
+SC["\b"] = [0x0E, false]; SC[" "] = [0x39, false]; SC["\n"] = [0x1C, false]; SC["\\"] = [0x2B, false]; SC["`"] = [0x29, false];
 
 async function type(text)
 {
