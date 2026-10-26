@@ -13,6 +13,7 @@
 <p>Click anywhere on the page after booting to capture the mouse; Esc releases it.</p>
 <p>
     <input type="file" id="iso" accept=".iso,.ISO">
+    or an installed disk: <input type="file" id="hd" accept=".img,.gz">
     <button id="start" disabled>Boot</button>
     <button id="n">send "n"</button>
     <button id="save">save state</button>
@@ -45,6 +46,15 @@ document.getElementById("iso").onchange = async function()
     document.getElementById("start").disabled = false;
 };
 
+let hd_buffer = null;
+document.getElementById("hd").onchange = async function()
+{
+    let stream = this.files[0].stream();
+    if(this.files[0].name.endsWith(".gz")) stream = stream.pipeThrough(new DecompressionStream("gzip"));
+    hd_buffer = await new Response(stream).arrayBuffer();
+    document.getElementById("start").disabled = false;
+};
+
 document.getElementById("start").onclick = function()
 {
     emulator = window.emulator = new V86({
@@ -54,7 +64,9 @@ document.getElementById("start").onclick = function()
         screen_container: document.getElementById("screen_container"),
         bios: { url: "../bios/seabios.bin" },
         vga_bios: { url: "../bios/vgabios.bin" },
-        cdrom: { buffer: iso_buffer },
+        cdrom: hd_buffer ? undefined : { buffer: iso_buffer },
+        hda: hd_buffer ? { buffer: hd_buffer } : undefined,
+        boot_order: hd_buffer ? 0x213 : undefined,
         autostart: true,
     });
 

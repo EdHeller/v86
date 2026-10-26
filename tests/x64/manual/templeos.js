@@ -123,6 +123,7 @@ function screenshot(path)
 
 // US layout, scancode set 1
 const SC = {};
+SC["\x1b"] = [0x01, false];   // Esc (type with \e)
 "1234567890-=".split("").forEach((c, i) => SC[c] = [0x02 + i, false]);
 "qwertyuiop[]".split("").forEach((c, i) => SC[c] = [0x10 + i, false]);
 "asdfghjkl;'".split("").forEach((c, i) => SC[c] = [0x1E + i, false]);
@@ -224,7 +225,7 @@ if(process.env.TOS_CMD)
         fs.unlinkSync(process.env.TOS_CMD);
         for(const l of lines)
         {
-            if(l.startsWith("type:")) await type(l.slice(5).replace(/\\n/g, "\n"));
+            if(l.startsWith("type:")) await type(l.slice(5).replace(/\\n/g, "\n").replace(/\\e/g, "\x1b"));
             else if(l.startsWith("shot:")) screenshot(l.slice(5));
             else if(l.startsWith("save:")) fs.writeFileSync(l.slice(5), Buffer.from(current_hda()));
             else if(l.trim() === "quit") process.exit(0);

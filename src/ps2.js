@@ -501,7 +501,16 @@ PS2.prototype.port64_read = function()
     // pending byte as a keystroke, including the bytes of mouse packets, and shows them as
     // garbage text. Mouse data only becomes visible while interrupts are enabled, which is the
     // only situation in which the guest's mouse irq handler could read it anyway.
-    const hidden_mouse_byte = this.next_byte_is_aux && !(this.cpu.flags[0] & 0x200);
+    let hidden_mouse_byte = this.next_byte_is_aux && !(this.cpu.flags[0] & 0x200);
+
+    if(hidden_mouse_byte && this.kbd_buffer.length)
+    {
+        // A key must not wait behind a mouse byte that the guest cannot see: let it take the
+        // output buffer; the mouse byte stays queued and is delivered afterwards.
+        this.cpu.device_lower_irq(12);
+        this.kbd_irq();
+        hidden_mouse_byte = false;
+    }
 
     if(this.next_byte_is_ready && !hidden_mouse_byte)
     {
