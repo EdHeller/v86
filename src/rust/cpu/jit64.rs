@@ -156,6 +156,23 @@ pub unsafe fn j64_set_rip(target: i64, _unused: i32) {
     }
 }
 
+/// Computes the flags of an add (kind 0), logic operation (kind 1) or sub / cmp (kind 2) from the
+/// operands and the result (all masked to `bits`)
+#[no_mangle]
+pub unsafe fn j64_flags(kind_bits: i32, a: i64, b: i64, r: i64) {
+    let bits = (kind_bits & 0xFF) as u32;
+    let kind = kind_bits >> 8;
+    let (a, b, r) = (a as u64, b as u64, r as u64);
+    let msb = bits - 1;
+    let (cf, of) = match kind {
+        0 => (r < a, ((a ^ r) & (b ^ r)) >> msb & 1 != 0),
+        1 => (false, false),
+        _ => (a < b, ((a ^ b) & (a ^ r)) >> msb & 1 != 0),
+    };
+    let af = kind != 1 && (a ^ b ^ r) & 0x10 != 0;
+    long_mode::jit_set_flags(cf, af, of, r, bits);
+}
+
 /// flags computed lazily by 16/32 bit code may still be pending when 64-bit code is entered
 #[no_mangle]
 pub unsafe fn j64_materialize_flags() {
@@ -581,6 +598,91 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// flag liveness
+
+fn has_mem(o: &Opd) -> bool { matches!(o, Opd::Mem(_)) }
+
+struct FlagFx {
+    /// reads the arithmetic flags
+    reads: bool,
+    /// overwrites all of them
+    writes_all: bool,
+    /// can raise an exception (which needs the flags of the previous instructions in memory)
+    fault: bool,
+}
+
+fn flag_fx(i: &Insn) -> FlagFx {
+    let (reads, writes_all, fault) = match *i {
+        Insn::Alu { op, dst, src, .. } => (op == 2 || op == 3, true, has_mem(&dst) || has_mem(&src)),
+        Insn::Test { a, b, .. } => (false, true, has_mem(&a) || has_mem(&b)),
+        Insn::Mov { dst, src, .. } => (false, false, has_mem(&dst) || has_mem(&src)),
+        Insn::MovExt { src, .. } => (false, false, has_mem(&src)),
+        Insn::Lea { .. } | Insn::Nop | Insn::Jmp { .. } => (false, false, false),
+        Insn::Push { .. } | Insn::Pop { .. } | Insn::Leave { .. } | Insn::Call { .. } | Insn::Ret { .. } => (false, false, true),
+        Insn::IncDec { dst, .. } => (false, false, has_mem(&dst)),
+        Insn::Shift { op, dst, .. } => (op == 2 || op == 3, false, has_mem(&dst)),
+        Insn::Setcc { dst, .. } => (true, false, has_mem(&dst)),
+        Insn::Cmov { src, .. } => (true, false, has_mem(&src)),
+        Insn::Jcc { .. } => (true, false, false),
+    };
+    FlagFx { reads, writes_all, fault }
+}
+
+/// For every instruction: are the flags it leaves behind (possibly) read afterwards?
+fn flag_liveness(
+    decoded: &std::collections::BTreeMap<usize, (Insn, usize)>,
+    block_starts: &[usize],
+    rip: u64,
+    code_len: usize,
+) -> (HashMap<usize, bool>, HashMap<usize, bool>) {
+    let internal = |target: u64| -> Option<usize> {
+        let off = target.wrapping_sub(rip);
+        if target >= rip && (off as usize) < code_len { Some(off as usize) } else { None }
+    };
+    // instructions of each block
+    let mut blocks: Vec<Vec<usize>> = vec![];
+    for (i, &start) in block_starts.iter().enumerate() {
+        let end = block_starts.get(i + 1).copied().unwrap_or(usize::MAX);
+        blocks.push(decoded.range(start..end).map(|(&o, _)| o).collect());
+    }
+    let mut live_in_block: HashMap<usize, bool> = block_starts.iter().map(|&o| (o, false)).collect();
+    let mut live_out: HashMap<usize, bool> = HashMap::new();
+    loop {
+        let mut changed = false;
+        for (bi, offs) in blocks.iter().enumerate().rev() {
+            let &last = offs.last().unwrap();
+            let (insn, len) = decoded[&last];
+            let succ_live = |t: usize| -> bool {
+                if decoded.contains_key(&t) { live_in_block.get(&t).copied().unwrap_or(true) } else { true }
+            };
+            let mut live = match insn {
+                Insn::Jcc { target, .. } => {
+                    let taken = match internal(target) { Some(t) => succ_live(t), None => true };
+                    taken || succ_live(last + len)
+                },
+                Insn::Jmp { target } => match internal(target) { Some(t) => succ_live(t), None => true },
+                Insn::Call { .. } | Insn::Ret { .. } => true,
+                _ => succ_live(last + len),
+            };
+            for &o in offs.iter().rev() {
+                let (insn, _) = decoded[&o];
+                live_out.insert(o, live);
+                let fx = flag_fx(&insn);
+                live = fx.reads || fx.fault || (live && !fx.writes_all);
+            }
+            if live_in_block[&block_starts[bi]] != live {
+                live_in_block.insert(block_starts[bi], live);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    (live_out, live_in_block)
+}
+
+// ---------------------------------------------------------------------------------------------
 // code generation
 
 fn lo_addr(n: u8) -> u32 {
@@ -605,6 +707,24 @@ struct Gen<'a> {
     next: u64,
     /// offset of a basic block (from the start of the region) -> its index
     block_index: HashMap<usize, usize>,
+    /// the flags of the last flag-writing instruction have not been stored yet: their operands
+    /// are in fl_a / fl_b / fl_r
+    pending: Option<Pending>,
+    fl_a: WasmLocalI64,
+    fl_b: WasmLocalI64,
+    fl_r: WasmLocalI64,
+    /// are the flags left by the instruction at an offset read afterwards? / by a block start
+    live_out: HashMap<usize, bool>,
+    live_in: HashMap<usize, bool>,
+    /// flags are needed after the current instruction
+    cur_live_out: bool,
+}
+
+#[derive(Clone, Copy)]
+struct Pending {
+    /// 0 add, 1 logic operation, 2 sub / cmp
+    kind: u8,
+    bits: u32,
 }
 
 impl<'a> Gen<'a> {
@@ -621,6 +741,7 @@ impl<'a> Gen<'a> {
 
     /// leave the block, continuing at `target`
     fn exit_const(&mut self, target: u64, extra: i32) {
+        self.materialize();
         self.b.const_i32(instruction_pointer as i32);
         self.b.const_i32(target as i32);
         self.b.store_aligned_i32(0);
@@ -825,7 +946,10 @@ impl<'a> Gen<'a> {
     fn read_opd(&mut self, o: &Opd, bits: u32) {
         match *o {
             Opd::Reg(n, rex) => self.get_reg(n, bits, rex),
-            Opd::Imm(v) => self.b.const_i64(v as i64),
+            Opd::Imm(v) => {
+                let v = if bits < 64 { v & ((1u64 << bits) - 1) } else { v };
+                self.b.const_i64(v as i64);
+            },
             Opd::Mem(ea) => {
                 self.ea(&ea, true);
                 self.read_mem(bits);
@@ -871,8 +995,121 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// stores the pending flags into memory
+    fn materialize(&mut self) {
+        if let Some(p) = self.pending.take() {
+            self.b.const_i32((p.kind as i32) << 8 | p.bits as i32);
+            self.b.get_local_i64(&self.fl_a);
+            self.b.get_local_i64(&self.fl_b);
+            self.b.get_local_i64(&self.fl_r);
+            self.b.call_fn4_i32_i64_i64_i64("j64_flags");
+        }
+    }
+
+    /// pushes a local, sign extended from `bits`
+    fn get_signed(&mut self, which: u8, bits: u32) {
+        match which {
+            0 => self.b.get_local_i64(&self.fl_a),
+            1 => self.b.get_local_i64(&self.fl_b),
+            _ => self.b.get_local_i64(&self.fl_r),
+        }
+        if bits < 64 {
+            self.b.const_i64(64 - bits as i64);
+            self.b.shl_i64();
+            self.b.const_i64(64 - bits as i64);
+            self.b.shr_s_i64();
+        }
+    }
+
+    /// Emits condition `cc` straight from the pending flags if that is possible (pushes an i32)
+    fn cond_pending(&mut self, cc: u8) -> bool {
+        let Some(p) = self.pending else { return false };
+        let bits = p.bits;
+        let base = cc >> 1;
+        let invert = cc & 1 != 0;
+        // each case leaves the i32 for the non-inverted condition
+        match (p.kind, base) {
+            // zero / sign
+            (_, 2) => {
+                self.b.get_local_i64(&self.fl_r);
+                self.b.eqz_i64();
+            },
+            (_, 4) => {
+                self.get_signed(2, bits);
+                self.b.const_i64(0);
+                self.b.lt_i64();
+            },
+            // sub / cmp
+            (2, 1) => {
+                self.b.get_local_i64(&self.fl_a);
+                self.b.get_local_i64(&self.fl_b);
+                self.b.ltu_i64();
+            },
+            (2, 3) => {
+                self.b.get_local_i64(&self.fl_a);
+                self.b.get_local_i64(&self.fl_b);
+                self.b.leu_i64();
+            },
+            (2, 6) => {
+                self.get_signed(0, bits);
+                self.get_signed(1, bits);
+                self.b.lt_i64();
+            },
+            (2, 7) => {
+                self.get_signed(0, bits);
+                self.get_signed(1, bits);
+                self.b.le_i64();
+            },
+            // logic operations: carry and overflow are cleared
+            (1, 0) => self.b.const_i32(0),
+            (1, 1) => self.b.const_i32(0),
+            (1, 3) => {
+                self.b.get_local_i64(&self.fl_r);
+                self.b.eqz_i64();
+            },
+            (1, 6) => {
+                self.get_signed(2, bits);
+                self.b.const_i64(0);
+                self.b.lt_i64();
+            },
+            (1, 7) => {
+                self.get_signed(2, bits);
+                self.b.const_i64(0);
+                self.b.le_i64();
+            },
+            // add: carry out of the operand size
+            (0, 1) => {
+                self.b.get_local_i64(&self.fl_r);
+                self.b.get_local_i64(&self.fl_a);
+                self.b.ltu_i64();
+            },
+            (0, 3) => {
+                self.b.get_local_i64(&self.fl_r);
+                self.b.get_local_i64(&self.fl_a);
+                self.b.ltu_i64();
+                self.b.get_local_i64(&self.fl_r);
+                self.b.eqz_i64();
+                self.b.or_i32();
+            },
+            _ => return false,
+        }
+        if invert {
+            self.b.eqz_i32();
+        }
+        true
+    }
+
     /// i32 on the stack: whether condition cc holds
     fn cond(&mut self, cc: u8) {
+        if self.cond_pending(cc) {
+            return;
+        }
+        self.materialize();
+        self.cond_memory(cc);
+    }
+
+    /// i32 on the stack: whether condition cc holds (flags in memory)
+    fn cond_memory(&mut self, cc: u8) {
         let f = |g: &mut Gen| g.b.load_fixed_i32(flags as u32);
         match cc >> 1 {
             0 | 1 | 2 | 4 | 5 => {
@@ -921,36 +1158,143 @@ impl<'a> Gen<'a> {
         }
     }
 
+    fn mask_result(&mut self, bits: u32) {
+        if bits < 64 {
+            self.b.const_i64(((1u64 << bits) - 1) as i64);
+            self.b.and_i64();
+        }
+    }
+
+    /// [a, b] -> a op b, masked to the operand size
+    fn alu_value(&mut self, op: u8, bits: u32) {
+        match op {
+            0 => self.b.add_i64(),
+            1 => self.b.or_i64(),
+            4 => self.b.and_i64(),
+            5 | 7 => self.b.sub_i64(),
+            _ => self.b.xor_i64(),
+        }
+        if matches!(op, 0 | 5 | 7) {
+            self.mask_result(bits);
+        }
+    }
+
+    /// [a] -> a shifted / rotated by a constant count (flags are not computed)
+    fn shift_value(&mut self, op: u8, bits: u32, count: u8) {
+        let c = count as i64 & if bits == 64 { 63 } else { 31 };
+        match op {
+            4 | 6 => {
+                self.b.const_i64(c);
+                self.b.shl_i64();
+                self.mask_result(bits);
+            },
+            5 => {
+                self.b.const_i64(c);
+                self.b.shr_u_i64();
+            },
+            7 => {
+                if bits < 64 {
+                    self.b.const_i64(64 - bits as i64);
+                    self.b.shl_i64();
+                    self.b.const_i64(64 - bits as i64);
+                    self.b.shr_s_i64();
+                }
+                self.b.const_i64(c.min(63));
+                self.b.shr_s_i64();
+                self.mask_result(bits);
+            },
+            _ => {
+                // rol (0) / ror (1)
+                let r = c % bits as i64;
+                if r != 0 {
+                    let t = self.b.set_new_local_i64();
+                    let (left, right) = if op == 0 { (r, bits as i64 - r) } else { (bits as i64 - r, r) };
+                    self.b.get_local_i64(&t);
+                    self.b.const_i64(left);
+                    self.b.shl_i64();
+                    self.b.get_local_i64(&t);
+                    self.b.const_i64(right);
+                    self.b.shr_u_i64();
+                    self.b.or_i64();
+                    self.mask_result(bits);
+                    self.b.free_local_i64(t);
+                }
+            },
+        }
+    }
+
+    /// add, or, and, sub, xor, cmp, test (`write`: whether the result is stored)
+    fn emit_alu(&mut self, op: u8, bits: u32, dst: Opd, src: Opd, write: bool) {
+        let write = write && op != 7;
+        self.set_previous_ip();
+        let flags_live = self.cur_live_out;
+        let simple = matches!(op, 0 | 1 | 4 | 5 | 6 | 7);
+        if !simple || (flags_live && write && has_mem(&dst)) {
+            // adc / sbb read the carry flag; a memory destination is written after the flags are
+            // computed (like the interpreter does): use the helper
+            self.materialize();
+            self.ea_to_local(&dst);
+            self.ea_to_local(&src);
+            self.b.const_i32(op as i32);
+            self.read_opd_saved(&dst, bits);
+            self.read_opd_saved(&src, bits);
+            self.b.const_i32(bits as i32);
+            self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+            if write {
+                self.write_opd_saved(&dst, bits);
+            }
+            else {
+                self.b.drop_();
+            }
+            return;
+        }
+        // this instruction overwrites all flags, the ones that were pending are not needed
+        self.pending = None;
+        self.ea_to_local(&dst);
+        self.ea_to_local(&src);
+        if !flags_live {
+            self.read_opd_saved(&dst, bits);
+            self.read_opd_saved(&src, bits);
+            if write {
+                self.alu_value(op, bits);
+                self.write_opd_saved(&dst, bits);
+            }
+            else {
+                self.b.drop_();
+                self.b.drop_();
+            }
+        }
+        else {
+            self.read_opd_saved(&dst, bits);
+            self.b.set_local_i64(&self.fl_a);
+            self.read_opd_saved(&src, bits);
+            self.b.set_local_i64(&self.fl_b);
+            self.b.get_local_i64(&self.fl_a);
+            self.b.get_local_i64(&self.fl_b);
+            self.alu_value(op, bits);
+            self.b.set_local_i64(&self.fl_r);
+            if write {
+                self.b.get_local_i64(&self.fl_r);
+                self.write_opd_saved(&dst, bits);
+            }
+            let kind = match op {
+                0 => 0,
+                1 | 4 | 6 => 1,
+                _ => 2,
+            };
+            self.pending = Some(Pending { kind, bits });
+        }
+    }
+
     fn emit(&mut self, insn: &Insn) {
+        if flag_fx(insn).fault {
+            // exceptions push the flags: the pending ones have to be in memory
+            self.materialize();
+        }
         match *insn {
             Insn::Nop => {},
-            Insn::Alu { op, bits, dst, src } => {
-                self.set_previous_ip();
-                self.ea_to_local(&dst);
-                self.ea_to_local(&src);
-                self.b.const_i32(op as i32);
-                self.read_opd_saved(&dst, bits);
-                self.read_opd_saved(&src, bits);
-                self.b.const_i32(bits as i32);
-                self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
-                if op != 7 {
-                    self.write_opd_saved(&dst, bits);
-                }
-                else {
-                    self.b.drop_();
-                }
-            },
-            Insn::Test { bits, a, b } => {
-                self.set_previous_ip();
-                self.ea_to_local(&a);
-                self.ea_to_local(&b);
-                self.b.const_i32(4);
-                self.read_opd_saved(&a, bits);
-                self.read_opd_saved(&b, bits);
-                self.b.const_i32(bits as i32);
-                self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
-                self.b.drop_();
-            },
+            Insn::Alu { op, bits, dst, src } => self.emit_alu(op, bits, dst, src, true),
+            Insn::Test { bits, a, b } => self.emit_alu(4, bits, a, b, false),
             Insn::Mov { bits, dst, src } => {
                 self.set_previous_ip();
                 self.ea_to_local(&dst);
@@ -1008,22 +1352,44 @@ impl<'a> Gen<'a> {
             Insn::IncDec { dec, bits, dst } => {
                 self.set_previous_ip();
                 self.ea_to_local(&dst);
-                self.b.const_i32(8 + dec as i32);
-                self.read_opd_saved(&dst, bits);
-                self.b.const_i64(0);
-                self.b.const_i32(bits as i32);
-                self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                if self.cur_live_out {
+                    // the carry flag is preserved: the old flags have to be in memory
+                    self.materialize();
+                    self.b.const_i32(8 + dec as i32);
+                    self.read_opd_saved(&dst, bits);
+                    self.b.const_i64(0);
+                    self.b.const_i32(bits as i32);
+                    self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                }
+                else {
+                    self.read_opd_saved(&dst, bits);
+                    self.b.const_i64(1);
+                    if dec {
+                        self.b.sub_i64();
+                    }
+                    else {
+                        self.b.add_i64();
+                    }
+                    self.mask_result(bits);
+                }
                 self.write_opd_saved(&dst, bits);
             },
             Insn::Shift { op, bits, dst, count } => {
                 self.set_previous_ip();
                 self.ea_to_local(&dst);
                 let Count::Imm(c) = count;
-                self.b.const_i32(16 + op as i32);
-                self.read_opd_saved(&dst, bits);
-                self.b.const_i64(c as i64);
-                self.b.const_i32(bits as i32);
-                self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                if self.cur_live_out || matches!(op, 2 | 3) {
+                    self.materialize();
+                    self.b.const_i32(16 + op as i32);
+                    self.read_opd_saved(&dst, bits);
+                    self.b.const_i64(c as i64);
+                    self.b.const_i32(bits as i32);
+                    self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                }
+                else {
+                    self.read_opd_saved(&dst, bits);
+                    self.shift_value(op, bits, c);
+                }
                 self.write_opd_saved(&dst, bits);
             },
             Insn::Setcc { cc, dst } => {
@@ -1074,6 +1440,10 @@ impl<'a> Gen<'a> {
         let off = target.wrapping_sub(self.start);
         if target >= self.start && off < (1 << 20) {
             if let Some(&idx) = self.block_index.get(&(off as usize)) {
+                if self.live_in.get(&(off as usize)).copied().unwrap_or(true) {
+                    self.materialize();
+                }
+                self.pending = None;
                 self.b.get_local(&self.n_local);
                 self.b.const_i32(self.n);
                 self.b.add_i32();
@@ -1159,6 +1529,8 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
         block_index.insert(off, i);
     }
 
+    let (live_out, live_in) = flag_liveness(&decoded, &block_starts, rip, code.len());
+
     b.reset();
 
     // flags computed lazily by 32 bit code are materialised once on entry
@@ -1172,9 +1544,15 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
     let t_ea = b.new_local_i64();
     let t_v = b.new_local_i64();
     let t_a = b.new_local_i64();
+    let fl_a = b.new_local_i64();
+    let fl_b = b.new_local_i64();
+    let fl_r = b.new_local_i64();
     let loop_label = b.loop_void();
 
-    let mut g = Gen { b, start: rip, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, cur: rip, next: rip, block_index };
+    let mut g = Gen {
+        b, start: rip, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, cur: rip, next: rip, block_index,
+        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true,
+    };
 
     // budget: return to the dispatcher now and then so that interrupts can be handled
     g.b.get_local(&g.n_local);
@@ -1205,8 +1583,10 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
             // start of a basic block: its code follows the end of the matching wasm block
             g.b.block_end();
             g.n = 0;
+            g.pending = None;
             ended = false;
         }
+        g.cur_live_out = g.live_out.get(&off).copied().unwrap_or(true);
         let cur = rip.wrapping_add(off as u64);
         let next = cur.wrapping_add(len as u64);
         g.cur = cur;
@@ -1216,17 +1596,20 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
 
         match insn {
             Insn::Jcc { cc, target } => {
-                g.set_previous_ip();
                 g.cond(cc);
+                // the taken path may store the flags (its own copy of the compile time state)
+                let after_cond = g.pending;
                 g.b.if_void();
                 g.transfer(target);
                 g.b.block_end();
+                g.pending = after_cond;
             },
             Insn::Jmp { target } => {
                 g.transfer(target);
                 ended = true;
             },
             Insn::Call { target } => {
+                g.materialize();
                 g.set_previous_ip();
                 g.get_reg(4, 64, true);
                 g.b.const_i64(8);
@@ -1245,6 +1628,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                 ended = true;
             },
             Insn::Ret { adj } => {
+                g.materialize();
                 g.set_previous_ip();
                 g.get_reg(4, 64, true);
                 g.b.set_local_i64(&g.t_ea);
@@ -1278,6 +1662,10 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
             }
             else if g.block_index.contains_key(&follows) {
                 // falls through into the next basic block (its code is emitted right after)
+                if g.live_in.get(&follows).copied().unwrap_or(true) {
+                    g.materialize();
+                }
+                g.pending = None;
                 g.b.get_local(&g.n_local);
                 g.b.const_i32(g.n);
                 g.b.add_i32();
@@ -1289,13 +1677,16 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
     // after the last instruction: the final wasm block of the dispatcher is closed by its code
     // (all `count` blocks have been closed by the loop above, one per basic block)
 
-    let Gen { b, n_local, pc, t_ea, t_v, t_a, .. } = g;
+    let Gen { b, n_local, pc, t_ea, t_v, t_a, fl_a, fl_b, fl_r, .. } = g;
     b.block_end(); // loop
     b.free_local(n_local);
     b.free_local(pc);
     b.free_local_i64(t_ea);
     b.free_local_i64(t_v);
     b.free_local_i64(t_a);
+    b.free_local_i64(fl_a);
+    b.free_local_i64(fl_b);
+    b.free_local_i64(fl_r);
     b.finish();
     Some(total)
 }

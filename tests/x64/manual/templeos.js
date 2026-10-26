@@ -211,6 +211,27 @@ if(process.env.TOS_IRQ0_MS)
     });
 }
 
+// TOS_CMD=<file>: control channel. Once a second the file is read and deleted; each line is
+//   type:<text>   types the text (\n is an enter key)
+//   shot:<path>   writes a screenshot
+//   save:<path>   writes the hard disk image
+//   quit          saves the disk (HDA_FILE) and exits
+if(process.env.TOS_CMD)
+{
+    setInterval(async () => {
+        if(!fs.existsSync(process.env.TOS_CMD)) return;
+        const lines = fs.readFileSync(process.env.TOS_CMD, "utf8").split("\n");
+        fs.unlinkSync(process.env.TOS_CMD);
+        for(const l of lines)
+        {
+            if(l.startsWith("type:")) await type(l.slice(5).replace(/\\n/g, "\n"));
+            else if(l.startsWith("shot:")) screenshot(l.slice(5));
+            else if(l.startsWith("save:")) fs.writeFileSync(l.slice(5), Buffer.from(current_hda()));
+            else if(l.trim() === "quit") process.exit(0);
+        }
+    }, 1000);
+}
+
 // TOS_SHOTS='[seconds, ...]' writes <screenshot>.<seconds>.png at those uptimes
 for(const sec of JSON.parse(process.env.TOS_SHOTS || "[]"))
 {

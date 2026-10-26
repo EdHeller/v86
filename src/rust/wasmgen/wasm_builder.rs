@@ -57,6 +57,7 @@ enum FunctionType {
     FN4_I32_I64_I64_I32_RET,
     FN3_I64_I64_I32,
     FN4_I32_I64_I64_I32_RET_I64,
+    FN4_I32_I64_I64_I64,
     // When adding at the end, update LAST below
 }
 
@@ -66,7 +67,7 @@ impl FunctionType {
         unsafe { transmute(x) }
     }
     pub fn to_u8(self: FunctionType) -> u8 { self as u8 }
-    pub const LAST: FunctionType = FunctionType::FN4_I32_I64_I64_I32_RET_I64;
+    pub const LAST: FunctionType = FunctionType::FN4_I32_I64_I64_I64;
 }
 
 pub const WASM_MODULE_ARGUMENT_COUNT: u8 = 1;
@@ -426,6 +427,15 @@ impl WasmBuilder {
                     self.output.push(op::TYPE_I64);
                     self.output.push(op::TYPE_I64);
                     self.output.push(op::TYPE_I32);
+                    self.output.push(0);
+                },
+                FunctionType::FN4_I32_I64_I64_I64 => {
+                    self.output.push(op::TYPE_FUNC);
+                    self.output.push(4);
+                    self.output.push(op::TYPE_I32);
+                    self.output.push(op::TYPE_I64);
+                    self.output.push(op::TYPE_I64);
+                    self.output.push(op::TYPE_I64);
                     self.output.push(0);
                 },
                 FunctionType::FN4_I32_I64_I64_I32_RET_I64 => {
@@ -1016,6 +1026,9 @@ impl WasmBuilder {
     }
     pub fn call_fn4_i32_i64_i64_i32_ret(&mut self, name: &str) {
         self.call_fn(name, FunctionType::FN4_I32_I64_I64_I32_RET)
+    }
+    pub fn call_fn4_i32_i64_i64_i64(&mut self, name: &str) {
+        self.call_fn(name, FunctionType::FN4_I32_I64_I64_I64)
     }
     pub fn call_fn3_i64_i64_i32(&mut self, name: &str) {
         self.call_fn(name, FunctionType::FN3_I64_I64_I32)

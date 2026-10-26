@@ -55,4 +55,39 @@ test_main:
     cmp r12d, 40
     jb .gp_loop
 
+    ; the flags of earlier instructions are visible after a fault (iretq restores them): cmp, add
+    xor r13d, r13d
+.fl_loop:
+    mov qword [EXC_VEC], -1
+    lea rax, [rel .fl_resume]
+    mov [EXC_RESUME], rax
+    mov rbx, 0x4000000
+    mov r8, 5
+    mov r9, 7
+    cmp r8, r9                          ; carry, adjust and sign
+    lea r12, [r12 + 1]                  ; does not change them
+.fl_fault:
+    mov rax, [rbx]
+.fl_resume:
+    pushfq
+    pop r10
+    and r10, 0x8D5
+    mov qword [EXC_RESUME], 0
+    CHECK_EQ 16, r10, 0x91
+    mov qword [EXC_VEC], -1
+    lea rax, [rel .fl_resume2]
+    mov [EXC_RESUME], rax
+    add r8, r9                          ; 12: only the parity flag
+    lea r12, [r12 - 1]
+.fl_fault2:
+    mov [rbx], r8
+.fl_resume2:
+    pushfq
+    pop r10
+    and r10, 0x8D5
+    mov qword [EXC_RESUME], 0
+    CHECK_EQ 17, r10, 0x04
+    inc r13d
+    cmp r13d, 40
+    jb .fl_loop
     PASS

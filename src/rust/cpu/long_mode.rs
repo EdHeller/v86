@@ -320,9 +320,21 @@ unsafe fn set_eflags_raw(f: i32) {
 }
 
 unsafe fn incdec(dec: bool, a: u64, bits: u32) -> u64 {
-    let cf = get_eflags() & FLAG_CARRY != 0;
-    let r = alu(if dec { 5 } else { 0 }, a, 1, bits);
-    *flags = *flags & !FLAG_CARRY | cf as i32 * FLAG_CARRY;
+    // carry is preserved, all other arithmetic flags are set as for add / sub of 1
+    let old = if *flags_changed != 0 { get_eflags() } else { *flags };
+    let m = mask(bits);
+    let a = a & m;
+    let r = if dec { a.wrapping_sub(1) } else { a.wrapping_add(1) } & m;
+    let msb = 1u64 << (bits - 1);
+    let of = if dec { a == msb } else { r == msb };
+    let af = if dec { a & 0xF == 0 } else { a & 0xF == 0xF };
+    let pf = PARITY[r as u8 as usize];
+    *flags = old & !(FLAGS_ALL & !FLAG_CARRY)
+        | pf as i32 * FLAG_PARITY
+        | af as i32 * FLAG_ADJUST
+        | (r == 0) as i32 * FLAG_ZERO
+        | (r & msb != 0) as i32 * FLAG_SIGN
+        | of as i32 * FLAG_OVERFLOW;
     *flags_changed = 0;
     r
 }
@@ -2257,3 +2269,5 @@ pub unsafe fn jit_alu(op: u8, a: u64, b: u64, bits: u32) -> u64 {
 }
 
 pub unsafe fn jit_set_rip(target: u64) -> OrPageFault<()> { set_rip(target) }
+
+pub unsafe fn jit_set_flags(cf: bool, af: bool, of: bool, result: u64, bits: u32) { set_flags(cf, af, of, result, bits) }
