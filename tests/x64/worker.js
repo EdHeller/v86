@@ -26,6 +26,9 @@ const emulator = new V86({
     autostart: false,
     memory_size: 32 * 1024 * 1024,
     disable_jit: +process.env.DISABLE_JIT,
+    jit64_threshold: process.env.JIT64 === undefined ? undefined : +process.env.JIT64,
+    sync_jit: process.env.JIT64 !== undefined,
+    jit64_disable_mask: +process.env.JIT64_MASK || 0,
     log_level: 0,
     ...JSON.parse(process.argv[3] || "{}"),
 });
@@ -55,6 +58,11 @@ function finish(status)
         result.eip = "0x" + (cpu.instruction_pointer[0] >>> 0).toString(16);
     }
 
+    if(process.env.JIT_STATS)
+    {
+        const g = i => emulator.v86.cpu.wm.exports.get_jit_config(i);
+        result.jit64 = { compiled: g(5), failed: g(6), run: g(7), invalidated: g(8) };
+    }
     console.log(JSON.stringify(result));
     process.exit(0);
 }

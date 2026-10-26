@@ -2243,3 +2243,17 @@ unsafe fn sse_three_byte(p: &Prefixes, esc: u8) -> OrPageFault<()> {
     window_close();
     result
 }
+
+// ---------------------------------------------------------------------------------------------
+// entry points for jit64
+
+/// op 0..7: alu, 8 inc, 9 dec, 16..23: shift / rotate by `b`
+pub unsafe fn jit_alu(op: u8, a: u64, b: u64, bits: u32) -> u64 {
+    match op {
+        0..=7 => alu(op, a, b, bits),
+        8 | 9 => incdec(op == 9, a, bits),
+        _ => shift(op - 16, a, b as u32, bits),
+    }
+}
+
+pub unsafe fn jit_set_rip(target: u64) -> OrPageFault<()> { set_rip(target) }

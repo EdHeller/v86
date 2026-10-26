@@ -462,7 +462,7 @@ async function run_guest(cases)
     const bin = fs.readFileSync(path.join(tmp, "guest.bin"));
     if(!emulator)
     {
-        emulator = new V86({ autostart: false, memory_size: 32 * 1024 * 1024, log_level: 0 });
+        emulator = new V86({ autostart: false, memory_size: 32 * 1024 * 1024, log_level: 0, jit64_threshold: process.env.JIT64 === undefined ? undefined : +process.env.JIT64, sync_jit: process.env.JIT64 !== undefined, jit64_disable_mask: +process.env.JIT64_MASK || 0 });
         loaded = new Promise(res => emulator.add_listener("emulator-loaded", res));
     }
     await loaded;
@@ -553,5 +553,10 @@ for(let done = 0; done < COUNT; done += BATCH)
     failed += compare(cases, expected, actual);
 }
 console.log(`${total} cases, ${failed} failures (seed ${SEED})`);
+if(emulator && process.env.JIT64 !== undefined)
+{
+    const g = i => emulator.v86.cpu.wm.exports.get_jit_config(i);
+    console.log(`jit64: compiled ${g(5)}, failed ${g(6)}, run ${g(7)}, invalidated ${g(8)}`);
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 process.exit(failed ? 1 : 0);

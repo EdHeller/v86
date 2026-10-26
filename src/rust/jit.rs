@@ -126,7 +126,7 @@ enum CompilingPageState {
     CompilingWritten,
 }
 
-struct JitState {
+pub struct JitState {
     wasm_builder: WasmBuilder,
 
     // as an alternative to HashSet, we could use a bitmap of 4096 bits here
@@ -1077,6 +1077,11 @@ pub fn codegen_finalize_finished(
     phys_addr: u32,
     state_flags: CachedStateFlags,
 ) {
+    if state_flags.is_jit64() {
+        unsafe { crate::cpu::jit64::finalize_finished(wasm_table_index.to_u16()) };
+        return;
+    }
+
     let mut ctx = get_jit_state();
 
     dbg_assert!(wasm_table_index != WasmTableIndex(0));
@@ -2240,11 +2245,49 @@ fn free_wasm_table_index(ctx: &mut JitState, wasm_table_index: WasmTableIndex) {
     jit_clear_func(wasm_table_index);
 }
 
+pub fn jit_disabled() -> bool { unsafe { JIT_DISABLED } }
+
+/// Compiles a module for cpu::jit64: `f` generates the code into the builder. Returns the wasm
+/// table index; the module becomes callable when `jit64::finalize_finished` is called.
+pub fn jit64_compile(
+    phys_addr: u32,
+    f: impl FnOnce(&mut WasmBuilder) -> Option<u32>,
+    register: impl FnOnce(u16),
+) -> Option<u16> {
+    let mut ctx = get_jit_state();
+    if ctx.wasm_table_index_free_list.is_empty() {
+        jit_clear_cache(&mut ctx);
+        if ctx.wasm_table_index_free_list.is_empty() {
+            return None;
+        }
+    }
+    f(&mut ctx.wasm_builder)?;
+    let index = ctx.wasm_table_index_free_list.pop()?;
+    register(index.to_u16());
+    codegen_finalize(
+        index,
+        phys_addr,
+        CachedStateFlags::JIT64,
+        ctx.wasm_builder.get_output_ptr() as u32,
+        ctx.wasm_builder.get_output_len(),
+    );
+    Some(index.to_u16())
+}
+
+pub fn jit64_free_index(index: u16) {
+    let mut ctx = get_jit_state();
+    free_wasm_table_index(&mut ctx, WasmTableIndex(index));
+}
+
+pub fn jit64_free_index_ctx(ctx: &mut JitState, index: u16) {
+    free_wasm_table_index(ctx, WasmTableIndex(index));
+}
+
 // One bit per 4k page of the 4 GB physical address space: set if the page may have entry points
 // or compiled code. Checked on every memory write, where it replaces two hash lookups.
 static mut MAYBE_HAS_CODE: [u64; 1 << 14] = [0; 1 << 14];
 
-fn maybe_has_code_set(page: Page) {
+pub fn maybe_has_code_set(page: Page) {
     let i = page.to_u32() as usize;
     unsafe { MAYBE_HAS_CODE[i >> 6] |= 1 << (i & 63) };
 }
@@ -2262,7 +2305,7 @@ fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
     if !maybe_has_code(page) {
         return;
     }
-    let mut did_have_code = false;
+    let mut did_have_code = unsafe { crate::cpu::jit64::dirty_page(ctx, page) };
 
     if let Some(PageInfo {
         wasm_table_index,
@@ -2354,9 +2397,9 @@ fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
 
     check_jit_state_invariants(ctx);
 
-    dbg_assert!(!jit_page_has_code_ctx(ctx, page));
-
     maybe_has_code_clear(page);
+
+    dbg_assert!(!jit_page_has_code_ctx(ctx, page));
 
     if did_have_code {
         cpu::tlb_set_has_code(page, false);
@@ -2416,12 +2459,14 @@ fn jit_clear_cache(ctx: &mut JitState) {
     for page in pages_with_code {
         jit_dirty_page_ctx(ctx, page);
     }
+
+    unsafe { crate::cpu::jit64::clear_all(ctx) };
 }
 
 pub fn jit_page_has_code(page: Page) -> bool { jit_page_has_code_ctx(&mut get_jit_state(), page) }
 
 fn jit_page_has_code_ctx(ctx: &mut JitState, page: Page) -> bool {
-    ctx.pages.contains_key(&page) || ctx.entry_points.contains_key(&page)
+    ctx.pages.contains_key(&page) || ctx.entry_points.contains_key(&page) || maybe_has_code(page)
 }
 
 pub fn jit_page_has_wasm_table_index(page: Page, wasm_table_index: u16) -> bool {
@@ -2533,6 +2578,8 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         1 => MAX_PAGES = value,
         2 => JIT_USE_LOOP_SAFETY = value != 0,
         3 => MAX_EXTRA_BASIC_BLOCKS = value,
+        4 => crate::cpu::jit64::set_threshold(value),
+        9 => crate::cpu::jit64::set_disable_mask(value),
         _ => dbg_assert!(false),
     }
 }
@@ -2544,6 +2591,11 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         1 => MAX_PAGES as u32,
         2 => JIT_USE_LOOP_SAFETY as u32,
         3 => MAX_EXTRA_BASIC_BLOCKS as u32,
+        4 => crate::cpu::jit64::threshold(),
+        5 => crate::cpu::jit64::STAT_COMPILED,
+        6 => crate::cpu::jit64::STAT_FAILED,
+        7 => crate::cpu::jit64::STAT_RUN,
+        8 => crate::cpu::jit64::STAT_INVALIDATED,
         _ => 0,
     }
 }

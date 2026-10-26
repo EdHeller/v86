@@ -182,6 +182,7 @@ pub unsafe fn flush() {
         e.vpn = INVALID;
     }
     FETCH_VPN = INVALID;
+    super::jit64::tlb_flushed();
 }
 
 pub unsafe fn invlpg64(addr: u64) {
@@ -191,6 +192,7 @@ pub unsafe fn invlpg64(addr: u64) {
         (*e).vpn = INVALID;
     }
     FETCH_VPN = INVALID;
+    super::jit64::tlb_flushed();
 }
 
 /// Translates a canonical address; raises a page fault on failure
@@ -208,7 +210,15 @@ pub unsafe fn translate(addr: u64, write: bool, user: bool, fetch: bool) -> OrPa
 }
 
 /// Like `translate`, but never raises an exception and does not modify page table entries
-unsafe fn probe(addr: u64, write: bool, user: bool) -> Option<u32> {
+/// Like `probe`, for an instruction fetch (checks NX)
+pub unsafe fn probe_fetch(addr: u64, user: bool) -> Option<u32> {
+    if !is_canonical(addr) {
+        return None;
+    }
+    walk(addr, false, user, true, false, false).ok().map(|(p, _)| p)
+}
+
+pub unsafe fn probe(addr: u64, write: bool, user: bool) -> Option<u32> {
     if !is_canonical(addr) {
         return None;
     }

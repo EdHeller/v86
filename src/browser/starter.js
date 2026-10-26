@@ -229,6 +229,9 @@ V86.prototype.continue_init = async function(emulator, options)
 
     settings.acpi = options.acpi;
     settings.disable_jit = options.disable_jit;
+    settings.jit64_threshold = options.jit64_threshold;
+    settings.sync_jit = options.sync_jit;
+    settings.jit64_disable_mask = options.jit64_disable_mask;
     settings.load_devices = true;
     settings.memory_size = options.memory_size || 64 * 1024 * 1024;
     settings.vga_memory_size = options.vga_memory_size || 8 * 1024 * 1024;

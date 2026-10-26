@@ -1015,6 +1015,20 @@ CPU.prototype.init = function(settings, device_bus)
         this.set_jit_config(0, 1);
     }
 
+    // number of executions of a 64-bit code address before it is compiled (4294967295 disables)
+    // compile generated wasm synchronously (for tests: modules are usable immediately)
+    this.sync_jit_compilation = !!settings.sync_jit;
+
+    if(settings.jit64_threshold !== undefined)
+    {
+        this.set_jit_config(4, settings.jit64_threshold);
+    }
+
+    if(settings.jit64_disable_mask)
+    {
+        this.set_jit_config(9, settings.jit64_disable_mask);
+    }
+
     settings.cpuid_level && this.set_cpuid_level(settings.cpuid_level);
 
     this.acpi_enabled[0] = +settings.acpi;
@@ -1817,7 +1831,8 @@ CPU.prototype.codegen_finalize = function(wasm_table_index, start, state_flags, 
         }
     }
 
-    const SYNC_COMPILATION = false;
+    // only jit64 modules can be finished synchronously (the 32 bit jit holds its state locked here)
+    const SYNC_COMPILATION = this.sync_jit_compilation && state_flags === 0x80;
 
     if(SYNC_COMPILATION)
     {

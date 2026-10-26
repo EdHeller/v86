@@ -6,6 +6,7 @@ pub mod fpu;
 pub mod global_pointers;
 pub mod instructions;
 pub mod instructions_0f;
+pub mod jit64;
 pub mod ioapic;
 pub mod long_mem;
 pub mod long_mode;

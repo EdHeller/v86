@@ -55,6 +55,8 @@ enum FunctionType {
     FN3_I32_I64_I32,
     FN3_I32_I64_I32_RET,
     FN4_I32_I64_I64_I32_RET,
+    FN3_I64_I64_I32,
+    FN4_I32_I64_I64_I32_RET_I64,
     // When adding at the end, update LAST below
 }
 
@@ -64,7 +66,7 @@ impl FunctionType {
         unsafe { transmute(x) }
     }
     pub fn to_u8(self: FunctionType) -> u8 { self as u8 }
-    pub const LAST: FunctionType = FunctionType::FN4_I32_I64_I64_I32_RET;
+    pub const LAST: FunctionType = FunctionType::FN4_I32_I64_I64_I32_RET_I64;
 }
 
 pub const WASM_MODULE_ARGUMENT_COUNT: u8 = 1;
@@ -418,6 +420,24 @@ impl WasmBuilder {
                     self.output.push(1);
                     self.output.push(op::TYPE_I32);
                 },
+                FunctionType::FN3_I64_I64_I32 => {
+                    self.output.push(op::TYPE_FUNC);
+                    self.output.push(3);
+                    self.output.push(op::TYPE_I64);
+                    self.output.push(op::TYPE_I64);
+                    self.output.push(op::TYPE_I32);
+                    self.output.push(0);
+                },
+                FunctionType::FN4_I32_I64_I64_I32_RET_I64 => {
+                    self.output.push(op::TYPE_FUNC);
+                    self.output.push(4);
+                    self.output.push(op::TYPE_I32);
+                    self.output.push(op::TYPE_I64);
+                    self.output.push(op::TYPE_I64);
+                    self.output.push(op::TYPE_I32);
+                    self.output.push(1);
+                    self.output.push(op::TYPE_I64);
+                },
             }
         }
 
@@ -642,6 +662,19 @@ impl WasmBuilder {
         self.instruction_body.push(local.idx());
         local
     }
+    /// a fresh local (zero initialised) without emitting any code
+    #[must_use = "local allocated but not used"]
+    pub fn new_local(&mut self) -> WasmLocal { self.alloc_local() }
+    #[must_use = "local allocated but not used"]
+    pub fn new_local_i64(&mut self) -> WasmLocalI64 { self.alloc_local_i64() }
+    pub fn set_local_i64(&mut self, local: &WasmLocalI64) {
+        self.instruction_body.push(op::OP_SETLOCAL);
+        self.instruction_body.push(local.idx());
+    }
+    pub fn tee_local_i64(&mut self, local: &WasmLocalI64) {
+        self.instruction_body.push(op::OP_TEELOCAL);
+        self.instruction_body.push(local.idx());
+    }
     pub fn get_local_i64(&mut self, local: &WasmLocalI64) {
         self.instruction_body.push(op::OP_GETLOCAL);
         self.instruction_body.push(local.idx());
@@ -824,6 +857,18 @@ impl WasmBuilder {
     pub fn leu_i32(&mut self) { self.instruction_body.push(op::OP_I32LEU); }
 
     pub fn gtu_i64(&mut self) { self.instruction_body.push(op::OP_I64GTU); }
+    pub fn ltu_i64(&mut self) { self.instruction_body.push(op::OP_I64LTU); }
+    pub fn geu_i64(&mut self) { self.instruction_body.push(op::OP_I64GEU); }
+    pub fn leu_i64(&mut self) { self.instruction_body.push(op::OP_I64LEU); }
+    pub fn lt_i64(&mut self) { self.instruction_body.push(op::OP_I64LTS); }
+    pub fn gt_i64(&mut self) { self.instruction_body.push(op::OP_I64GTS); }
+    pub fn le_i64(&mut self) { self.instruction_body.push(op::OP_I64LES); }
+    pub fn ge_i64(&mut self) { self.instruction_body.push(op::OP_I64GES); }
+    pub fn eqz_i64(&mut self) { self.instruction_body.push(op::OP_I64EQZ); }
+    pub fn sub_i64(&mut self) { self.instruction_body.push(op::OP_I64SUB); }
+    pub fn and_i64(&mut self) { self.instruction_body.push(op::OP_I64AND); }
+    pub fn xor_i64(&mut self) { self.instruction_body.push(op::OP_I64XOR); }
+    pub fn shr_s_i64(&mut self) { self.instruction_body.push(op::OP_I64SHRS); }
 
     pub fn reinterpret_i32_as_f32(&mut self) {
         self.instruction_body.push(op::OP_F32REINTERPRETI32);
@@ -971,6 +1016,12 @@ impl WasmBuilder {
     }
     pub fn call_fn4_i32_i64_i64_i32_ret(&mut self, name: &str) {
         self.call_fn(name, FunctionType::FN4_I32_I64_I64_I32_RET)
+    }
+    pub fn call_fn3_i64_i64_i32(&mut self, name: &str) {
+        self.call_fn(name, FunctionType::FN3_I64_I64_I32)
+    }
+    pub fn call_fn4_i32_i64_i64_i32_ret_i64(&mut self, name: &str) {
+        self.call_fn(name, FunctionType::FN4_I32_I64_I64_I32_RET_I64)
     }
 
     pub fn unreachable(&mut self) { self.instruction_body.push(op::OP_UNREACHABLE) }

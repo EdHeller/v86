@@ -29,13 +29,32 @@ const emulator = new V86({
     vga_memory_size: 8 * 1024 * 1024,
     autostart: true,
     disable_jit: +process.env.DISABLE_JIT,
+    jit64_threshold: process.env.JIT64 === undefined ? undefined : +process.env.JIT64,
+    sync_jit: !!process.env.SYNC_JIT,
+    jit64_disable_mask: +process.env.JIT64_MASK || 0,
     wasm_path: process.env.WASM || undefined,
     log_level: 0,
 });
 
 let last_screen = null;
 emulator.add_listener("screen-set-size", s => { last_screen = s; });
-emulator.add_listener("serial0-output-byte", b => process.stdout.write(String.fromCharCode(b)));
+let serial = "";
+emulator.add_listener("serial0-output-byte", b => {
+    process.stdout.write(String.fromCharCode(b));
+    serial += String.fromCharCode(b);
+    if(serial.includes("SELFTEST DONE") && process.env.EXIT_ON_DONE)
+    {
+        console.error("selftest done after %ds", Math.round(process.uptime() * 10) / 10);
+        process.exit(0);
+    }
+});
+
+function pixel(x, y)
+{
+    const vga = emulator.v86.cpu.devices.vga;
+    const a = y * 80 + (x >> 3), bit = 7 - (x & 7);
+    return (vga.plane0[a] >> bit & 1) | (vga.plane1[a] >> bit & 1) << 1 | (vga.plane2[a] >> bit & 1) << 2 | (vga.plane3[a] >> bit & 1) << 3;
+}
 
 function report()
 {
@@ -43,6 +62,8 @@ function report()
     const m = new Uint8Array(cpu.wasm_memory.buffer);
     const ps2 = cpu.devices.ps2;
     if(process.env.TOS_DEBUG) console.error("ps2 kbd_buffer=%d mouse_buffer=%d stream=%s ready=%s aux=%s cmd=%s", ps2.kbd_buffer.length, ps2.mouse_buffer.length, ps2.enable_keyboard_stream, ps2.next_byte_is_ready, ps2.next_byte_is_aux, ps2.command_register);
+    const g = i => cpu.wm.exports.get_jit_config(i);
+    console.error("jit64 compiled=%d failed=%d run=%d invalidated=%d", g(5), g(6), g(7), g(8));
     console.error("t=%ds eip=%s cs=%s is_64=%s instr=%d screen=%j", Math.round(process.uptime()),
         (cpu.instruction_pointer[0] >>> 0).toString(16), cpu.sreg[1].toString(16), m[1444],
         cpu.instruction_counter[0], last_screen);
@@ -187,6 +208,7 @@ const iv = setInterval(report, 10000);
 setTimeout(() => {
     clearInterval(iv);
     report();
+    if(process.env.TOS_PIXEL) console.error("PIXEL=" + pixel(300, 200));
     if(shot) screenshot(shot);
     process.exit(0);
 }, +timeout * 1000);
