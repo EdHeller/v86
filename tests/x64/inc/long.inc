@@ -48,11 +48,35 @@ _start:
 %endmacro
 
 report_fail:                ; eax = check id, r15 = actual
-    mov edi, eax
+    mov ebx, eax
+    ; print "actual=0x<16 hex digits>\n" to stderr (to derive expected values on the host)
+    lea rsi, [rel native_msg]
+    mov rcx, 16
+    mov rdx, r15
+.hex:
+    mov rax, rdx
+    and eax, 15
+    cmp eax, 10
+    jb .digit
+    add eax, 'a' - 10 - '0'
+.digit:
+    add eax, '0'
+    mov [rsi + rcx + 22], al
+    shr rdx, 4
+    dec rcx
+    jnz .hex
+    mov eax, 1
+    mov edi, 2
+    mov edx, 40
+    syscall
+    mov edi, ebx
     and edi, 0x7F
     or edi, 0x80            ; exit code 128 + (id & 0x7f) so the id is visible
     mov eax, 60
     syscall
+section .data
+native_msg: db "check failed: actual=0x", "0000000000000000", 10
+section .text
 
 %else
 

@@ -102,3 +102,21 @@ Instead `make x64tests-validate` checks them against known-good implementations:
 
 Check ids identify the failing check in the report. Flag-dependent checks must use
 `CHECK_CC` before any `CHECK_EQ`, because `CHECK_EQ` clobbers the flags.
+
+## 64-bit JIT (`src/rust/cpu/jit64.rs`)
+
+Hot 64-bit code is compiled to wasm: basic blocks of supported instructions (mov, alu, push/pop,
+lea, movzx/movsx, shifts by an immediate, inc/dec, setcc, cmov, jcc/jmp/call/ret, leave) are
+joined by a small dispatch loop. Registers always stay in memory and flags are computed by the
+same code as the interpreter, so exceptions and interrupts see an exact architectural state.
+Anything else ends the compiled region and is executed by the interpreter.
+
+Tests live in `jit/`. They set `V86: {"jit64_threshold": N, "sync_jit": true}` so that code is
+compiled after N executions and modules are usable immediately. Useful environment variables:
+
+- `JIT64=0 node tests/x64/run.js` compiles every instruction sequence on its first execution
+  (the whole suite and `fuzz.js` then run mostly compiled code); `JIT64=4294967295` disables it
+- `JIT64_MASK=<bits>` disables instruction kinds (bit numbers: see `kind()` in jit64.rs) to bisect
+- `JIT_STATS=1` makes `worker.js` print how many blocks were compiled / run / invalidated
+- `jit/gen_flags.py` regenerates `jit/03_flags_conditions.asm`; native runs print the actual
+  value of a failed check, which is how the expected values of `06_instruction_forms.asm` were made
