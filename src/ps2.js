@@ -497,11 +497,17 @@ PS2.prototype.port64_read = function()
 
     var status_byte = 0x10;
 
-    if(this.next_byte_is_ready)
+    // A guest that polls this port with interrupts disabled (TempleOS in its debugger) reads every
+    // pending byte as a keystroke, including the bytes of mouse packets, and shows them as
+    // garbage text. Mouse data only becomes visible while interrupts are enabled, which is the
+    // only situation in which the guest's mouse irq handler could read it anyway.
+    const hidden_mouse_byte = this.next_byte_is_aux && !(this.cpu.flags[0] & 0x200);
+
+    if(this.next_byte_is_ready && !hidden_mouse_byte)
     {
         status_byte |= 0x1;
     }
-    if(this.next_byte_is_aux)
+    if(this.next_byte_is_aux && !hidden_mouse_byte)
     {
         status_byte |= 0x20;
     }
