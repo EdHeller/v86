@@ -19,12 +19,23 @@ if(!iso)
 
 const buf = path => { const b = fs.readFileSync(path); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
 
+// HDA_FILE=<path> (HDA_MB=<size> creates it blank when it does not exist): hard disk image that is
+// written back when the run ends; NO_CDROM=1 boots from it alone
+const hda_path = process.env.HDA_FILE;
+let hda_buffer = null;
+if(hda_path)
+{
+    hda_buffer = fs.existsSync(hda_path) ? buf(hda_path) : new ArrayBuffer((+process.env.HDA_MB || 256) * 1024 * 1024);
+}
+process.on("exit", () => { if(hda_path && hda_buffer) fs.writeFileSync(hda_path, Buffer.from(hda_buffer)); });
+
 const emulator = new V86({
     bios: { buffer: buf(__dirname + "/../../../bios/seabios.bin") },
     vga_bios: { buffer: buf(__dirname + "/../../../bios/vgabios.bin") },
-    cdrom: { buffer: buf(iso) },
+    cdrom: process.env.NO_CDROM ? undefined : { buffer: buf(iso) },
+    hda: hda_buffer ? { buffer: hda_buffer } : undefined,
     initial_state: process.env.TOS_LOAD ? { buffer: buf(process.env.TOS_LOAD) } : undefined,
-    boot_order: 0x123,
+    boot_order: process.env.NO_CDROM ? 0x213 : 0x123,
     memory_size: 512 * 1024 * 1024,
     vga_memory_size: 8 * 1024 * 1024,
     autostart: true,
