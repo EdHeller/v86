@@ -164,6 +164,12 @@ pub unsafe fn j64_flags(kind_bits: i32, a: i64, b: i64, r: i64) {
     let kind = kind_bits >> 8;
     let (a, b, r) = (a as u64, b as u64, r as u64);
     let msb = bits - 1;
+    if kind == 3 {
+        // carry flag only
+        *flags = *flags & !FLAG_CARRY | (r as i32 & 1) * FLAG_CARRY;
+        *flags_changed = 0;
+        return;
+    }
     let (cf, of) = match kind {
         0 => (r < a, ((a ^ r) & (b ^ r)) >> msb & 1 != 0),
         1 => (false, false),
@@ -171,6 +177,19 @@ pub unsafe fn j64_flags(kind_bits: i32, a: i64, b: i64, r: i64) {
     };
     let af = kind != 1 && (a ^ b ^ r) & 0x10 != 0;
     long_mode::jit_set_flags(cf, af, of, r, bits);
+}
+
+/// string instructions that are not compiled inline (rep prefix, compares)
+#[no_mangle]
+pub unsafe fn j64_str(code: i32, info: i32) {
+    let opcode = (code & 0xFF) as u8;
+    let rep = (code >> 8 & 0xFF) as u8;
+    let asz32 = code >> 16 & 1 != 0;
+    let bits = (info & 0xFF) as u32;
+    let seg = (info >> 8) - 1;
+    if long_mode::jit_string_op(opcode, rep, bits, asz32, seg).is_err() {
+        FLAGS[FAULT] = 1;
+    }
 }
 
 /// flags computed lazily by 16/32 bit code may still be pending when 64-bit code is entered
@@ -226,6 +245,18 @@ enum Insn {
     Ret { adj: u64 },
     Leave { bits: u32 },
     Nop,
+    /// bt (0), bts (1), btr (2), btc (3)
+    Bt { op: u8, bits: u32, dst: Opd, idx: Opd },
+    /// movs, cmps, stos, lods, scas (with or without rep)
+    Str { opcode: u8, rep: u8, bits: u32, asz32: bool, seg: i32 },
+    Neg { bits: u32, dst: Opd },
+    Not { bits: u32, dst: Opd },
+    Imul { bits: u32, dst: u8, a: Opd, b: Opd },
+    CallInd { src: Opd },
+    JmpInd { src: Opd },
+    Xchg { bits: u32, a: Opd, b: Opd },
+    /// cbw / cwde / cdqe (0x98) and cwd / cdq / cqo (0x99)
+    Sext { opcode: u8, bits: u32 },
 }
 
 struct Cursor<'a> {
@@ -252,6 +283,13 @@ fn kind(i: &Insn) -> u32 {
         Insn::Ret { .. } => 14,
         Insn::Leave { .. } => 15,
         Insn::Nop => 16,
+        Insn::Bt { .. } => 17,
+        Insn::Str { .. } => 18,
+        Insn::Neg { .. } | Insn::Not { .. } => 19,
+        Insn::Imul { .. } => 20,
+        Insn::CallInd { .. } | Insn::JmpInd { .. } => 21,
+        Insn::Xchg { .. } => 22,
+        Insn::Sext { .. } => 23,
     }
 }
 
@@ -347,6 +385,7 @@ fn modrm(c: &mut Cursor, p: &Pfx) -> Option<Modrm> {
 fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
     let mut c = Cursor { code, pos: 0 };
     let mut p = Pfx { rex: 0, has_rex: false, osz16: false, asz32: false, seg: -1 };
+    let mut rep = 0u8;
     let opcode = loop {
         let b = c.u8()?;
         match b {
@@ -361,8 +400,9 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                 p.has_rex = true;
                 break c.u8()?;
             },
-            // rep prefixes change the meaning of too many instructions
-            0xF2 | 0xF3 => return None,
+            // rep prefixes change the meaning of many instructions: only string instructions
+            // accept them (checked below)
+            0xF2 | 0xF3 => rep = b,
             _ => break b,
         }
     };
@@ -455,10 +495,50 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
             }
         },
         0x90 => {
-            if p.b() != 0 {
+            if p.b() != 0 || rep != 0 {
                 return None;
             }
             Insn::Nop
+        },
+        0x86 | 0x87 => {
+            let bits = if opcode == 0x86 { 8 } else { osz };
+            let m = modrm(&mut c, &p)?;
+            Insn::Xchg { bits, a: m.rm, b: Opd::Reg(m.reg, p.has_rex) }
+        },
+        0x98 | 0x99 => Insn::Sext { opcode, bits: osz },
+        0x69 | 0x6B => {
+            let m = modrm(&mut c, &p)?;
+            let imm = if opcode == 0x6B {
+                sign_extend(c.u8()? as u64, 8)
+            }
+            else if osz == 16 {
+                c.u16()?
+            }
+            else {
+                sign_extend(c.u32()?, 32)
+            };
+            Insn::Imul { bits: osz, dst: m.reg, a: m.rm, b: Opd::Imm(imm) }
+        },
+        0xA4 | 0xA5 | 0xAA | 0xAB | 0xAC | 0xAD | 0xA6 | 0xA7 | 0xAE | 0xAF => {
+            let bits = if opcode & 1 == 0 { 8 } else { osz };
+            Insn::Str { opcode, rep, bits, asz32: p.asz32, seg: p.seg }
+        },
+        0xF6 | 0xF7 => {
+            let bits = if opcode == 0xF6 { 8 } else { osz };
+            let m = modrm(&mut c, &p)?;
+            match m.reg & 7 {
+                0 | 1 => {
+                    let imm = match bits {
+                        8 => c.u8()? as u64,
+                        16 => c.u16()?,
+                        _ => sign_extend(c.u32()?, 32),
+                    };
+                    Insn::Test { bits, a: m.rm, b: Opd::Imm(imm) }
+                },
+                2 => Insn::Not { bits, dst: m.rm },
+                3 => Insn::Neg { bits, dst: m.rm },
+                _ => return None,
+            }
         },
         0xA8 => {
             let b = c.u8()? as u64;
@@ -528,6 +608,10 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
             let m = modrm(&mut c, &p)?;
             match m.reg & 7 {
                 0 | 1 => Insn::IncDec { dec: m.reg & 7 == 1, bits, dst: m.rm },
+                // call, jmp and push r/m (operand size 64, or 16 for push)
+                2 if opcode == 0xFF => Insn::CallInd { src: m.rm },
+                4 if opcode == 0xFF => Insn::JmpInd { src: m.rm },
+                6 if opcode == 0xFF => Insn::Push { bits: if p.osz16 { 16 } else { 64 }, src: m.rm },
                 _ => return None,
             }
         },
@@ -537,6 +621,28 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                 0x1F => {
                     modrm(&mut c, &p)?;
                     Insn::Nop
+                },
+                0xAF => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::Imul { bits: osz, dst: m.reg, a: Opd::Reg(m.reg, true), b: m.rm }
+                },
+                0xA3 | 0xAB | 0xB3 | 0xBB => {
+                    let m = modrm(&mut c, &p)?;
+                    let op = match op2 {
+                        0xA3 => 0,
+                        0xAB => 1,
+                        0xB3 => 2,
+                        _ => 3,
+                    };
+                    Insn::Bt { op, bits: osz, dst: m.rm, idx: Opd::Reg(m.reg, true) }
+                },
+                0xBA => {
+                    let m = modrm(&mut c, &p)?;
+                    let imm = c.u8()? as u64;
+                    if m.reg & 7 < 4 {
+                        return None;
+                    }
+                    Insn::Bt { op: (m.reg & 7) - 4, bits: osz, dst: m.rm, idx: Opd::Imm(imm) }
                 },
                 0x40..=0x4F => {
                     let m = modrm(&mut c, &p)?;
@@ -562,6 +668,9 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         _ => return None,
     };
 
+    if rep != 0 && !matches!(insn, Insn::Str { .. }) {
+        return None;
+    }
     let len = c.pos;
     // rip-relative operands are relative to the end of the instruction
     let end = rip.wrapping_add(len as u64);
@@ -589,6 +698,14 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         Insn::Shift { op, bits, dst, count } => Insn::Shift { op, bits, dst: fix(dst), count },
         Insn::Setcc { cc, dst } => Insn::Setcc { cc, dst: fix(dst) },
         Insn::Cmov { cc, bits, dst, src } => Insn::Cmov { cc, bits, dst, src: fix(src) },
+        Insn::Bt { op, bits, dst, idx } => Insn::Bt { op, bits, dst: fix(dst), idx },
+        Insn::Neg { bits, dst } => Insn::Neg { bits, dst: fix(dst) },
+        Insn::Not { bits, dst } => Insn::Not { bits, dst: fix(dst) },
+        Insn::Imul { bits, dst, a, b } => Insn::Imul { bits, dst, a: fix(a), b: fix(b) },
+        Insn::CallInd { src } => Insn::CallInd { src: fix(src) },
+        Insn::JmpInd { src } => Insn::JmpInd { src: fix(src) },
+        Insn::Xchg { bits, a, b } => Insn::Xchg { bits, a: fix(a), b: fix(b) },
+        Insn::Push { bits, src } => Insn::Push { bits, src: fix(src) },
         i => i,
     };
     if unsafe { DISABLE_MASK } >> kind(&insn) & 1 != 0 {
@@ -624,6 +741,16 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::Setcc { dst, .. } => (true, false, has_mem(&dst)),
         Insn::Cmov { src, .. } => (true, false, has_mem(&src)),
         Insn::Jcc { .. } => (true, false, false),
+        // only the carry flag changes: the rest stays as it was
+        Insn::Bt { dst, .. } => (false, false, has_mem(&dst)),
+        Insn::Str { .. } => (false, false, true),
+        Insn::Neg { dst, .. } => (false, true, has_mem(&dst)),
+        Insn::Not { dst, .. } => (false, false, has_mem(&dst)),
+        Insn::Imul { a, b, .. } => (false, true, has_mem(&a) || has_mem(&b)),
+        Insn::CallInd { .. } => (false, false, true),
+        Insn::JmpInd { src } => (false, false, has_mem(&src)),
+        Insn::Xchg { a, b, .. } => (false, false, has_mem(&a) || has_mem(&b)),
+        Insn::Sext { .. } => (false, false, false),
     };
     FlagFx { reads, writes_all, fault }
 }
@@ -661,7 +788,7 @@ fn flag_liveness(
                     taken || succ_live(last + len)
                 },
                 Insn::Jmp { target } => match internal(target) { Some(t) => succ_live(t), None => true },
-                Insn::Call { .. } | Insn::Ret { .. } => true,
+                Insn::Call { .. } | Insn::Ret { .. } | Insn::CallInd { .. } | Insn::JmpInd { .. } => true,
                 _ => succ_live(last + len),
             };
             for &o in offs.iter().rev() {
@@ -718,6 +845,7 @@ struct Gen<'a> {
     live_in: HashMap<usize, bool>,
     /// flags are needed after the current instruction
     cur_live_out: bool,
+    smc_needed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -788,12 +916,26 @@ impl<'a> Gen<'a> {
         self.b.block_end();
     }
 
-    /// after a write: if the write changed code of this block, continue in the interpreter
-    fn smc_check(&mut self) {
+    /// a write happened: the check for changed code runs at the end of the instruction (the
+    /// instruction has to complete first)
+    fn smc_check(&mut self) { self.smc_needed = true; }
+
+    fn finish_insn(&mut self) {
+        if self.smc_needed {
+            self.smc_needed = false;
+            self.smc_exit();
+        }
+    }
+
+    /// if a write changed code of this block, continue in the interpreter
+    fn smc_exit(&mut self) {
         self.b.load_fixed_i32(unsafe { &raw const FLAGS[SMC] } as u32);
         self.b.if_void();
         let next = self.next;
+        // the exit stores pending flags, the code that follows still has them pending
+        let saved = self.pending;
         self.exit_const(next, self.n);
+        self.pending = saved;
         self.b.block_end();
     }
 
@@ -1029,6 +1171,12 @@ impl<'a> Gen<'a> {
         let invert = cc & 1 != 0;
         // each case leaves the i32 for the non-inverted condition
         match (p.kind, base) {
+            // carry flag only (bt family): the other flags are in memory
+            (3, 1) => {
+                self.b.get_local_i64(&self.fl_r);
+                self.b.wrap_i64_to_i32();
+            },
+            (3, _) => return false,
             // zero / sign
             (_, 2) => {
                 self.b.get_local_i64(&self.fl_r);
@@ -1427,7 +1575,255 @@ impl<'a> Gen<'a> {
                 self.b.get_local_i64(&self.t_v);
                 self.set_reg(5, bits, true);
             },
-            Insn::Jcc { .. } | Insn::Jmp { .. } | Insn::Call { .. } | Insn::Ret { .. } => {
+            Insn::Neg { bits, dst } => {
+                self.set_previous_ip();
+                self.ea_to_local(&dst);
+                if self.cur_live_out && has_mem(&dst) {
+                    self.materialize();
+                    self.b.const_i32(5);
+                    self.b.const_i64(0);
+                    self.read_opd_saved(&dst, bits);
+                    self.b.const_i32(bits as i32);
+                    self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                }
+                else if !self.cur_live_out {
+                    self.pending = None;
+                    self.b.const_i64(0);
+                    self.read_opd_saved(&dst, bits);
+                    self.b.sub_i64();
+                    self.mask_result(bits);
+                }
+                else {
+                    self.pending = None;
+                    self.read_opd_saved(&dst, bits);
+                    self.b.set_local_i64(&self.fl_b);
+                    self.b.const_i64(0);
+                    self.b.set_local_i64(&self.fl_a);
+                    self.b.const_i64(0);
+                    self.b.get_local_i64(&self.fl_b);
+                    self.b.sub_i64();
+                    self.mask_result(bits);
+                    self.b.set_local_i64(&self.fl_r);
+                    self.b.get_local_i64(&self.fl_r);
+                    self.pending = Some(Pending { kind: 2, bits });
+                }
+                self.write_opd_saved(&dst, bits);
+            },
+            Insn::Not { bits, dst } => {
+                self.set_previous_ip();
+                self.ea_to_local(&dst);
+                self.read_opd_saved(&dst, bits);
+                self.b.const_i64(-1);
+                self.b.xor_i64();
+                self.mask_result(bits);
+                self.write_opd_saved(&dst, bits);
+            },
+            Insn::Imul { bits, dst, a, b } => {
+                self.set_previous_ip();
+                self.pending = None;
+                self.ea_to_local(&a);
+                self.ea_to_local(&b);
+                self.b.const_i32(24);
+                self.read_opd_saved(&a, bits);
+                self.read_opd_saved(&b, bits);
+                self.b.const_i32(bits as i32);
+                self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                self.set_reg(dst, bits, true);
+            },
+            Insn::Xchg { bits, a, b } => {
+                self.set_previous_ip();
+                self.ea_to_local(&a);
+                self.ea_to_local(&b);
+                let ta = self.b.new_local_i64();
+                let tb = self.b.new_local_i64();
+                self.read_opd_saved(&a, bits);
+                self.b.set_local_i64(&ta);
+                self.read_opd_saved(&b, bits);
+                self.b.set_local_i64(&tb);
+                self.b.get_local_i64(&tb);
+                self.write_opd_saved(&a, bits);
+                self.b.get_local_i64(&ta);
+                self.write_opd_saved(&b, bits);
+                self.b.free_local_i64(ta);
+                self.b.free_local_i64(tb);
+            },
+            Insn::Sext { opcode, bits } => {
+                if opcode == 0x98 {
+                    let half = bits / 2;
+                    self.get_reg(0, half, true);
+                    self.b.const_i64(64 - half as i64);
+                    self.b.shl_i64();
+                    self.b.const_i64(64 - half as i64);
+                    self.b.shr_s_i64();
+                    self.set_reg(0, bits, true);
+                }
+                else {
+                    self.b.const_i64(0);
+                    self.get_reg(0, bits, true);
+                    self.b.const_i64(bits as i64 - 1);
+                    self.b.shr_u_i64();
+                    self.b.const_i64(1);
+                    self.b.and_i64();
+                    self.b.sub_i64();
+                    self.set_reg(2, bits, true);
+                }
+            },
+            Insn::Bt { op, bits, dst, idx } => {
+                self.set_previous_ip();
+                let live = self.cur_live_out;
+                if live {
+                    // only the carry flag changes: the rest has to be in memory
+                    self.materialize();
+                }
+                // bit index -> t_a, address (memory operands) -> t_ea
+                match (dst, idx) {
+                    (Opd::Mem(ea), Opd::Reg(m, rex)) => {
+                        // the bit offset may address beyond the operand
+                        self.get_reg(m, bits, rex);
+                        if bits < 64 {
+                            self.b.const_i64(64 - bits as i64);
+                            self.b.shl_i64();
+                            self.b.const_i64(64 - bits as i64);
+                            self.b.shr_s_i64();
+                        }
+                        self.b.set_local_i64(&self.t_a);
+                        self.ea(&ea, true);
+                        self.b.get_local_i64(&self.t_a);
+                        self.b.const_i64(3);
+                        self.b.shr_s_i64();
+                        self.b.const_i64(!(bits as i64 / 8 - 1));
+                        self.b.and_i64();
+                        self.b.add_i64();
+                        self.b.set_local_i64(&self.t_ea);
+                        self.b.get_local_i64(&self.t_a);
+                        self.b.const_i64(bits as i64 - 1);
+                        self.b.and_i64();
+                        self.b.set_local_i64(&self.t_a);
+                    },
+                    (Opd::Mem(ea), Opd::Imm(i)) => {
+                        self.ea(&ea, true);
+                        self.b.set_local_i64(&self.t_ea);
+                        self.b.const_i64(i as i64 & (bits as i64 - 1));
+                        self.b.set_local_i64(&self.t_a);
+                    },
+                    (_, Opd::Reg(m, rex)) => {
+                        self.get_reg(m, bits, rex);
+                        self.b.const_i64(bits as i64 - 1);
+                        self.b.and_i64();
+                        self.b.set_local_i64(&self.t_a);
+                    },
+                    (_, Opd::Imm(i)) => {
+                        self.b.const_i64(i as i64 & (bits as i64 - 1));
+                        self.b.set_local_i64(&self.t_a);
+                    },
+                    _ => unreachable!(),
+                }
+                self.read_opd_saved(&dst, bits);
+                self.b.set_local_i64(&self.t_v);
+                if live {
+                    self.b.get_local_i64(&self.t_v);
+                    self.b.get_local_i64(&self.t_a);
+                    self.b.shr_u_i64();
+                    self.b.const_i64(1);
+                    self.b.and_i64();
+                    self.b.set_local_i64(&self.fl_r);
+                }
+                if live {
+                    // set before the write: when the write changes this code the exit stores it
+                    self.pending = Some(Pending { kind: 3, bits });
+                }
+                if op != 0 {
+                    self.b.get_local_i64(&self.t_v);
+                    self.b.const_i64(1);
+                    self.b.get_local_i64(&self.t_a);
+                    self.b.shl_i64();
+                    match op {
+                        1 => self.b.or_i64(),
+                        2 => {
+                            self.b.const_i64(-1);
+                            self.b.xor_i64();
+                            self.b.and_i64();
+                        },
+                        _ => self.b.xor_i64(),
+                    }
+                    self.mask_result(bits);
+                    self.write_opd_saved(&dst, bits);
+                }
+            },
+            Insn::Str { opcode, rep, bits, asz32, seg } => {
+                self.set_previous_ip();
+                let simple = rep == 0 && !asz32 && seg < 0 && matches!(opcode, 0xA4 | 0xA5 | 0xAA | 0xAB | 0xAC | 0xAD);
+                if !simple {
+                    self.b.const_i32(opcode as i32 | (rep as i32) << 8 | (asz32 as i32) << 16);
+                    self.b.const_i32(bits as i32 | (seg + 1) << 8);
+                    self.b.call_fn2("j64_str");
+                    self.fault_check();
+                    self.smc_check();
+                    return;
+                }
+                let step = bits as i64 / 8;
+                // delta: +step, or -step when the direction flag is set
+                let delta = |g: &mut Gen| {
+                    g.b.const_i64(-step);
+                    g.b.const_i64(step);
+                    g.b.load_fixed_i32(flags as u32);
+                    g.b.const_i32(FLAG_DIRECTION);
+                    g.b.and_i32();
+                    g.b.select();
+                };
+                match opcode {
+                    0xAC | 0xAD => {
+                        self.get_reg(6, 64, true);
+                        self.read_mem(bits);
+                        self.fault_check();
+                        self.set_reg(0, bits, true);
+                        self.get_reg(6, 64, true);
+                        delta(self);
+                        self.b.add_i64();
+                        self.set_reg(6, 64, true);
+                    },
+                    0xAA | 0xAB => {
+                        self.get_reg(7, 64, true);
+                        self.get_reg(0, bits, true);
+                        self.b.set_local_i64(&self.t_v);
+                        self.b.set_local_i64(&self.t_ea);
+                        self.b.get_local_i64(&self.t_ea);
+                        self.b.get_local_i64(&self.t_v);
+                        self.b.const_i32(bits as i32);
+                        self.b.call_fn3_i64_i64_i32("j64_write");
+                        self.fault_check();
+                        self.smc_check();
+                        self.get_reg(7, 64, true);
+                        delta(self);
+                        self.b.add_i64();
+                        self.set_reg(7, 64, true);
+                    },
+                    _ => {
+                        self.get_reg(6, 64, true);
+                        self.read_mem(bits);
+                        self.fault_check();
+                        self.b.set_local_i64(&self.t_v);
+                        self.get_reg(7, 64, true);
+                        self.b.set_local_i64(&self.t_ea);
+                        self.b.get_local_i64(&self.t_ea);
+                        self.b.get_local_i64(&self.t_v);
+                        self.b.const_i32(bits as i32);
+                        self.b.call_fn3_i64_i64_i32("j64_write");
+                        self.fault_check();
+                        self.smc_check();
+                        self.get_reg(6, 64, true);
+                        delta(self);
+                        self.b.add_i64();
+                        self.set_reg(6, 64, true);
+                        self.get_reg(7, 64, true);
+                        delta(self);
+                        self.b.add_i64();
+                        self.set_reg(7, 64, true);
+                    },
+                }
+            },
+            Insn::Jcc { .. } | Insn::Jmp { .. } | Insn::Call { .. } | Insn::Ret { .. }
+            | Insn::CallInd { .. } | Insn::JmpInd { .. } => {
                 unreachable!()
             },
         }
@@ -1506,7 +1902,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                     }
                     break;
                 },
-                Insn::Call { .. } | Insn::Ret { .. } => break,
+                Insn::Call { .. } | Insn::Ret { .. } | Insn::CallInd { .. } | Insn::JmpInd { .. } => break,
                 _ => off += len,
             }
         }
@@ -1551,7 +1947,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
 
     let mut g = Gen {
         b, start: rip, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, cur: rip, next: rip, block_index,
-        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true,
+        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false,
     };
 
     // budget: return to the dispatcher now and then so that interrupts can be handled
@@ -1627,6 +2023,42 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                 g.exit_const(target, n);
                 ended = true;
             },
+            Insn::CallInd { src } => {
+                g.materialize();
+                g.set_previous_ip();
+                let target = g.b.new_local_i64();
+                g.read_opd(&src, 64);
+                g.b.set_local_i64(&target);
+                g.get_reg(4, 64, true);
+                g.b.const_i64(8);
+                g.b.sub_i64();
+                g.b.set_local_i64(&g.t_ea);
+                g.b.get_local_i64(&g.t_ea);
+                g.b.const_i64(next as i64);
+                g.b.const_i32(64);
+                g.b.call_fn3_i64_i64_i32("j64_write");
+                g.fault_check();
+                g.smc_check();
+                g.b.get_local_i64(&g.t_ea);
+                g.set_reg(4, 64, true);
+                g.b.get_local_i64(&target);
+                g.b.const_i32(0);
+                g.b.call_fn2_i64_i32("j64_set_rip");
+                g.fault_check();
+                g.exit_keep_rip();
+                g.b.free_local_i64(target);
+                ended = true;
+            },
+            Insn::JmpInd { src } => {
+                g.materialize();
+                g.set_previous_ip();
+                g.read_opd(&src, 64);
+                g.b.const_i32(0);
+                g.b.call_fn2_i64_i32("j64_set_rip");
+                g.fault_check();
+                g.exit_keep_rip();
+                ended = true;
+            },
             Insn::Ret { adj } => {
                 g.materialize();
                 g.set_previous_ip();
@@ -1647,12 +2079,17 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                 g.exit_keep_rip();
                 ended = true;
             },
-            _ => g.emit(&insn),
+            _ => {
+                g.emit(&insn);
+                g.finish_insn();
+            },
         }
+        // a block that is left right away does not need the check
+        g.smc_needed = false;
 
         // what follows this instruction?
         let follows = off + len;
-        let terminator = matches!(insn, Insn::Jmp { .. } | Insn::Call { .. } | Insn::Ret { .. });
+        let terminator = matches!(insn, Insn::Jmp { .. } | Insn::Call { .. } | Insn::Ret { .. } | Insn::CallInd { .. } | Insn::JmpInd { .. });
         if !terminator {
             if !decoded.contains_key(&follows) {
                 // the path ends here: continue in the interpreter

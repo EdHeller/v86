@@ -2264,6 +2264,7 @@ pub unsafe fn jit_alu(op: u8, a: u64, b: u64, bits: u32) -> u64 {
     match op {
         0..=7 => alu(op, a, b, bits),
         8 | 9 => incdec(op == 9, a, bits),
+        24 => imul(a, b, bits),
         _ => shift(op - 16, a, b as u32, bits),
     }
 }
@@ -2271,3 +2272,16 @@ pub unsafe fn jit_alu(op: u8, a: u64, b: u64, bits: u32) -> u64 {
 pub unsafe fn jit_set_rip(target: u64) -> OrPageFault<()> { set_rip(target) }
 
 pub unsafe fn jit_set_flags(cf: bool, af: bool, of: bool, result: u64, bits: u32) { set_flags(cf, af, of, result, bits) }
+
+pub unsafe fn jit_string_op(opcode: u8, rep: u8, bits: u32, asz32: bool, seg: i32) -> OrPageFault<()> {
+    let p = Prefixes {
+        rex: if bits == 64 { 8 } else { 0 },
+        has_rex: bits == 64,
+        osz16: bits == 16,
+        asz32,
+        seg,
+        rep,
+        lock: false,
+    };
+    string_op(&p, opcode)
+}
