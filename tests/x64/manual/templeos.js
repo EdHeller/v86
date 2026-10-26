@@ -27,7 +27,12 @@ if(hda_path)
 {
     hda_buffer = fs.existsSync(hda_path) ? buf(hda_path) : new ArrayBuffer((+process.env.HDA_MB || 256) * 1024 * 1024);
 }
-process.on("exit", () => { if(hda_path && hda_buffer) fs.writeFileSync(hda_path, Buffer.from(hda_buffer)); });
+// restoring a state replaces the buffer of the emulated disk by a copy: always ask the ide
+function current_hda()
+{
+    try { return emulator.v86.cpu.devices.ide.primary.master.buffer.buffer; } catch(e) { return hda_buffer; }
+}
+process.on("exit", () => { if(hda_path && hda_buffer) fs.writeFileSync(hda_path, Buffer.from(current_hda())); });
 
 const emulator = new V86({
     bios: { buffer: buf(__dirname + "/../../../bios/seabios.bin") },
@@ -73,6 +78,13 @@ function report()
     const m = new Uint8Array(cpu.wasm_memory.buffer);
     const ps2 = cpu.devices.ps2;
     if(process.env.TOS_DEBUG) console.error("ps2 kbd_buffer=%d mouse_buffer=%d stream=%s ready=%s aux=%s cmd=%s", ps2.kbd_buffer.length, ps2.mouse_buffer.length, ps2.enable_keyboard_stream, ps2.next_byte_is_ready, ps2.next_byte_is_aux, ps2.command_register);
+    if(hda_buffer)
+    {
+        const w = new Uint32Array(current_hda());
+        let used = 0, last = 0;
+        for(let i = 0; i < w.length; i += 1024) if(w[i] | w[i + 1]) { used++; last = i / 1024; }
+        console.error("hda: %d of %d pages written to, last page %d", used, w.length / 1024, last);
+    }
     const g = i => cpu.wm.exports.get_jit_config(i);
     console.error("jit64 compiled=%d failed=%d run=%d invalidated=%d", g(5), g(6), g(7), g(8));
     console.error("t=%ds eip=%s cs=%s is_64=%s instr=%d screen=%j", Math.round(process.uptime()),

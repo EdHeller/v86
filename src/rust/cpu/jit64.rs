@@ -82,6 +82,9 @@ struct State {
     /// table indices of invalidated modules that are still being compiled by the host: the index
     /// must not be reused before the host is done with it
     zombies: HashSet<u16>,
+    /// per virtual page: how often blocks of it were invalidated (code mixed with data is not
+    /// worth compiling again and again)
+    invalidations: HashMap<u64, u8, PageBuildHasher>,
 }
 
 static mut STATE: Option<State> = None;
@@ -109,6 +112,7 @@ unsafe fn state() -> &'static mut State {
             page_blocks: HashMap::default(),
             slots: vec![SLOT_EMPTY; SLOTS],
             zombies: HashSet::new(),
+            invalidations: HashMap::default(),
         });
     }
     STATE.as_mut().unwrap()
@@ -1364,6 +1368,10 @@ unsafe fn try_run_block() -> bool {
             if slot.count < THRESHOLD {
                 return false;
             }
+            let backoff = st.invalidations.get(&(r >> 12)).copied().unwrap_or(0) as u32;
+            if backoff != 0 && slot.count < THRESHOLD.saturating_mul(1 << backoff.min(12)) {
+                return false;
+            }
             slot.count = 0;
             // an evicted block, or a new one
             if !st.blocks.contains_key(&r) {
@@ -1483,8 +1491,14 @@ pub unsafe fn dirty_page(ctx: &mut jit::JitState, page: Page) -> bool {
         if EXECUTING_PAGE == p {
             FLAGS[SMC] = 1;
         }
+        let mut counted: Vec<u64> = vec![];
         for r in list {
             forget_slot(r);
+            if !counted.contains(&(r >> 12)) {
+                counted.push(r >> 12);
+                let n = st.invalidations.entry(r >> 12).or_insert(0);
+                *n = n.saturating_add(1);
+            }
             if let Some(b) = st.blocks.remove(&r) {
                 STAT_INVALIDATED += 1;
                 match b.state {
