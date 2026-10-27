@@ -74,7 +74,7 @@ const result = await page.evaluate(async ({ port, iterations, threshold }) => {
     await until(/localhost:~# /, 60000);
     serial = "";
     emulator.serial0_send(`time sh -c 'i=0; while [ $i -lt ${iterations} ]; do i=$((i+1)); done'; echo BENCH-DONE\n`);
-    await until(/BENCH-DONE\n/, 900000);
+    await until(/BENCH-DONE\r?\n/, 900000);
     const m = serial.match(/real\s+(\d+)m\s+([\d.]+)s/);
     return { seconds: m ? +m[1] * 60 + +m[2] : null, raw: serial.slice(-200) };
 }, { port, iterations, threshold });
