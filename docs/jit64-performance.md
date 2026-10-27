@@ -91,3 +91,27 @@ about **15 % slower** (37.0 / 40.2 s -> 46.0 / 45.6 s for 40000 iterations, alte
 Compiled blocks retire only about 14 instructions per run, so loading up to 16 registers on every entry and storing
 the dirty ones on every exit costs more than the memory accesses it removes. Register caching only pays once the runs
 are long (loops inside one module, chained blocks, traces across pages). Make runs longer first.
+
+## memory64 measurement (wasm 3.0)
+
+Hand assembled loop (random 8 byte load + store, best of 7), 32-bit memory against `memory64` with i64 addresses:
+
+| working set | Node 22 (V8 12.4) mem32 / mem64 | Node 24 (V8 13.6) mem32 / mem64 |
+| --- | --- | --- |
+| 64 KB (compute bound) | 1028 / 1023 M/s | 990 / **402 M/s (2.5x slower)** |
+| 4 MB | 378 / 378 M/s | 389 / 385 M/s |
+| 64 MB (cache misses) | 47 / 48 M/s | 48 / 46 M/s |
+| 1 GB | 24 / 26 M/s | 25 / 24 M/s |
+
+So `memory64` is neutral on the older engine and clearly slower on the newer one for compute bound code (explicit
+bounds checks instead of guard pages). It gives no speed-up for 64-bit guests (the guest physical memory is below
+4 GB anyway) and would require converting every generated address to i64: not worth it. (Earlier I wrongly
+assumed this was true for all engines; it is not, and it can change from one engine version to the next.)
+
+## Would a compiled-module cache help?
+
+Compiled modules are built on background threads. Process cpu time of a 100 s Alpine x86_64 boot: 99.4 s user with
+jit64 off, 103.8 s user + 1.9 s system with it on, i.e. about 5-6 % of one core for compiling about 5800 modules
+(roughly 1 ms each). The main thread does not wait for it, so a persistent cache (IndexedDB) can save at most that
+background cpu and some latency at start-up; it cannot speed up steady state execution. A snapshot of the booted
+machine (7 minutes -> seconds) is the cache that matters.

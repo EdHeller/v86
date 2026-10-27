@@ -144,6 +144,7 @@ function unsupported() {
     for(const [n, op] of rows.slice(0, 25)) console.error("  %s  %s", String(n).padStart(8), op);
 }
 setTimeout(async () => {
+    if(process.env.ALP_CPU) { const u = process.cpuUsage(); console.error("cpu: user %ss system %ss in %ss of wall time", (u.user / 1e6).toFixed(1), (u.system / 1e6).toFixed(1), ((Date.now() - t0) / 1000).toFixed(1)); }
     if(process.env.ALP_STATS) { const { stats_to_string } = await import("../../../src/browser/print_stats.js"); console.error(stats_to_string(emulator.v86.cpu)); }
     if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); if(process.env.ALP_DUMP) dump_virtual(); process.exit(0); }, +timeout * 1000);
 
