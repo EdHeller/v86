@@ -242,6 +242,8 @@ enum Opd {
 #[derive(Clone, Copy)]
 enum Count {
     Imm(u8),
+    /// the count is in cl
+    Cl,
 }
 
 #[derive(Clone, Copy)]
@@ -513,11 +515,18 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
             }
         },
         0x90 => {
-            if p.b() != 0 || rep != 0 {
+            if rep != 0 {
                 return None;
             }
-            Insn::Nop
+            if p.b() != 0 {
+                // xchg r8, rax
+                Insn::Xchg { bits: osz, a: Opd::Reg(0, true), b: Opd::Reg(8, true) }
+            }
+            else {
+                Insn::Nop
+            }
         },
+        0x91..=0x97 => Insn::Xchg { bits: osz, a: Opd::Reg(0, true), b: Opd::Reg((opcode & 7) | p.b(), true) },
         0x86 | 0x87 => {
             let bits = if opcode == 0x86 { 8 } else { osz };
             let m = modrm(&mut c, &p)?;
@@ -588,6 +597,11 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
             }
             Insn::Shift { op: m.reg & 7, bits, dst: m.rm, count: Count::Imm(count) }
         },
+        0xD2 | 0xD3 => {
+            let bits = if opcode & 1 == 0 { 8 } else { osz };
+            let m = modrm(&mut c, &p)?;
+            Insn::Shift { op: m.reg & 7, bits, dst: m.rm, count: Count::Cl }
+        },
         0xC2 | 0xC3 => {
             let adj = if opcode == 0xC2 { c.u16()? } else { 0 };
             Insn::Ret { adj }
@@ -636,7 +650,8 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         0x0F => {
             let op2 = c.u8()?;
             match op2 {
-                0x1F => {
+                // multi-byte nop and the hint nops (endbr64 is f3 0f 1e fa)
+                0x1E | 0x1F => {
                     modrm(&mut c, &p)?;
                     Insn::Nop
                 },
@@ -686,7 +701,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         _ => return None,
     };
 
-    if rep != 0 && !matches!(insn, Insn::Str { .. }) {
+    if rep != 0 && !matches!(insn, Insn::Str { .. } | Insn::Nop) {
         return None;
     }
     let len = c.pos;
@@ -755,7 +770,8 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::Lea { .. } | Insn::Nop | Insn::Jmp { .. } => (false, false, false),
         Insn::Push { .. } | Insn::Pop { .. } | Insn::Leave { .. } | Insn::Call { .. } | Insn::Ret { .. } => (false, false, true),
         Insn::IncDec { dst, .. } => (false, false, has_mem(&dst)),
-        Insn::Shift { op, dst, .. } => (op == 2 || op == 3, false, has_mem(&dst)),
+        // by cl the flags stay as they were when the count is zero: always reads them
+        Insn::Shift { op, dst, count, .. } => (op == 2 || op == 3 || matches!(count, Count::Cl), false, has_mem(&dst)),
         Insn::Setcc { dst, .. } => (true, false, has_mem(&dst)),
         Insn::Cmov { src, .. } => (true, false, has_mem(&src)),
         Insn::Jcc { .. } => (true, false, false),
@@ -1661,7 +1677,17 @@ impl<'a> Gen<'a> {
             Insn::Shift { op, bits, dst, count } => {
                 self.set_previous_ip();
                 self.ea_to_local(&dst);
-                let Count::Imm(c) = count;
+                let Count::Imm(c) = count else {
+                    // count in cl: flags and result come from the helper (a zero count changes nothing)
+                    self.materialize();
+                    self.b.const_i32(16 + op as i32);
+                    self.read_opd_saved(&dst, bits);
+                    self.get_reg(1, 8, true);
+                    self.b.const_i32(bits as i32);
+                    self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                    self.write_opd_saved(&dst, bits);
+                    return;
+                };
                 if self.cur_live_out || matches!(op, 2 | 3) {
                     self.materialize();
                     self.b.const_i32(16 + op as i32);

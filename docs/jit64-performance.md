@@ -115,3 +115,10 @@ jit64 off, 103.8 s user + 1.9 s system with it on, i.e. about 5-6 % of one core 
 (roughly 1 ms each). The main thread does not wait for it, so a persistent cache (IndexedDB) can save at most that
 background cpu and some latency at start-up; it cannot speed up steady state execution. A snapshot of the booted
 machine (7 minutes -> seconds) is the cache that matters.
+
+## Coverage and engine measurements (Alpine x86_64, 40000 iteration shell loop, same snapshot)
+
+- shifts / rotates by `cl`, `xchg rax, reg` (0x91-0x97 and `xchg r8, rax`), hint nops (`endbr64`, 0F 1E): 38.4 s -> 32.6 s
+  on Node 22 (noisy machine: 25.9 s in a second run).
+- the same build on Node 24 (V8 13.6): 17.0 s and 18.6 s, i.e. 1.5-1.9x faster than Node 22 (V8 12.4). Newer engines
+  are faster for our generated code, the 2.5x slower case above is specific to memory64.
