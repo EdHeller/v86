@@ -874,7 +874,7 @@ define SHFMT_INSTALL_TARGET_CMDS
 endef
 $(eval $(generic-package))
 EOF
-    : > "$EXT/package/shfmt/shfmt.hash"
+    printf '%s  %s\n' e5c1949ada636589ba1d0621274bd6d2e7b46f9def4181cc4fb0e97b7a8779ef v3.12.0.zip > "$EXT/package/shfmt/shfmt.hash"
 
     # ── bashdb (--bashdb): the bash script debugger; Buildroot has no package ──
     put "$EXT/package/bashdb/Config.in" <<'EOF'
