@@ -29,6 +29,29 @@ RESULTS_PLACEHOLDER
 Earlier estimate: the same wasm32 build is 1.5-1.9x faster on Node 24 (V8 13.6) than on Node 22 (V8 12.4).
 memory64 is only worth it for guests needing more than 4 GB; it was 2.5x slower on Node 24 for compute-bound work.
 
+## Benchmark: how much disk gcc takes on an Alpine-like guest (to do)
+
+Goal: a number for "what does a compiler cost on the guest disk" and ways to shrink it. The idea is that much of the
+space may go to `g++` (cc1plus, libstdc++ headers, plugins), not to `gcc` for C.
+
+Measure in the Alpine guest (needs a network or a local repo, or install the apks into an image on the host with
+`apk --root`):
+
+* installed sizes: `apk add build-base` then `apk info -s gcc g++ binutils musl-dev libstdc++ libstdc++-dev make`,
+  and `du -sh /usr/libexec/gcc /usr/lib/gcc /usr/include/c++ /usr/bin/*g++* /usr/bin/ld`; the big single files are
+  `cc1`, `cc1plus` (and `lto1`), each tens of MB.
+* a C-only compiler: `apk add gcc musl-dev binutils` (no `g++`, `libstdc++-dev`) against the full `build-base`;
+  record both numbers, plus the compressed size (`mksquashfs` with xz, or the image as gzip).
+* shrink ideas to test: C only (no g++/lto1/plugins), `strip` the binaries, remove docs/man/info/locale and
+  `/usr/lib/gcc/*/*/plugin`, `tcc` or `chibicc` as a tiny compiler, squashfs+xz or an overlay mounted lazily so the
+  base image stays small and the toolchain is a separate, optional disk image or 9p share (the v86 filesystem
+  loads files on demand).
+* the Buildroot post (luplab.cs.ucdavis.edu, "Buildroot and compiler on target", 2022) claims a full image with a
+  compiler is about 14 MB. This session could not open the page (host not reachable from the sandbox), so the claim is
+  **unverified**. Things that can explain a gap with ours: musl/uClibc and a C-only gcc, stripped binaries, no
+  libstdc++/g++, a compressed (not installed) size, an older and smaller gcc, and a 32-bit target. Compare like with
+  like: same ISA, same compression, C-only vs C++.
+
 ## Next steps (in order)
 
 1. Make Node 24 the default for tests; re-run the benchmark above on it and record the numbers in
@@ -42,4 +65,5 @@ memory64 is only worth it for guests needing more than 4 GB; it was 2.5x slower 
 4. TempleOS: find why the OSTestSuite (Tour part 12, `::/Demo/...`, 171 programs, test 1 = Talons) eventually dies;
    compare with `JIT64=0`, and with the user's browser build. Check the last run's log if it still exists.
 5. Later goals: Mac OS X Tiger, UEFI, a 68000 emulator, a fuller x64 test layer.
-6. GitHub email notifications for the repo must be turned off by the user (the token returns 403).
+6. Do the gcc/g++ disk-size benchmark above.
+7. GitHub email notifications for the repo must be turned off by the user (the token returns 403).
