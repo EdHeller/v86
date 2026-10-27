@@ -81,16 +81,70 @@ and must not break any. Use the representative set there for regression checks.
    (-8%) and register locals (-15%) were tried and are off/reverted.
 3. Browser snapshot cache (IndexedDB): measure whether restoring a cached snapshot beats a cold boot in
    `browser_bench.mjs`. The compiled-module cache is not worth it (about 5% of one background core).
-4. TempleOS: the OSTestSuite (Tour part 12, 171 demo programs, test 1 = Talons) dies in our emulator, not diagnosed yet.
-   Observed in the last run (`TOS_SHOTS`, `TOS_FPS=30`, JIT on): Talons (1/171) starts and the suite moves on; the screenshots
-   show 3/171 DunGen ("58s" on the progress bar) at guest time 05:48:01, and the display never changes after about t=330 s
-   (fps=0.0 for the remaining 40 minutes, frames identical) while the CPU keeps running at about 20 MIPS (cs=40, eip
-   alternating in low addresses such as 0xaa7a / 0xcac4, jit 50%). So the guest is alive but the screen and guest clock
-   are frozen: look for a wedged task/loop in the guest (interrupts/timer, a stuck Sleep or Yield, a graphics demo
-   stuck in a loop) or an emulator bug (timer/PIT/HPET irq lost, a jit64 miscompile). Next: rerun with `JIT64=0` to
-   compare, dump the guest state at the freeze (`TOS_*` hooks in `templeos.js`, `ALP_TRACE`-style trace ring in
-   `cpu.rs`) and check whether timer interrupts are still delivered. The user also saw it die at Talons in their browser.
+4. TempleOS OSTestSuite / DunGen freeze (jit64): see "DunGen freeze findings" below. Next: differential debugging.
 5. Later goals: Mac OS X Tiger, UEFI, a 68000 emulator, a fuller x64 test layer.
 6. gcc/g++ disk-size benchmark: first numbers are in `docs/gcc-disk-size.md` (Alpine 3.24 x86_64, gcc 15.2.0). The
    Buildroot 14 MiB figure is for a **RISC-V** system, so we cannot expect to reach it on x86; compare variants of our own.
 7. GitHub email notifications for the repo must be turned off by the user (the token returns 403).
+
+## DunGen freeze findings (session of 2026-10-27)
+
+Goal of the project: x86_64 JIT fast and correct (Alpine x86_64, TempleOS Tour part 12 = OSTestSuite, 171 programs), and
+a faster 32-bit JIT for every guest on https://copy.sh/v86/ (list: `docs/os-targets.md`).
+
+Tooling added (all under `tests/x64/manual/`, committed):
+
+* `TOS_SUITE=1 TOS_ISO=TempleOS.ISO python3 templeos/patch_iso.py out.ISO`: boots straight into the full OSTestSuite and
+  prints `TS <n>` on serial per test (0 BlackDiamond, 1 Talons, 2 FlatTops, 3 DunGen ...), then `SUITE DONE`.
+  `TOS_SUITE=dungen` runs only `::/Demo/Games/DunGen` with a `J <jiffies>` serial heartbeat every second (fast repro,
+  freezes about 100-180 s after boot with the JIT on).
+* `templeos.js`: `TOS_FPS=20` (frames/s, MIPS, jit share), `TOS_SHOTS='[sec,..]'` screenshots, `TOS_SAMPLE=20`
+  (+`TOS_SAMPLE_REGS=1`) eip histogram every interval, `JIT64_MASK=<n>`, `JIT64=<threshold>`.
+  **`JIT64=0` is threshold zero (compile everything), not off. JIT off is `JIT64=4294967295`.**
+* `JIT64_MASK` bit k disables compiling instruction kind k (`kind()` in `src/rust/cpu/jit64.rs`: 0 Alu, 1 Test, 2 Mov,
+  3 MovExt, 4 Lea, 5 Push, 6 Pop, 7 IncDec, 8 Shift, 9 Setcc, 10 Cmov, 11 Jcc, 12 Jmp, 13 Call, 14 Ret, 15 Leave, 16 Nop,
+  17 Bt, 18 Str, 19 Neg/Not, 20 Imul, 21 CallInd/JmpInd, 22 Xchg, 23 Sext). Bit 30 keeps all flags live (no flag elision).
+* `tests/x64/js/jit64_mask.js` (in `make x64tests`) checks every mask keeps results correct, all-ones compiles nothing,
+  reserved bits do nothing and every kind bit changes something; `tests/x64/jit/09_masked_kinds.asm` covers the kinds the
+  other tests miss. Learned writing it: a compiled block ends at the first unsupported opcode (`cld` 0xFC, `loop` 0xE2
+  ...), and data in the same page as code invalidates blocks on every write (put data on a separate page).
+* `x64tests` needs `make build/v86-debug.wasm` first; `libv86.js` needs `closure-compiler/compiler.jar` (re-download if
+  maven returns 429) and `rustup target add wasm32-unknown-unknown`.
+
+Results (TempleOS 5.03 live CD, patched ISO, Node 24):
+
+* The small selftest passes with the JIT on (`1+2=3`, `fact10`, `sqrt2`, `sin1`).
+* Full suite with JIT on: reaches TS 3 (DunGen) at about 290 s, then the screen stops (fps 0.0 forever). The guest is not
+  dead: the jiffies heartbeat keeps advancing, CPU runs at about 20-25 MIPS, jit share 50%, and the eip histogram shows a
+  loop over only 5 addresses in low kernel memory (`aa7a cac4 cb63 1c56f 1eaf3`; esp varies, so it is calls/returns).
+  So DunGen's task (or the task it waits for) spins and never progresses.
+* DunGen alone with the JIT off (`JIT64=4294967295`): draws steadily at 10-12 fps for 320 s+ (no freeze).
+* JIT on, single kind masked (fps at the end of a 170 s run; 0.0 = frozen):
+  kind 0 Alu 9.7, 1 Test 4.8, 2 Mov 4.7, 3 MovExt 8.6, 7 IncDec 13, 11 Jcc 9.8, **12 Jmp 24.5**, 17 Bt 4.3: **unfrozen**;
+  4,5,6,8,9,10,13,14,15,16,18-23: frozen. All kinds masked: 10 fps. Flag elision off (bit 30): still frozen.
+  So no single instruction kind is solely to blame and flag elision is ruled out; the eight kinds that help are the
+  ones that make up most blocks, so the bug depends on block structure/shape or on a specific pattern, not one opcode.
+  Masking only Jmp gives 24 fps, 2.4x the JIT-off speed: also a lead for speed (jmp-heavy blocks may be mis-handled or
+  slow, look at how `Insn::Jmp` and block chaining are generated).
+
+Suggested next steps for the freeze:
+
+1. Differential run: save a state shortly before DunGen (`TOS_SAVE`/`TOS_SAVE_AT`, or `TOS_LOAD` to resume), then run the
+   same instruction count with the JIT off and on and compare registers, memory pages, and jiffies at block exits; use the
+   trace ring (`get_jit_config(11/12)`, `TRACE_BUF` in `cpu.rs`) to find the first divergence. The 5-address loop is the
+   place to disassemble (TempleOS kernel `::/Kernel`, addresses are low): decode what it waits on.
+2. Block shape ideas to test: cap block length, disable chaining/loop-in-block, check that back-edges inside a compiled
+   block still deliver pending interrupts and update the instruction counter, check `invalidations`/stale-block reuse
+   (invalidated reaches 4800+ in this workload, TempleOS mixes code and data in pages), async vs `sync_jit`.
+3. After DunGen passes, rerun the whole suite (`TOS_SUITE=1`, about 2 h in emulation) and expect later tests to find more.
+4. Then 32-bit JIT speed (`jit.rs`) with the A/B method on several guests from `docs/os-targets.md`.
+
+Working notes for the next Claude:
+
+* Keep the number of background monitors low: one Monitor per job, never re-arm loops, stop old ones with TaskStop.
+  The user asked for terse messages and few tokens; do not poll with no-op commands.
+* `pkill -f <pattern>` can kill your own shell; use `pgrep -f "^node tests/..." | xargs -r kill`.
+* Run A/B performance comparisons sequentially, but correctness bisects (like the mask scan) can run 3 at a time.
+  `/tmp/claude-0/bisect.sh`-style helper: run `templeos.js` on the dungen ISO with `JIT64_MASK=<n> TOS_FPS=20` for 170 s
+  and read the last `fps=` lines.
+* TempleOS image: `curl -o TempleOS.ISO https://templeos.org/Downloads/TempleOS.ISO`; Alpine ISO from dl-cdn.alpinelinux.org.

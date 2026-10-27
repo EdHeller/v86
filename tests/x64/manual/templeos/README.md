@@ -36,3 +36,10 @@ about dx/2 pixels):
 - Esc or Shift-Esc ends most programs. `Life` is a drawing demo (hold the left button and drag, any key exits);
   `Lattice` is a turtle: Up/Down speed, Left/Right turn rate, Space draws a segment, `n` restarts, Esc exits
   (it slows down as speed and width grow, since every frame re-plots the whole path).
+
+## Full test suite and DunGen repro
+
+`TOS_SUITE=1 TOS_ISO=TempleOS.ISO python3 patch_iso.py out.ISO` makes an ISO that runs the whole OSTestSuite (Tour part 12)
+and prints `TS <n>` per test on serial; `TOS_SUITE=dungen` runs only DunGen with a jiffies heartbeat. With
+`templeos.js`: `TOS_FPS`, `TOS_SHOTS`, `TOS_SAMPLE`, `JIT64` (`4294967295` = jit off, `0` = compile everything) and
+`JIT64_MASK`. Findings and the next steps are in `docs/next-session.md`.
