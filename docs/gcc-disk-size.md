@@ -37,3 +37,25 @@ Removing `g++` + `libstdc++-dev` alone saves about 70 MB installed. `cc1` is alr
 Still to try: drop man/info/locale (`usr/share` is already out in the C-only row), `tcc` as a 0.5 MB alternative compiler,
 squashfs+xz or a separate lazily mounted toolchain image/9p share, and the musl-dev headers/libs actually needed.
 No zstd binary was available here; the xz figures are the comparable ones.
+
+## Follow-up: minimal C-only set (measured on the host, not run in a guest)
+
+Why it is large: `cc1` (42.5 MB) is a monolithic, already-stripped compiler; the gcc apk ships the same 41 MB LTO
+compiler twice (`lto1` and `bin/lto-dump`), plus 84 MB of `libexec/gcc`, 11 MB of plugin headers and the sanitizer
+libs. `g++` adds another 45 MB `cc1plus` and `libstdc++-dev`. None of this is needed to compile C.
+
+Smallest set that should build C programs: `gcc` driver, `cc1`, `collect2`, gcc's `include/` and `crt*.o`/`libgcc_eh.a`,
+binutils `as ld ar`, and `musl-dev` (headers + libs):
+
+| Component | Installed |
+|---|---|
+| `libexec` (cc1 + collect2) | 42 MB |
+| `usr/lib` (musl libs + gcc crt/include) | 13 MB |
+| `usr/bin` (gcc, as, ld, ar) | 6 MB |
+| musl headers | 1.1 MB |
+| **Total** | **62 MB installed, 15.6 MB tar+xz -9e** |
+
+So against `build-base` (about 265 MB installed) a C-only toolchain is roughly 4x smaller installed, and about 15 MB
+compressed. Almost all of what remains is `cc1`; going lower needs a different compiler (`tcc`, 0.5 MB) or serving
+the toolchain as a separate, optional lazily loaded image or 9p share so the base image stays small.
+Not verified: that this exact file set compiles and links in the guest (needs a guest run), and zstd/squashfs sizes.
