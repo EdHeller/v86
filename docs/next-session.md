@@ -46,11 +46,15 @@ Measure in the Alpine guest (needs a network or a local repo, or install the apk
   `/usr/lib/gcc/*/*/plugin`, `tcc` or `chibicc` as a tiny compiler, squashfs+xz or an overlay mounted lazily so the
   base image stays small and the toolchain is a separate, optional disk image or 9p share (the v86 filesystem
   loads files on demand).
-* the Buildroot post (luplab.cs.ucdavis.edu, "Buildroot and compiler on target", 2022) claims a full image with a
-  compiler is about 14 MB. This session could not open the page (host not reachable from the sandbox), so the claim is
-  **unverified**. Things that can explain a gap with ours: musl/uClibc and a C-only gcc, stripped binaries, no
-  libstdc++/g++, a compressed (not installed) size, an older and smaller gcc, and a 32-bit target. Compare like with
-  like: same ISA, same compression, C-only vs C++.
+* the Buildroot post (luplab.cs.ucdavis.edu, "Buildroot and compiler on target", 2022; read in the session):
+  the **14 MiB is `rootfs.cpio.zst`, a zstd-compressed cpio of the whole root filesystem**, not an installed size,
+  for a minimal Buildroot config on glibc. Their patch builds gcc for the target with `--enable-languages=c` (no C++),
+  `--disable-lto --disable-plugin --disable-nls --disable-libsanitizer --disable-libgomp --disable-libquadmath
+  --disable-gcov --disable-libmpx`, no bootstrap, and removes duplicate gcc links and ldscripts for other targets. So
+  it is C only, with LTO, plugins and NLS off, and compressed with zstd: this fits the suspicion that `g++`
+  (cc1plus, libstdc++) and the extras are what make ours big. It is not about cross compiling. To compare: build the
+  same variants on Alpine (C only, no lto1/plugin/locales, stripped), then report the **installed size and the
+  zstd/xz-compressed size** side by side, because the two differ several-fold.
 
 ## Next steps (in order)
 
