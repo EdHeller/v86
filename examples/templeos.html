@@ -17,7 +17,7 @@
     <button id="start" disabled>Boot</button>
     <button id="n">send "n"</button>
     <button id="save">save state</button>
-    <button id="lock">lock mouse</button>
+    <button id="lock">mouse: free (click to capture)</button>
     <label><input type="checkbox" id="autoanswer"> answer install prompt with n</label>
 </p>
 <div id="screen_container">
@@ -73,7 +73,10 @@ document.getElementById("start").onclick = function()
     // every scancode that reaches the emulated keyboard controller
     emulator.bus.register("keyboard-code", code => log("kbd scancode 0x" + code.toString(16)));
     emulator.bus.register("mouse-enable", enabled => log("guest mouse driver enabled: " + enabled));
-    emulator.bus.register("mouse-pointer-lock", locked => log("pointer lock: " + locked));
+    emulator.bus.register("mouse-pointer-lock", locked => {
+        log("pointer lock: " + locked);
+        document.getElementById("lock").textContent = locked ? "mouse: captured (click to release)" : "mouse: free (click to capture)";
+    });
     // capture the mouse (pointer lock) on any click on the page; Esc releases it
     document.addEventListener("click", e => {
         if(!document.pointerLockElement && e.target.tagName !== "INPUT" && e.target.tagName !== "BUTTON")
@@ -108,7 +111,13 @@ function sendKey(c)
     setTimeout(() => emulator.bus.send("keyboard-code", code | 0x80), 150);
 }
 
-document.getElementById("lock").onclick = () => emulator && emulator.lock_mouse();
+// toggles the pointer lock: captured -> free, free -> captured
+document.getElementById("lock").onclick = e => {
+    e.stopPropagation();
+    if(!emulator) return;
+    if(document.pointerLockElement) document.exitPointerLock();
+    else emulator.lock_mouse();
+};
 document.getElementById("n").onclick = () => sendKey("n");
 document.getElementById("save").onclick = async () => {
     const state = await emulator.save_state();

@@ -206,6 +206,21 @@ for(const [sec, dx, dy, b] of JSON.parse(process.env.TOS_MOUSE || "[]"))
     }, sec * 1000);
 }
 
+// TOS_FAKE_MOUSE=<start seconds>,<events per second>: from then on a synthetic mouse draws circles with the
+// left button held, like a user scribbling in Doodle. Profile with `node --cpu-prof`.
+if(process.env.TOS_FAKE_MOUSE)
+{
+    const [start, hz] = process.env.TOS_FAKE_MOUSE.split(",").map(Number);
+    setTimeout(() => {
+        emulator.bus.send("mouse-click", [true, false, false]);
+        let t = 0;
+        setInterval(() => {
+            t += 0.15;
+            emulator.bus.send("mouse-delta", [Math.round(8 * Math.cos(t)), Math.round(8 * Math.sin(t))]);
+        }, 1000 / (hz || 100));
+    }, start * 1000);
+}
+
 // TOS_IRQ0_MS=<n>: deliver at most one timer interrupt per n milliseconds (experiment)
 if(process.env.TOS_IRQ0_MS)
 {

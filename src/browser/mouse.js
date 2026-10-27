@@ -76,6 +76,7 @@ export function MouseAdapter(bus, screen_container)
         window.removeEventListener("mousemove", mousemove_handler, false);
         window.removeEventListener("mousedown", mousedown_handler, false);
         window.removeEventListener("mouseup", mouseup_handler, false);
+        window.removeEventListener("blur", blur_handler, false);
         window.removeEventListener("wheel", mousewheel_handler, { passive: false });
         window.removeEventListener("contextmenu", contextmenu_handler, false);
         document.removeEventListener("pointerlockchange", pointerlockchange_handler, false);
@@ -95,15 +96,37 @@ export function MouseAdapter(bus, screen_container)
         window.addEventListener("mousemove", mousemove_handler, false);
         window.addEventListener("mousedown", mousedown_handler, false);
         window.addEventListener("mouseup", mouseup_handler, false);
+        window.addEventListener("blur", blur_handler, false);
         window.addEventListener("wheel", mousewheel_handler, { passive: false });
         window.addEventListener("contextmenu", contextmenu_handler, false);
         document.addEventListener("pointerlockchange", pointerlockchange_handler, false);
     };
     this.init();
 
+    // A button released while the pointer is outside the screen (or after the pointer lock ended)
+    // must still reach the guest, otherwise programs waiting for the button-up hang.
+    function release_all_buttons()
+    {
+        if(left_down || middle_down || right_down)
+        {
+            left_down = middle_down = right_down = false;
+            mouse.bus.send("mouse-click", [false, false, false]);
+        }
+    }
+
     function pointerlockchange_handler()
     {
         mouse.bus.send("mouse-pointer-lock", !!document.pointerLockElement);
+
+        if(!document.pointerLockElement)
+        {
+            release_all_buttons();
+        }
+    }
+
+    function blur_handler()
+    {
+        release_all_buttons();
     }
 
     function contextmenu_handler(e)
@@ -281,7 +304,9 @@ export function MouseAdapter(bus, screen_container)
 
     function mouseup_handler(e)
     {
-        if(may_handle(e))
+        const was_down = e.which === 1 && left_down || e.which === 2 && middle_down || e.which === 3 && right_down;
+
+        if(was_down || may_handle(e))
         {
             click_event(e, false);
         }
