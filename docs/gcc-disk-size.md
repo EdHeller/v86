@@ -74,3 +74,24 @@ Configured as in the luplab patch (`--enable-languages=c --disable-bootstrap --d
 So a C-only x86_64 compiler with libc, assembler and linker is about 13 MB with xz, in the same range as the
 14 MiB RISC-V rootfs.cpio.zst (that figure is the whole rootfs). zstd was not available to compare directly.
 Caveats: built against glibc on the host, the as/ld are Ubuntu's, and it was not run in a guest.
+
+## Buildroot i686 native gcc (gcc-target, `tools/buildroot/build.sh`), measured
+
+Image built with `--no-gui --no-SDL3 --no-man --no-shellcheck --release`, gcc 15.3, `-Os`, C and C++, full sanitizer
+runtime (i686 supports ASan and UBSan only: no TSan/LSan). Whole image: rootfs.cpio.zstd 34.1 MB, kernel 4.0 MB.
+
+Toolchain part only (gcc/g++/cpp drivers, cc1, cc1plus, collect2, lto-wrapper, binutils, libstdc++, libasan/libubsan,
+gmp/mpfr/mpc/bfd/opcodes, glibc headers + libc.a/libm.a, crt files):
+
+| Set | Installed | zstd -19 | xz -9e |
+|---|---|---|---|
+| C and C++ + ASan/UBSan | 117.6 MB | 21.0 MB | 19.5 MB |
+| C only (no cc1plus, C++ headers, libstdc++) + ASan/UBSan | 63.9 MB | 14.7 MB | 13.6 MB |
+
+`cc1` is 27.9 MB and `cc1plus` 29.4 MB (stripped, -Os); `libasan.so` 1.2 MB, `libubsan.so` 0.4 MB. The C-only toolchain
+with libc and sanitizers lands at the luplab figure (14 MiB, zstd) for the toolchain alone.
+
+Native vs cross: gcc-target is built by Buildroot's cross compiler for the target ("cross-built native"). A gcc built
+natively inside the target would contain the same code: the size is set by the target architecture and options, not by
+where it was built. Measured `cc1` (C compiler, stripped): Alpine x86_64 42.5 MB; our x86_64 -Os C-only 29.9 MB;
+Buildroot i686 -Os 27.9 MB (i686 code is denser).
