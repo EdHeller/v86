@@ -243,6 +243,31 @@ if(process.env.TOS_FPS)
     }, interval * 1000);
 }
 
+// TOS_SAMPLE=<interval seconds>: statistical profile of where the guest is. Every 10 ms the instruction pointer is
+// recorded; each interval the hottest addresses (and how many distinct ones) are printed together with the jit64
+// counters, to see what a stuck guest is looping on. TOS_SAMPLE_REGS=1 also dumps the registers at each sample of the top eip.
+if(process.env.TOS_SAMPLE)
+{
+    const hist = new Map();
+    let regs_at_top = null;
+    setInterval(() => {
+        if(!emulator.v86) return;
+        const cpu = emulator.v86.cpu, eip = cpu.instruction_pointer[0] >>> 0;
+        hist.set(eip, (hist.get(eip) || 0) + 1);
+        if(process.env.TOS_SAMPLE_REGS && hist.get(eip) >= (regs_at_top ? regs_at_top.n : 0))
+            regs_at_top = { eip, n: hist.get(eip), regs: Array.from(cpu.reg32.slice(0, 8)).map(x => (x >>> 0).toString(16)) };
+    }, 10);
+    setInterval(() => {
+        if(!emulator.v86) return;
+        const cpu = emulator.v86.cpu, g = i => cpu.wm.exports.get_jit_config(i) >>> 0;
+        const top = [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([a, n]) => a.toString(16) + "x" + n).join(" ");
+        console.error("sample: %d distinct, top %s | jit compiled=%d failed=%d run=%d invalidated=%d insns=%d",
+            hist.size, top, g(5), g(6), g(7), g(8), g(13));
+        if(regs_at_top) console.error("  regs at eip %s (eax ecx edx ebx esp ebp esi edi): %s", regs_at_top.eip.toString(16), regs_at_top.regs.join(" "));
+        hist.clear(); regs_at_top = null;
+    }, +process.env.TOS_SAMPLE * 1000);
+}
+
 // TOS_FAKE_MOUSE=<start seconds>,<events per second>: from then on a synthetic mouse draws circles with the
 // left button held, like a user scribbling in Doodle. Profile with `node --cpu-prof`.
 if(process.env.TOS_FAKE_MOUSE)
