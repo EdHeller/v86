@@ -78,6 +78,12 @@
 #   --no-wincc            leave them out (the default; undoes an earlier --wincc)
 #   --upx                 add UPX, the program packer: upx prog shrinks a Linux program or a
 #                         Windows .exe/.dll, which unpacks itself when run (~2.6 MB)
+#   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
+#                         coreutils (sort, date, stat...) and diffutils instead of BusyBox's
+#                         look-alikes; bash-completion, a script-friendly prompt/history/inputrc,
+#                         strace, ltrace, shfmt (formatter), bats (tests), jq, tree, bc, curl, nc,
+#                         lsof, ps/top (procps), time, patch, tmux and a `newscript` helper
+#   --no-bash-dev         leave it out (the default, except --bash-env; undoes --bash-dev)
 #   --no-upx              leave it out (the default, except --dev-env; undoes an earlier --upx)
 #   --xz                  compress kernel + rootfs with xz instead of zstd: ~12% smaller for
 #                         small images, up to ~35% for images with gcc, but 7-11x slower to
@@ -166,7 +172,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 BASHDEV=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -199,7 +205,7 @@ while (($#)); do
         --min)            set_mode vesa; parse_vesa 800x600x16; MIN=1 ;;
         # named builds: the options they stand for, in their place (later options still apply)
         --dev-env)        shift; set -- --min --SDL3-net --man --no-shellcheck --upx "$@"; continue ;;
-        --bash-env)       shift; set -- --min --no-SDL3 --man --tcc --wincc "$@"; continue ;;
+        --bash-env)       shift; set -- --min --no-SDL3 --man --tcc --wincc --bash-dev "$@"; continue ;;
         --smoke)          set_mode smoke ;;
         --all)            ALL=1 ;;
         --no-SDL3|--no-sdl3)   SDL=0 SDLNET=0 ;;   # last one wins
@@ -223,6 +229,8 @@ while (($#)); do
         --wincc)          WINCC=1 ;;
         --no-wincc)       WINCC=0 ;;
         --upx)            UPX=1 ;;
+        --bash-dev)       BASHDEV=1 ;;
+        --no-bash-dev)    BASHDEV=0 ;;
         --no-upx)         UPX=0 ;;
         --gcc)            GCC=1 ;;
         --xz)             XZ=1 ;;
@@ -327,7 +335,7 @@ esac
 MAN_DEFAULT=1
 if [[ "$MODE" == smoke ]] || ((MIN)); then MAN_DEFAULT=0; fi
 [[ -n "$MAN" ]] || MAN=$MAN_DEFAULT
-[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0
+[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 BASHDEV=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
     ((SDL)) || NAME+="-nosdl3"
@@ -339,6 +347,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((TCC)) && NAME+="-tcc"
     ((WINCC)) && NAME+="-wincc"
     ((UPX)) && NAME+="-upx"
+    ((BASHDEV)) && NAME+="-bashdev"
     ((MAN == MAN_DEFAULT)) || NAME+=$( ((MAN)) && echo "-man" || echo "-noman")
     ((RELEASE)) && NAME+="-release"
     ((XZ)) && NAME+="-xz"
@@ -348,7 +357,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     # each other's images); anything else added gives the usual long name
     case "${NAME%-release}" in
         min-sdl3net-noshellcheck-upx-man) NAME=dev-env${NAME#min-sdl3net-noshellcheck-upx-man} ;;
-        min-nosdl3-tcc-wincc-man)     NAME=bash-env${NAME#min-nosdl3-tcc-wincc-man} ;;
+        min-nosdl3-tcc-wincc-bashdev-man)     NAME=bash-env${NAME#min-nosdl3-tcc-wincc-bashdev-man} ;;
     esac
 fi
 [[ "$MODE" == smoke ]] && XZ=0
@@ -643,6 +652,7 @@ desc: v86 emulator development images
 EOF
     put "$EXT/Config.in" <<'EOF'
 source "$BR2_EXTERNAL_V86_PATH/package/gcc-target/Config.in"
+source "$BR2_EXTERNAL_V86_PATH/package/shfmt/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/fox/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/xfe/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/tinyx/Config.in"
@@ -817,6 +827,26 @@ $(eval $(autotools-package))
 EOF
     cp "$BR_SRC/package/gcc/gcc.hash" "$EXT/package/gcc-target/gcc-target.hash" 2>/dev/null \
         || : > "$EXT/package/gcc-target/gcc-target.hash"   # dry-run without a Buildroot tree
+
+    # ── shfmt (--bash-dev): the shell formatter, a Go program; Buildroot has no package ──
+    put "$EXT/package/shfmt/Config.in" <<'EOF'
+config BR2_PACKAGE_SHFMT
+	bool "shfmt"
+	depends on BR2_PACKAGE_HOST_GO_TARGET_ARCH_SUPPORTS
+	help
+	  shfmt: format shell programs (bash, POSIX sh, mksh).
+EOF
+    put "$EXT/package/shfmt/shfmt.mk" <<'EOF'
+SHFMT_VERSION = 3.12.0
+SHFMT_SITE = $(call github,mvdan,sh,v$(SHFMT_VERSION))
+SHFMT_LICENSE = BSD-3-Clause
+SHFMT_LICENSE_FILES = LICENSE
+SHFMT_GOMOD = mvdan.cc/sh/v3
+SHFMT_BUILD_TARGETS = cmd/shfmt
+SHFMT_LDFLAGS = -s -w
+$(eval $(golang-package))
+EOF
+    : > "$EXT/package/shfmt/shfmt.hash"
 
     # ── SDL3 X11 build order ─────────────────────────────────────────────────
     # SDL3's CMake hard-fails ("Couldn't find dependency package for XCURSOR") if it
@@ -1961,6 +1991,48 @@ case "$(tty 2>/dev/null)" in
         fi ;;
 esac
 EOF
+
+    if ((BASHDEV)); then
+        put "$OVL/etc/inputrc" <<'EOF'
+set show-all-if-ambiguous on
+set completion-ignore-case on
+set colored-stats on
+set mark-symlinked-directories on
+"\e[A": history-search-backward
+"\e[B": history-search-forward
+EOF
+        put "$OVL/etc/profile.d/v86-bashdev.sh" <<'EOF'
+# shell-script development helpers (--bash-dev); interactive bash only
+[ -n "$BASH_VERSION" ] || return 0
+case $- in *i*) ;; *) return 0 ;; esac
+export HISTSIZE=5000 HISTCONTROL=ignoreboth:erasedups HISTFILE=$HOME/.bash_history
+export INPUTRC=/etc/inputrc LESS=-R PAGER=less
+shopt -s histappend checkwinsize globstar extglob
+# prompt: exit status of the last command when it failed, then user@host:dir
+PS1='$(s=$?; [ $s -ne 0 ] && printf "[%s] " $s)\u@\h:\w\$ '
+# "bash -x" / set -x traces show file:line and function
+export PS4='+ ${BASH_SOURCE##*/}:${LINENO}${FUNCNAME:+ ${FUNCNAME}()}: '
+alias ll='ls -lah --color=auto' ls='ls --color=auto' grep='grep --color=auto'
+alias sc='shellcheck -x' fmt='shfmt -i 2 -ci -w'
+# newscript NAME: a strict-mode script skeleton, made executable
+newscript() {
+    [ -n "$1" ] && [ ! -e "$1" ] || { echo "usage: newscript NEWFILE" >&2; return 1; }
+    cat >"$1" <<'SKEL'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+trap 'echo "error: line $LINENO: $BASH_COMMAND" >&2' ERR
+IFS=$'\n\t'
+
+main() {
+    echo "hello"
+}
+
+main "$@"
+SKEL
+    chmod +x "$1"; ${EDITOR:-nano} "$1"
+}
+EOF
+    fi
 
     # fbterm: Unifont, 8x16 cells (without font-width, fbterm sizes every cell to
     # Unifont's widest glyph, 16 px: letters spread apart). fbterm 1.7 keeps characters
@@ -3658,6 +3730,13 @@ EOF
         if ((TCC)); then echo 'BR2_PACKAGE_TINYCC_LINUX=y'; fi
         if ((WINCC)); then echo 'BR2_PACKAGE_TINYCC_WIN=y'; fi
         if ((UPX)); then echo 'BR2_PACKAGE_UPX_TARGET=y'; fi
+        if ((BASHDEV)); then printf '%s\n' BR2_PACKAGE_COREUTILS=y BR2_PACKAGE_GAWK=y BR2_PACKAGE_GREP=y \
+            BR2_PACKAGE_SED=y BR2_PACKAGE_FINDUTILS=y BR2_PACKAGE_DIFFUTILS=y BR2_PACKAGE_PATCH=y \
+            BR2_PACKAGE_BASH_COMPLETION=y BR2_PACKAGE_STRACE=y BR2_PACKAGE_LTRACE=y BR2_PACKAGE_JQ=y \
+            BR2_PACKAGE_BATS_CORE=y BR2_PACKAGE_BATS_SUPPORT=y BR2_PACKAGE_BATS_ASSERT=y BR2_PACKAGE_BATS_FILE=y \
+            BR2_PACKAGE_TREE=y BR2_PACKAGE_BC=y BR2_PACKAGE_NETCAT=y BR2_PACKAGE_LSOF=y BR2_PACKAGE_PROCPS_NG=y \
+            BR2_PACKAGE_TIME=y BR2_PACKAGE_TMUX=y BR2_PACKAGE_LIBCURL=y BR2_PACKAGE_LIBCURL_CURL=y \
+            BR2_PACKAGE_OPENSSL=y BR2_PACKAGE_LIBOPENSSL=y BR2_PACKAGE_CA_CERTIFICATES=y BR2_PACKAGE_SHFMT=y; fi
         if ((GCC)); then printf '%s\n' 'BR2_PACKAGE_GCC_TARGET=y' 'BR2_PACKAGE_PKGCONF=y'; fi
         if ((MAN)); then printf '%s\n' 'BR2_PACKAGE_MANDOC=y' 'BR2_PACKAGE_MAN_PAGES=y' 'BR2_PACKAGE_LESS=y'; fi
         if ((GUI && MLTERM)); then echo 'BR2_PACKAGE_MLTERM=y'; fi   # brings cairo + HarfBuzz
