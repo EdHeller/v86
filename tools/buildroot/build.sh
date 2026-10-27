@@ -83,6 +83,12 @@
 #                         look-alikes; bash-completion, a script-friendly prompt/history/inputrc,
 #                         strace, ltrace, shfmt (formatter), bats (tests), jq, tree, bc, curl, nc,
 #                         lsof, ps/top (procps), time, patch, tmux and a `newscript` helper
+#   --bashdb              add bashdb 5.2-1.2.0, a debugger for bash scripts: bashdb script.sh
+#                         (only bash scripts, under 1 MB)
+#   --no-bashdb           leave it out (the default)
+#   --gdb                 add gdb and gdbserver (about 12 MB installed in Alpine; with python
+#                         off); programs built on the target with gcc -g can then be debugged
+#   --no-gdb              leave it out (the default)
 #   --no-bash-dev         leave it out (the default, except --bash-env; undoes --bash-dev)
 #   --no-upx              leave it out (the default, except --dev-env; undoes an earlier --upx)
 #   --xz                  compress kernel + rootfs with xz instead of zstd: ~12% smaller for
@@ -172,7 +178,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 BASHDEV=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -230,6 +236,10 @@ while (($#)); do
         --no-wincc)       WINCC=0 ;;
         --upx)            UPX=1 ;;
         --bash-dev)       BASHDEV=1 ;;
+        --bashdb)         BASHDB=1 ;;
+        --no-bashdb)      BASHDB=0 ;;
+        --gdb)            GDB=1 ;;
+        --no-gdb)         GDB=0 ;;
         --no-bash-dev)    BASHDEV=0 ;;
         --no-upx)         UPX=0 ;;
         --gcc)            GCC=1 ;;
@@ -335,7 +345,7 @@ esac
 MAN_DEFAULT=1
 if [[ "$MODE" == smoke ]] || ((MIN)); then MAN_DEFAULT=0; fi
 [[ -n "$MAN" ]] || MAN=$MAN_DEFAULT
-[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 BASHDEV=0
+[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 BASHDEV=0 BASHDB=0 GDB=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
     ((SDL)) || NAME+="-nosdl3"
@@ -348,6 +358,8 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((WINCC)) && NAME+="-wincc"
     ((UPX)) && NAME+="-upx"
     ((BASHDEV)) && NAME+="-bashdev"
+    ((BASHDB)) && NAME+="-bashdb"
+    ((GDB)) && NAME+="-gdb"
     ((MAN == MAN_DEFAULT)) || NAME+=$( ((MAN)) && echo "-man" || echo "-noman")
     ((RELEASE)) && NAME+="-release"
     ((XZ)) && NAME+="-xz"
@@ -653,6 +665,7 @@ EOF
     put "$EXT/Config.in" <<'EOF'
 source "$BR2_EXTERNAL_V86_PATH/package/gcc-target/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/shfmt/Config.in"
+source "$BR2_EXTERNAL_V86_PATH/package/bashdb/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/fox/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/xfe/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/tinyx/Config.in"
@@ -847,6 +860,29 @@ SHFMT_LDFLAGS = -s -w
 $(eval $(golang-package))
 EOF
     : > "$EXT/package/shfmt/shfmt.hash"
+
+    # ── bashdb (--bashdb): the bash script debugger; Buildroot has no package ──
+    put "$EXT/package/bashdb/Config.in" <<'EOF'
+config BR2_PACKAGE_BASHDB
+	bool "bashdb"
+	select BR2_PACKAGE_BASH
+	help
+	  bashdb: a debugger for bash scripts (breakpoints, stepping, watch).
+EOF
+    put "$EXT/package/bashdb/bashdb.mk" <<'EOF'
+BASHDB_VERSION = 5.2-1.2.0
+BASHDB_SOURCE = bashdb-$(BASHDB_VERSION).tar.gz
+BASHDB_SITE = https://downloads.sourceforge.net/project/bashdb/bashdb/$(BASHDB_VERSION)
+BASHDB_LICENSE = GPL-3.0+
+BASHDB_LICENSE_FILES = COPYING
+# configure runs the shell it is given to check its version, so it gets the build host's
+# bash; the installed scripts start with /bin/bash, which is the target's bash
+BASHDB_CONF_OPTS = --with-POSIXSHELL=/bin/bash
+BASHDB_DEPENDENCIES = bash
+$(eval $(autotools-package))
+EOF
+    printf '%s  %s\n' c6015c625d0d05bceb19d33bec89b5faa4e964fd3db2380ac03ec16dc5e20c6b bashdb-5.2-1.2.0.tar.gz \
+        > "$EXT/package/bashdb/bashdb.hash"
 
     # ── SDL3 X11 build order ─────────────────────────────────────────────────
     # SDL3's CMake hard-fails ("Couldn't find dependency package for XCURSOR") if it
@@ -3730,6 +3766,8 @@ EOF
         if ((TCC)); then echo 'BR2_PACKAGE_TINYCC_LINUX=y'; fi
         if ((WINCC)); then echo 'BR2_PACKAGE_TINYCC_WIN=y'; fi
         if ((UPX)); then echo 'BR2_PACKAGE_UPX_TARGET=y'; fi
+        if ((BASHDB)); then echo 'BR2_PACKAGE_BASHDB=y'; fi
+        if ((GDB)); then printf '%s\n' BR2_PACKAGE_GDB=y BR2_PACKAGE_GDB_SERVER=y BR2_PACKAGE_GDB_DEBUGGER=y; fi
         if ((BASHDEV)); then printf '%s\n' BR2_PACKAGE_COREUTILS=y BR2_PACKAGE_GAWK=y BR2_PACKAGE_GREP=y \
             BR2_PACKAGE_SED=y BR2_PACKAGE_FINDUTILS=y BR2_PACKAGE_DIFFUTILS=y BR2_PACKAGE_PATCH=y \
             BR2_PACKAGE_BASH_COMPLETION=y BR2_PACKAGE_STRACE=y BR2_PACKAGE_LTRACE=y BR2_PACKAGE_JQ=y \
