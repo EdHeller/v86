@@ -7232,14 +7232,6 @@ pub fn instr32_0FBA_7_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, imm8:
     );
 }
 
-pub fn instr_0FAE_5_mem_jit(ctx: &mut JitContext, _modrm_byte: ModrmByte) {
-    dbg_log!("Generating #ud for unimplemented instruction: instr_0FAE_5_mem_jit");
-    codegen::gen_trigger_ud(ctx);
-}
-pub fn instr_0FAE_5_reg_jit(_ctx: &mut JitContext, _r: u32) {
-    // For this instruction, the processor ignores the r/m field of the ModR/M byte.
-}
-
 pub fn instr_0FD1_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     mmx_read64_mm_mem(ctx, "instr_0FD1", modrm_byte, r);
 }

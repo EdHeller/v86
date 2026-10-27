@@ -3490,6 +3490,7 @@ match opcode {
                 else {
                     instructions_0f::instr_0FAE_5_reg((modrm_byte & 7 | rex_b()));
                 }
+                after_block_boundary();
             },
             6 => {
                 if modrm_byte < 0xC0 {

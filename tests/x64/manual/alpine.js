@@ -171,6 +171,7 @@ function dump() {
 }
 process.on("uncaughtException", e => {
     console.error("CRASH:", String(e.message).split("\n")[0]);
+    if(process.env.ALP_STACK) console.error(String(e.stack).split("\n").slice(0, +process.env.ALP_STACK).join("\n"));
     dump();
     process.exit(1);
 });

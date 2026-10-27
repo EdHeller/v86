@@ -3595,9 +3595,11 @@ pub unsafe fn instr_0FAE_3_mem(addr: i32) {
 pub unsafe fn instr_0FAE_4_reg(_r: i32) { trigger_ud(); }
 #[no_mangle]
 pub unsafe fn instr_0FAE_4_mem(addr: i32) { crate::cpu::misc_instr::xsave(addr); }
+#[no_mangle]
 pub unsafe fn instr_0FAE_5_reg(_r: i32) {
     // lfence
 }
+#[no_mangle]
 pub unsafe fn instr_0FAE_5_mem(addr: i32) { crate::cpu::misc_instr::xrstor(addr); }
 #[no_mangle]
 pub unsafe fn instr_0FAE_6_reg(_r: i32) {
