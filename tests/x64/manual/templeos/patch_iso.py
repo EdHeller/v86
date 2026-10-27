@@ -27,14 +27,9 @@ U0 Poll()
     Sleep(50);
   }
 }
-U0 Tmp()
-{
-  Spawn(&Poll,,"Poll");
-  "\nSuite\n";
-  #include "::/Misc/OSTestSuite";
-  Ser("SUITE DONE\n");
-}
-Tmp;
+Spawn(&Poll,,"Poll");
+#include "::/Misc/OSTestSuite";
+Ser("SUITE DONE\n");
 '''.encode() if os.environ.get('TOS_SUITE') else r'''U0 Ser(U8 *s)
 {
   while (*s)
