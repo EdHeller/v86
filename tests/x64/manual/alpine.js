@@ -11,6 +11,7 @@
 //   JIT64=<n> (hotness threshold, 0 = interpreter only), DISABLE_JIT=1 (32-bit jit off), WASM=<path>
 //   HDA_FILE=<path> HDA_MB=<size>        blank/persistent hard disk
 //   MEM_MB=<n> (default 512), QUIET=1 (no screen dumps)
+//   ALP_SAVE=<file>:<seconds>  writes a state snapshot at that uptime; ALP_LOAD=<file> starts from one
 //   ALP_KERNEL=<bzImage> ALP_INITRD=<initramfs> ALP_CMDLINE=<text>  boot the kernel directly (skips isolinux)
 
 import fs from "node:fs";
@@ -40,6 +41,7 @@ const emulator = new V86({
     bzimage: process.env.ALP_KERNEL ? { buffer: buf(process.env.ALP_KERNEL) } : undefined,
     initrd: process.env.ALP_INITRD ? { buffer: buf(process.env.ALP_INITRD) } : undefined,
     cmdline: process.env.ALP_CMDLINE,
+    initial_state: process.env.ALP_LOAD ? { buffer: buf(process.env.ALP_LOAD) } : undefined,
     memory_size: (+process.env.MEM_MB || 512) * 1024 * 1024,
     vga_memory_size: 8 * 1024 * 1024,
     autostart: true,
@@ -70,6 +72,16 @@ for(const [sec, key] of JSON.parse(process.env.ALP_SYSRQ || "[]"))
     setTimeout(() => { const c = SYSRQ_SCANCODES[key]; emulator.keyboard_send_scancodes([0x38, 0x54, c, c | 0x80, 0xD4, 0xB8]); }, sec * 1000);
 for(const [sec, text] of JSON.parse(process.env.ALP_SERIAL || "[]"))
     setTimeout(() => emulator.serial0_send(text), sec * 1000);
+
+if(process.env.ALP_SAVE)
+{
+    const [file, sec] = process.env.ALP_SAVE.split(":");
+    setTimeout(async () => {
+        const st = await emulator.save_state();
+        fs.writeFileSync(file, Buffer.from(st));
+        console.error("state saved: %s (%d bytes)", file, st.byteLength);
+    }, +sec * 1000);
+}
 
 const t0 = Date.now();
 let last_screen = "";
