@@ -29,7 +29,7 @@ Type the command and press Enter (the runner's `type:` command takes `\n` for En
 about dx/2 pixels):
 
 - `Dir;` lists the current directory (`Dir("::/Demo");` any other; subdirectories are blue links).
-- `Cd("::/Demo/Graphics");` changes directory; `Cls;` clears the screen; `Help;` opens the help index.
+- `Cd("::/Demo/Graphics");` changes directory; `DocClear;` clears the screen (there is no `Cls`); `Help;` opens the help index.
 - `#include "::/Demo/Graphics/Elephant";` runs a demo (`::` is the boot drive root; names are case sensitive).
 - `Type("::/Demo/Graphics/Lattice.HC.Z");` shows a source file.
 - Games: `#include "::/Apps/Titanium/Run";`, `KeepAway`, `X-Caliber`, `ToTheFront`.
