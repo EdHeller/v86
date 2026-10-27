@@ -66,6 +66,11 @@ Measure in the Alpine guest (needs a network or a local repo, or install the apk
   same variants on Alpine (C only, no lto1/plugin/locales, stripped), then report the **installed size and the
   zstd/xz-compressed size** side by side, because the two differ several-fold.
 
+## Test targets
+
+`docs/os-targets.md` lists every OS on copy.sh/v86: the JIT speed work (32-bit and 64-bit) must make all of them faster
+and must not break any. Use the representative set there for regression checks.
+
 ## Next steps (in order)
 
 1. Make Node 24 the default for tests; re-run the benchmark above on it and record the numbers in
@@ -86,5 +91,6 @@ Measure in the Alpine guest (needs a network or a local repo, or install the apk
    compare, dump the guest state at the freeze (`TOS_*` hooks in `templeos.js`, `ALP_TRACE`-style trace ring in
    `cpu.rs`) and check whether timer interrupts are still delivered. The user also saw it die at Talons in their browser.
 5. Later goals: Mac OS X Tiger, UEFI, a 68000 emulator, a fuller x64 test layer.
-6. Do the gcc/g++ disk-size benchmark above.
+6. gcc/g++ disk-size benchmark: first numbers are in `docs/gcc-disk-size.md` (Alpine 3.24 x86_64, gcc 15.2.0). The
+   Buildroot 14 MiB figure is for a **RISC-V** system, so we cannot expect to reach it on x86; compare variants of our own.
 7. GitHub email notifications for the repo must be turned off by the user (the token returns 403).
