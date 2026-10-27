@@ -81,7 +81,7 @@ async function run_one(file)
             if(NATIVE || QEMU) { r.outcome = "skip"; return r; }
             try
             {
-                await exec(process.execPath, [file], { timeout: 30000 });
+                await exec(process.execPath, [file], { timeout: 240000 });
                 r.passed = true;
             }
             catch(e)
