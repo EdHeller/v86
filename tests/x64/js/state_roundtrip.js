@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // EXPECT: pass
-// DESC: save_state / restore_state keeps the 64-bit mode state (upper register halves, r8-r15, msrs, mode)
+// DESC: save_state / restore_state keeps the 64-bit mode state (upper register halves, r8-r15, msrs, mode, xcr0)
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -27,6 +27,13 @@ test_main:
     pxor xmm9, xmm9
     mov rbx, 0xCAFEBABE12345678
     movq xmm9, rbx
+    mov rax, cr4                ; enable xsave and the sse state component: xcr0 is part of the saved state
+    or rax, 1 << 18
+    mov cr4, rax
+    xor ecx, ecx
+    mov eax, 3
+    xor edx, edx
+    xsetbv
     PASS
 `);
 execFileSync("nasm", ["-f", "bin", "-i", __dirname + "/../", tmp + "/t.asm", "-o", tmp + "/t.bin"]);
@@ -63,6 +70,7 @@ const snapshot = c => ({
 });
 const before = snapshot(cpu);
 assert.equal(before.long[1444 - 1344 >> 2] & 0xFF, 1, "was in 64-bit mode");
+assert.equal(before.long[46], 3, "xcr0 was set by the test program");
 
 const state = await a.save_state();
 const b = make();

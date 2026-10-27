@@ -94,6 +94,7 @@ pub const gdtr_hi: *mut i32 = 1512 as *mut i32; // upper halves of the 64-bit de
 pub const idtr_hi: *mut i32 = 1516 as *mut i32;
 pub const tr_base_hi: *mut i32 = 1520 as *mut i32;
 pub const sse_exception_pending: *mut i32 = 1524 as *mut i32; // set by sse instructions called from the jit
+pub const xcr0: *mut u64 = 1528 as *mut u64; // enabled xsave state components (saved with the state)
 
 pub fn get_reg32_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);

@@ -180,6 +180,7 @@ impl WasmBuilder {
         dbg_assert!(self.label_stack.is_empty());
 
         self.write_memory_import();
+        self.write_table_import();
         self.write_function_section();
         self.write_export_section();
 
@@ -525,6 +526,32 @@ impl WasmBuilder {
         self.set_import_table_size(new_table_size);
     }
 
+    /// The table of the main module, for `return_call_indirect` (chaining of compiled blocks)
+    pub fn write_table_import(&mut self) {
+        self.output.push(1);
+        self.output.push('e' as u8);
+        self.output.push(1);
+        self.output.push('t' as u8);
+
+        self.output.push(op::EXT_TABLE);
+        self.output.push(0x70); // funcref
+        self.output.push(0); // no maximum
+        write_leb_u32(&mut self.output, 0); // minimum size
+
+        let new_import_count = self.import_count + 1;
+        self.set_import_count(new_import_count);
+
+        let new_table_size = self.import_table_size + 8;
+        self.set_import_table_size(new_table_size);
+    }
+
+    /// Tail call of the function (type FN1) at the table index on top of the stack
+    pub fn return_call_indirect_fn1(&mut self) {
+        self.instruction_body.push(op::OP_RETURN_CALL_INDIRECT);
+        self.instruction_body.push(FunctionType::FN1.to_u8());
+        self.instruction_body.push(0); // table 0
+    }
+
     fn write_import_entry(&mut self, fn_name: &str, type_index: FunctionType) -> u16 {
         self.output.push(1); // length of module name
         self.output.push('e' as u8); // module name
@@ -560,11 +587,12 @@ impl WasmBuilder {
 
         // index of the exported function
         // function space starts with imports. index of last import is import count - 1
-        // the last import however is a memory, so we subtract one from that
+        // the last two imports however are the memory and the table, which have their own index
+        // spaces, so we subtract those
         let next_op_idx = self.output.len();
         self.output.push(0);
         self.output.push(0); // add 2 bytes for writing 16 byte val
-        write_fixed_leb16_at_idx(&mut self.output, next_op_idx, self.import_count - 1);
+        write_fixed_leb16_at_idx(&mut self.output, next_op_idx, self.import_count - 2);
     }
 
     fn get_fn_idx(&mut self, fn_name: &str, type_index: FunctionType) -> u16 {

@@ -334,11 +334,21 @@ pub static mut tsc_speed: u64 = 1;
 // used for restoring the state
 pub static mut tsc_offset: u64 = 0;
 
+/// The layout is read by compiled code (block chaining, see codegen::gen_chain_to_next_block)
+#[repr(C)]
 pub struct Code {
     pub wasm_table_index: jit::WasmTableIndex,
     pub state_flags: CachedStateFlags,
     pub state_table: [u16; 0x1000],
 }
+
+/// Number of blocks that compiled code may still chain to without returning here; refilled before
+/// each call into compiled code
+pub static mut JIT_CHAIN_BUDGET: i32 = 0;
+pub const JIT_CHAIN_MAX: i32 = 64;
+/// Experiment, off by default: measured about 8 % slower than returning to the dispatcher (see
+/// docs/jit64-performance.md)
+pub static mut JIT_CHAINING: bool = false;
 
 pub static mut tlb_data: [i32; 0x100000] = [0; 0x100000];
 pub static mut tlb_code: [Option<ptr::NonNull<Code>>; 0x100000] = [None; 0x100000];
@@ -3423,6 +3433,7 @@ pub unsafe fn cycle_internal() {
         {
             in_jit = true;
         }
+        JIT_CHAIN_BUDGET = JIT_CHAIN_MAX;
         wasm::call_indirect1(
             wasm_table_index as i32 + WASM_TABLE_OFFSET as i32,
             initial_state,
@@ -3640,6 +3651,7 @@ pub unsafe fn main_loop() -> f64 {
         do_many_cycles_native();
 
         let now = js::microtick();
+        STAT_LOOP_CLOCK_READS = STAT_LOOP_CLOCK_READS.wrapping_add(1);
         let t = js::run_hardware_timers(*acpi_enabled, now);
         handle_irqs();
         if *in_hlt {
@@ -4620,8 +4632,13 @@ pub unsafe fn set_tsc(low: u32, high: u32) {
     tsc_offset = current_value - new_value;
 }
 
+/// Debug counters: guest tsc reads, main loop clock reads (see get_jit_config 30, 31)
+pub static mut STAT_TSC_READS: u32 = 0;
+pub static mut STAT_LOOP_CLOCK_READS: u32 = 0;
+
 #[no_mangle]
 pub unsafe fn read_tsc() -> u64 {
+    STAT_TSC_READS = STAT_TSC_READS.wrapping_add(1);
     let value = (js::microtick() * TSC_RATE) as u64 - tsc_offset;
 
     if !TSC_ENABLE_IMPRECISE_BROWSER_WORKAROUND {
@@ -4925,6 +4942,7 @@ pub unsafe fn check_page_switch(block_addr: u32, next_block_addr: u32) {
 
 #[no_mangle]
 pub unsafe fn reset_cpu() {
+    *xcr0 = 1;
     for i in 0..8 {
         *segment_is_null.offset(i) = false;
         *segment_limits.offset(i) = 0;

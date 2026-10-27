@@ -211,7 +211,7 @@ export function CPU(bus, wm, stop_idling)
     this.pat = view(Uint32Array, memory, 1288, 2);
 
     // 64-bit mode state: upper register halves, r8-r15, rip high, msrs, ... (see global_pointers.rs)
-    this.long_mode_state = view(Int32Array, memory, 1344, 46);
+    this.long_mode_state = view(Int32Array, memory, 1344, 48);
 
     this.svga_dirty_bitmap_min_offset = view(Uint32Array, memory, 716, 1);
     this.svga_dirty_bitmap_max_offset = view(Uint32Array, memory, 720, 1);
@@ -336,6 +336,8 @@ CPU.prototype.create_jit_imports = function()
     const jit_imports = Object.create(null);
 
     jit_imports["m"] = this.wm.exports["memory"];
+    // compiled blocks tail call each other through the function table
+    jit_imports["t"] = this.wm.wasm_table;
 
     for(const name of Object.keys(this.wm.exports))
     {
@@ -700,6 +702,7 @@ CPU.prototype.set_state = function(state)
     state[92] && this.efer.set(state[92]);
     this.long_mode_state.fill(0);
     state[94] && this.long_mode_state.set(state[94]);
+    if(!(this.long_mode_state[46] & 1)) this.long_mode_state[46] = 1; // xcr0 of states saved before it was part of the state
 
     this.set_tsc(state[43][0], state[43][1]);
 
@@ -1018,6 +1021,13 @@ CPU.prototype.init = function(settings, device_bus)
     // number of executions of a 64-bit code address before it is compiled (4294967295 disables)
     // compile generated wasm synchronously (for tests: modules are usable immediately)
     this.sync_jit_compilation = !!settings.sync_jit;
+
+    if(settings.jit_chaining === true)
+    {
+        // experiment: compiled blocks tail call the next compiled block instead of returning to the
+        // dispatcher (measured slower, see docs/jit64-performance.md)
+        this.set_jit_config(17, 1);
+    }
 
     if(settings.jit64_threshold !== undefined)
     {

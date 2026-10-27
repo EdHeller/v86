@@ -2747,3 +2747,96 @@ pub fn gen_debug_track_jit_exit(builder: &mut WasmBuilder, address: u32) {
         gen_fn1_const(builder, "track_jit_exit", address);
     }
 }
+
+/// Called at the end of a compiled module after registers and the instruction counter have been
+/// stored: when eip is the entry point of another compiled block, jump to it directly (wasm tail
+/// call) instead of returning to the dispatcher in Rust. This is what `cycle_internal` would do
+/// next, so the same conditions apply: not halted, no interrupt shadow, no single stepping, same
+/// cached state flags. The budget bounds the number of chained blocks so that timers and
+/// interrupts are still looked at regularly.
+pub fn gen_chain_to_next_block(builder: &mut WasmBuilder) {
+    use crate::cpu::cpu::{
+        interrupt_shadow, tlb_code, Code, FLAG_TRAP, JIT_CHAIN_BUDGET, WASM_TABLE_OFFSET,
+    };
+    use std::mem::offset_of;
+
+    let budget = (&raw const JIT_CHAIN_BUDGET) as u32;
+    let shadow = (&raw const interrupt_shadow) as u32;
+    let tlb_code_base = (&raw const tlb_code) as u32;
+
+    builder.load_fixed_i32(budget);
+    builder.if_void();
+    {
+        builder.load_fixed_u8(global_pointers::in_hlt as u32);
+        builder.load_fixed_u8(shadow);
+        builder.or_i32();
+        builder.load_fixed_i32(global_pointers::flags as u32);
+        builder.const_i32(FLAG_TRAP);
+        builder.and_i32();
+        builder.or_i32();
+        builder.eqz_i32();
+        builder.if_void();
+        {
+            builder.load_fixed_i32(global_pointers::instruction_pointer as u32);
+            let eip = builder.set_new_local();
+
+            // the compiled code of the page, if any
+            builder.get_local(&eip);
+            builder.const_i32(12);
+            builder.shr_u_i32();
+            builder.const_i32(2);
+            builder.shl_i32();
+            builder.load_aligned_i32(tlb_code_base);
+            let code = builder.set_new_local();
+
+            builder.get_local(&code);
+            builder.if_void();
+            {
+                builder.get_local(&code);
+                builder.load_aligned_i32(offset_of!(Code, state_flags) as u32);
+                builder.load_fixed_i32(global_pointers::state_flags as u32);
+                builder.eq_i32();
+                builder.if_void();
+                {
+                    // entry point of eip
+                    builder.get_local(&eip);
+                    builder.const_i32(0xFFF);
+                    builder.and_i32();
+                    builder.const_i32(1);
+                    builder.shl_i32();
+                    builder.get_local(&code);
+                    builder.add_i32();
+                    builder.load_unaligned_u16(offset_of!(Code, state_table) as u32);
+                    let state = builder.set_new_local();
+
+                    builder.get_local(&state);
+                    builder.const_i32(0xFFFF);
+                    builder.ne_i32();
+                    builder.if_void();
+                    {
+                        builder.const_i32(budget as i32);
+                        builder.load_fixed_i32(budget);
+                        builder.const_i32(1);
+                        builder.sub_i32();
+                        builder.store_aligned_i32(0);
+
+                        builder.get_local(&state);
+                        builder.get_local(&code);
+                        builder.load_unaligned_u16(offset_of!(Code, wasm_table_index) as u32);
+                        builder.const_i32(WASM_TABLE_OFFSET as i32);
+                        builder.add_i32();
+                        builder.return_call_indirect_fn1();
+                    }
+                    builder.block_end();
+                    builder.free_local(state);
+                }
+                builder.block_end();
+            }
+            builder.block_end();
+            builder.free_local(code);
+            builder.free_local(eip);
+        }
+        builder.block_end();
+    }
+    builder.block_end();
+}

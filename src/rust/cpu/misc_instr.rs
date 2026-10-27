@@ -438,7 +438,6 @@ pub unsafe fn fxrstor(addr: i32) {
 }
 
 /// XCR0: the enabled state components. Only the x87 (bit 0) and SSE (bit 1) components exist.
-pub static mut XCR0: u64 = 1;
 pub const XCR0_SUPPORTED: u64 = 3;
 const XSAVE_AREA_SIZE: i32 = 576;
 
@@ -460,7 +459,7 @@ unsafe fn xsave_common_checks(addr: i32) -> bool {
 }
 
 unsafe fn requested_features() -> u64 {
-    ((read_reg32(EDX) as u32 as u64) << 32 | read_reg32(EAX) as u32 as u64) & XCR0
+    ((read_reg32(EDX) as u32 as u64) << 32 | read_reg32(EAX) as u32 as u64) & *xcr0
 }
 
 pub unsafe fn xsave(addr: i32) {
@@ -523,7 +522,7 @@ pub unsafe fn xrstor(addr: i32) {
 
     let xstate_bv = safe_read64s(addr + 512).unwrap();
     let xcomp_bv = safe_read64s(addr + 520).unwrap();
-    if xcomp_bv != 0 || xstate_bv & !XCR0 != 0 {
+    if xcomp_bv != 0 || xstate_bv & !*xcr0 != 0 {
         dbg_log!("#gp xrstor with a compacted or invalid header");
         trigger_gp(0);
         return;
@@ -590,8 +589,8 @@ pub unsafe fn xgetbv() {
         trigger_gp(0);
         return;
     }
-    write_reg32(EAX, XCR0 as i32);
-    write_reg32(EDX, (XCR0 >> 32) as i32);
+    write_reg32(EAX, *xcr0 as i32);
+    write_reg32(EDX, (*xcr0 >> 32) as i32);
 }
 
 pub unsafe fn xsetbv() {
@@ -609,7 +608,7 @@ pub unsafe fn xsetbv() {
         trigger_gp(0);
         return;
     }
-    XCR0 = value;
+    *xcr0 = value;
 }
 
 pub unsafe fn xchg8(data: i32, r8: i32) -> i32 {

@@ -54,6 +54,7 @@ c!(OP_BRIF, 0x0d);
 c!(OP_BRTABLE, 0x0e);
 c!(OP_RETURN, 0x0f);
 c!(OP_CALL, 0x10);
+c!(OP_RETURN_CALL_INDIRECT, 0x13); // tail calls proposal
 c!(OP_CALLINDIRECT, 0x11);
 c!(OP_DROP, 0x1a);
 c!(OP_SELECT, 0x1b);

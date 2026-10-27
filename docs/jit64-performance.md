@@ -66,3 +66,17 @@ and a fallback module, as the existing `v86-fallback.wasm` does for older engine
 `tests/x64/manual/templeos.js` (`TOS_FPS=5`, `TOS_SLOW=1`, `node --cpu-prof`), `tests/x64/manual/alpine.js`
 (`ALP_UNSUPPORTED=1`, `ALP_LOAD` / `ALP_SAVE`, `JIT64=<threshold>`; `4294967295` switches jit64 off) and
 `get_jit_config` (5-8, 13 = instructions retired in compiled blocks, 20-27 = inline tlb misses).
+
+## 32-bit JIT notes (existing JIT, Alpine i686)
+
+Profiler build (`make with-profiler`, `ALP_STATS=1`) on the 32-bit shell loop: 27.9 M compiled block runs retire 509 M
+instructions (18 per run), 97 % of the exits leave through a different page, 5 % of the instructions are interpreted.
+
+Experiment: **block chaining** (the shared exit of a module looks up the next compiled block itself and does a wasm
+`return_call_indirect`, checks for halt / interrupt shadow / single stepping / same state flags, bounded by a chain
+budget). It works (`jit_chaining: true`, `CHAIN=1`) but is about **8 % slower** (60000 iterations: 9.65 s vs 8.93 s,
+measured sequentially; parallel runs of the two variants gave the opposite answer, always measure one at a time):
+the check sequence on every exit and the tail call through the table cost more than the dispatch in Rust.
+Off by default. Ideas that would make chaining pay off: do the lookup only at exits whose target is known to be in
+another compiled page (direct `return_call` to a known table index patched in later), skip it for exits that are
+followed by the interpreter, and make the budget a local instead of memory.

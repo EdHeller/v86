@@ -46,6 +46,7 @@ const emulator = new V86({
     vga_memory_size: 8 * 1024 * 1024,
     autostart: true,
     disable_jit: +process.env.DISABLE_JIT,
+    jit_chaining: process.env.CHAIN === "1" ? true : undefined,
     jit64_threshold: process.env.JIT64 === undefined ? undefined : +process.env.JIT64,
 });
 
@@ -90,7 +91,7 @@ const status = () => {
     const cpu = emulator.v86.cpu;
     const mem = wasm_mem();
     const g = i => cpu.wm.exports.get_jit_config(i);
-    const stats = `jit64 compiled=${g(5)} failed=${g(6)} run=${g(7) >>> 0} jit_insns=${g(13) >>> 0} invalidated=${g(8)}`;
+    const stats = `jit64 compiled=${g(5)} failed=${g(6)} run=${g(7) >>> 0} jit_insns=${g(13) >>> 0} invalidated=${g(8)} tsc_reads=${g(30) >>> 0} loop_clock_reads=${g(31) >>> 0}`;
     return `t=${((Date.now() - t0) / 1000).toFixed(0)}s eip=${(cpu.instruction_pointer[0] >>> 0).toString(16)} is_64=${mem[1444]} instr=${cpu.instruction_counter[0]} ${stats}`;
 };
 
@@ -142,7 +143,9 @@ function unsupported() {
     console.error("opcodes that ended jit64 block discovery (count opcode):");
     for(const [n, op] of rows.slice(0, 25)) console.error("  %s  %s", String(n).padStart(8), op);
 }
-setTimeout(() => { if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); if(process.env.ALP_DUMP) dump_virtual(); process.exit(0); }, +timeout * 1000);
+setTimeout(async () => {
+    if(process.env.ALP_STATS) { const { stats_to_string } = await import("../../../src/browser/print_stats.js"); console.error(stats_to_string(emulator.v86.cpu)); }
+    if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); if(process.env.ALP_DUMP) dump_virtual(); process.exit(0); }, +timeout * 1000);
 
 // on a crash print the registers and the code around eip, so the failing instruction can be disassembled
 function dump() {
