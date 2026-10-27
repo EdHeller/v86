@@ -682,8 +682,17 @@ unsafe fn exec() -> OrPageFault<()> {
                 return ud();
             }
             let bits = if p.osz16 { 16 } else { 64 };
-            let v = pop_val(bits)?;
-            rm_write(&p, &m, bits, v)?;
+            if let Loc::Mem(_) = m.loc {
+                // the destination write may fault: rsp is only updated once it has succeeded
+                let sp = r64(RSP);
+                let v = mem_read(sp, bits)?;
+                rm_write(&p, &m, bits, v)?;
+                set_r64(RSP, sp.wrapping_add(bits as u64 / 8));
+            }
+            else {
+                let v = pop_val(bits)?;
+                rm_write(&p, &m, bits, v)?;
+            }
         },
         0x90 => {
             if p.b() != 0 {
@@ -1496,8 +1505,10 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
             let dst = rm_read(p, &m, bits)?;
             let src = get_reg(m.reg, bits, p.has_rex);
             let r = alu(0, dst, src, bits);
-            set_reg(m.reg, bits, p.has_rex, dst);
+            // the memory write may fault and the instruction is restarted: nothing else may have
+            // changed by then
             rm_write(p, &m, bits, r)?;
+            set_reg(m.reg, bits, p.has_rex, dst);
         },
         0xA4 | 0xA5 | 0xAC | 0xAD => {
             // shld / shrd
@@ -1847,9 +1858,19 @@ unsafe fn load_fast_ss(selector: i32, dpl: u8) {
     *stack_size_32 = true;
 }
 
+/// Debug aid: log the syscalls with this number + 1 (0 = off), see set_jit_config(14, n)
+pub static mut SYSCALL_TRACE: u32 = 0;
+
 unsafe fn syscall(_p: &Prefixes) -> OrPageFault<()> {
     if *efer & EFER_SCE == 0 || !*is_64 {
         return ud();
+    }
+    if SYSCALL_TRACE != 0 && r64(RAX) as u32 == SYSCALL_TRACE - 1 {
+        dbg_log!(
+            "syscall {} rip={:x} fs={:x} rdi={:x} rsi={:x} rdx={:x} r10={:x} r8={:x} r9={:x}",
+            r64(RAX), rip(), *fs_base,
+            r64(RDI), r64(RSI), r64(RDX), r64(10), r64(8), r64(9)
+        );
     }
     let target = *msr_lstar;
     if !is_canonical(target) {

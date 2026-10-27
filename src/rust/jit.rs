@@ -2581,6 +2581,9 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         4 => crate::cpu::jit64::set_threshold(value),
         9 => crate::cpu::jit64::set_disable_mask(value),
         10 => crate::cpu::cpu::TRACE_ON = value != 0,
+        14 => crate::cpu::long_mode::SYSCALL_TRACE = value,
+        15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
+        16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
         _ => dbg_assert!(false),
     }
 }
@@ -2599,6 +2602,8 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         8 => crate::cpu::jit64::STAT_INVALIDATED,
         11 => crate::cpu::cpu::TRACE_BUF.as_ptr() as u32,
         12 => crate::cpu::cpu::TRACE_POS,
+        13 => crate::cpu::jit64::STAT_JIT_INSNS,
+        20..=27 => crate::cpu::long_mem::SLOW_STATS[(index - 20) as usize],
         1000..=1511 => crate::cpu::jit64::UNSUPPORTED[(index - 1000) as usize],
         _ => 0,
     }

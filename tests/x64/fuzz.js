@@ -204,6 +204,23 @@ const families = {
         const asm = form === "rr" ? `${op} ${a}, ${b}` : form === "ri" ? `${op} ${a}, ${rint(256)}` : `${op} ${a}, byte ${mem()}`;
         return { asm: op === "xchg" && form !== "rr" ? `xchg ${a}, ${b}` : asm, mask: op === "mov" || op === "xchg" ? 0 : op === "and" || op === "or" || op === "xor" || op === "test" ? ALL & ~AF : ALL };
     },
+    atomic() {
+        // lock prefixed read-modify-write instructions on memory, as used by pthread / futex code
+        const op = pick(["add", "sub", "and", "or", "xor", "adc", "sbb", "inc", "dec", "neg", "not", "xadd", "cmpxchg", "bts", "btr", "btc"]);
+        const size = op === "bts" || op === "btr" || op === "btc" ? pick([16, 32, 64]) : pick([8, 16, 32, 64]);
+        const m = `${MEMSIZE[size]} ${mem()}`;
+        const src = op === "cmpxchg" ? rn(size, reg(size, [0])) : rn(size, reg(size));
+        let asm, mask = ALL;
+        switch(op)
+        {
+            case "inc": case "dec": case "neg": case "not": asm = `lock ${op} ${m}`; mask = op === "not" ? 0 : ALL; break;
+            case "xadd": case "cmpxchg": asm = `lock ${op} ${m}, ${src}`; break;
+            case "bts": case "btr": case "btc": asm = `lock ${op} ${m}, ${rint(size)}`; mask = CF; break;
+            case "and": case "or": case "xor": asm = `lock ${op} ${m}, ${rint(2) ? src : rint(128)}`; mask = ALL & ~AF; break;
+            default: asm = `lock ${op} ${m}, ${rint(2) ? src : rint(128)}`;
+        }
+        return { asm, mask };
+    },
     string() {
         const op = pick(["movs", "stos", "lods", "scas", "cmps"]);
         const size = pick([8, 16, 32, 64]);

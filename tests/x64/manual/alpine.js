@@ -48,11 +48,26 @@ const emulator = new V86({
 });
 
 let serial = "";
-emulator.add_listener("emulator-ready", () => { if(process.env.ALP_TRACE) emulator.v86.cpu.wm.exports.set_jit_config(10, 1); });
+emulator.add_listener("emulator-ready", () => {
+    if(process.env.ALP_TRACE) emulator.v86.cpu.wm.exports.set_jit_config(10, 1);
+    // ALP_TRACE_SYSCALL=<number>: log every guest syscall with this number (202 = futex)
+    // ALP_WATCH=<hex virtual address>: debug build logs every guest write that touches it (interpreter only: JIT64=4294967295)
+    if(process.env.ALP_WATCH)
+    {
+        const a = BigInt("0x" + process.env.ALP_WATCH);
+        emulator.v86.cpu.wm.exports.set_jit_config(15, Number(a & 0xFFFFFFFFn));
+        emulator.v86.cpu.wm.exports.set_jit_config(16, Number(a >> 32n));
+    }
+    if(process.env.ALP_TRACE_SYSCALL) emulator.v86.cpu.wm.exports.set_jit_config(14, +process.env.ALP_TRACE_SYSCALL + 1);
+});
 emulator.add_listener("serial0-output-byte", b => { process.stdout.write(String.fromCharCode(b)); serial += String.fromCharCode(b); });
 
 for(const [sec, text] of JSON.parse(process.env.ALP_KEYS || "[]"))
     setTimeout(() => emulator.keyboard_send_text(text), sec * 1000);
+// ALP_SYSRQ='[[seconds, "w"], ...]': Alt+SysRq+<key> on the emulated keyboard (w = blocked tasks, t = all tasks, l = cpu backtrace)
+const SYSRQ_SCANCODES = { w: 0x11, t: 0x14, l: 0x26, m: 0x32, p: 0x19 };
+for(const [sec, key] of JSON.parse(process.env.ALP_SYSRQ || "[]"))
+    setTimeout(() => { const c = SYSRQ_SCANCODES[key]; emulator.keyboard_send_scancodes([0x38, 0x54, c, c | 0x80, 0xD4, 0xB8]); }, sec * 1000);
 for(const [sec, text] of JSON.parse(process.env.ALP_SERIAL || "[]"))
     setTimeout(() => emulator.serial0_send(text), sec * 1000);
 
@@ -63,7 +78,7 @@ const status = () => {
     const cpu = emulator.v86.cpu;
     const mem = wasm_mem();
     const g = i => cpu.wm.exports.get_jit_config(i);
-    const stats = `jit64 compiled=${g(5)} failed=${g(6)} run=${g(7) >>> 0} invalidated=${g(8)}`;
+    const stats = `jit64 compiled=${g(5)} failed=${g(6)} run=${g(7) >>> 0} jit_insns=${g(13) >>> 0} invalidated=${g(8)}`;
     return `t=${((Date.now() - t0) / 1000).toFixed(0)}s eip=${(cpu.instruction_pointer[0] >>> 0).toString(16)} is_64=${mem[1444]} instr=${cpu.instruction_counter[0]} ${stats}`;
 };
 
@@ -77,6 +92,35 @@ setInterval(() => {
     console.error(status());
 }, 10000);
 
+// ALP_DUMP=<hex virtual address>:<bytes>[,...] at exit: dump guest virtual memory, walked through the current cr3
+function dump_virtual() {
+    const cpu = emulator.v86.cpu, mem = cpu.mem8, cr3 = (cpu.cr[3] >>> 0) & ~0xfff;
+    const q = a => { let v = 0n; for(let i = 7; i >= 0; i--) v = v << 8n | BigInt(mem[a + i]); return v; };
+    const phys = va => {
+        let t = BigInt(cr3);
+        for(let lvl = 3; lvl >= 0; lvl--)
+        {
+            const e = q(Number(t) + Number((va >> BigInt(12 + 9 * lvl)) & 0x1ffn) * 8);
+            if(!(e & 1n)) return null;
+            if(lvl > 0 && e & 0x80n) { const sz = (1n << BigInt(12 + 9 * lvl)) - 1n; return (e & 0x000FFFFFFFFFF000n & ~sz) | (va & sz); }
+            t = e & 0x000FFFFFFFFFF000n;
+            if(lvl === 0) return t | (va & 0xfffn);
+        }
+    };
+    console.error("cr3=" + cr3.toString(16));
+    for(const spec of process.env.ALP_DUMP.split(","))
+    {
+        const [a, n] = spec.split(":"); const base = BigInt("0x" + a);
+        let line = "";
+        for(let i = 0; i < +n; i += 4)
+        {
+            const p = phys(base + BigInt(i));
+            if(i % 32 === 0) { if(line) console.error(line); line = (base + BigInt(i)).toString(16) + ": "; }
+            line += p === null ? "-------- " : ((mem[Number(p)] | mem[Number(p) + 1] << 8 | mem[Number(p) + 2] << 16 | mem[Number(p) + 3] << 24) >>> 0).toString(16).padStart(8, "0") + " ";
+        }
+        console.error(line);
+    }
+}
 // ALP_UNSUPPORTED=1: at the end print the opcodes that stopped 64-bit jit block discovery most often
 function unsupported() {
     const g = i => emulator.v86.cpu.wm.exports.get_jit_config(1000 + i);
@@ -86,7 +130,7 @@ function unsupported() {
     console.error("opcodes that ended jit64 block discovery (count opcode):");
     for(const [n, op] of rows.slice(0, 25)) console.error("  %s  %s", String(n).padStart(8), op);
 }
-setTimeout(() => { if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); process.exit(0); }, +timeout * 1000);
+setTimeout(() => { if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); if(process.env.ALP_DUMP) dump_virtual(); process.exit(0); }, +timeout * 1000);
 
 // on a crash print the registers and the code around eip, so the failing instruction can be disassembled
 function dump() {

@@ -2595,6 +2595,9 @@ pub unsafe fn trigger_pagefault(
 }
 
 pub fn tlb_set_has_code(physical_page: Page, has_code: bool) {
+    if has_code {
+        unsafe { super::long_mem::code_page_added(physical_page.to_u32()) }
+    }
     for i in 0..unsafe { valid_tlb_entries_count } {
         let page = unsafe { valid_tlb_entries[i as usize] };
         let entry = unsafe { tlb_data[page as usize] };
@@ -2617,6 +2620,11 @@ pub fn tlb_set_has_code(physical_page: Page, has_code: bool) {
     check_tlb_invariants();
 }
 pub fn tlb_set_has_code_multiple(physical_pages: &HashSet<Page>, has_code: bool) {
+    if has_code {
+        for p in physical_pages {
+            unsafe { super::long_mem::code_page_added(p.to_u32()) }
+        }
+    }
     let physical_pages: Vec<Page> = physical_pages.into_iter().copied().collect();
     for i in 0..unsafe { valid_tlb_entries_count } {
         let page = unsafe { valid_tlb_entries[i as usize] };

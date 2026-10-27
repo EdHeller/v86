@@ -206,6 +206,43 @@ for(const [sec, dx, dy, b] of JSON.parse(process.env.TOS_MOUSE || "[]"))
     }, sec * 1000);
 }
 
+// TOS_FPS=<interval seconds> [TOS_FPS_LOG=<csv file>]: our own frame counter. The planes of the 640x480 mode are
+// hashed about every 5 ms; every change of the hash is a frame that was really drawn, counted in wall
+// clock time (TempleOS' own fps counter runs on its emulated clock and is not trustworthy here).
+// Also reports guest MIPS and the share of instructions retired inside jit64 blocks.
+if(process.env.TOS_FPS)
+{
+    const interval = +process.env.TOS_FPS;
+    let frames = 0, last_hash = 0, last_t = Date.now(), last_instr = 0, last_jit = 0, total_frames = 0;
+    const started = Date.now();
+    const log = process.env.TOS_FPS_LOG;
+    if(log) fs.writeFileSync(log, "wall_s,fps,mips,jit_percent\n");
+    const hash = () => {
+        const vga = emulator.v86 && emulator.v86.cpu.devices.vga;
+        if(!vga || !vga.graphical_mode) return 0;
+        let h = 0;
+        for(const plane of [vga.plane0, vga.plane1, vga.plane2, vga.plane3])
+        {
+            const w = new Int32Array(plane.buffer, plane.byteOffset, 38400 >> 2);
+            for(let i = 0; i < w.length; i++) h = Math.imul(h ^ w[i], 16777619) + i | 0;
+        }
+        return h;
+    };
+    setInterval(() => { const h = hash(); if(h !== last_hash) { frames++; total_frames++; last_hash = h; } }, 5);
+    setInterval(() => {
+        if(!emulator.v86) return;
+        const cpu = emulator.v86.cpu, now = Date.now(), dt = (now - last_t) / 1000;
+        const instr = cpu.instruction_counter[0] >>> 0, jit = cpu.wm.exports.get_jit_config(13) >>> 0;
+        const di = (instr - last_instr) >>> 0, dj = (jit - last_jit) >>> 0;
+        const row = [((now - started) / 1000).toFixed(0), (frames / dt).toFixed(1), (di / dt / 1e6).toFixed(1), (di ? dj / di * 100 : 0).toFixed(0)];
+        console.error("fps=%s mips=%s jit=%s%% (t=%ss)", row[1], row[2], row[3], row[0]);
+        if(process.env.TOS_SLOW) console.error("  slow accesses read[cross,nomatch,nofast] write[...] last entry fast/perm/user, phys: " +
+            Array.from({ length: 8 }, (_, i) => (cpu.wm.exports.get_jit_config(20 + i) >>> 0).toString(16)).join(" "));
+        if(log) fs.appendFileSync(log, row.join(",") + "\n");
+        frames = 0; last_t = now; last_instr = instr; last_jit = jit;
+    }, interval * 1000);
+}
+
 // TOS_FAKE_MOUSE=<start seconds>,<events per second>: from then on a synthetic mouse draws circles with the
 // left button held, like a user scribbling in Doodle. Profile with `node --cpu-prof`.
 if(process.env.TOS_FAKE_MOUSE)

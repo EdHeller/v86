@@ -108,7 +108,11 @@ fn count_unsupported(code: &[u8]) {
     let key = if op == 0x0F { 256 + *code.get(i + 1).unwrap_or(&0) as usize } else { op as usize };
     unsafe { UNSUPPORTED[key] = UNSUPPORTED[key].saturating_add(1) }
 }
+/// inline tlb lookups in generated code (set false to call the helpers for every access)
+const DISABLE_INLINE_TLB: bool = false;
 pub static mut STAT_RUN: u32 = 0;
+/// instructions retired inside compiled blocks (wraps)
+pub static mut STAT_JIT_INSNS: u32 = 0;
 pub static mut STAT_INVALIDATED: u32 = 0;
 
 pub unsafe fn set_threshold(t: u32) { THRESHOLD = t }
@@ -145,6 +149,7 @@ pub unsafe fn j64_alu(op: i32, a: i64, b: i64, bits: i32) -> i64 {
 
 #[no_mangle]
 pub unsafe fn j64_read(addr: i64, bits: i32) -> i64 {
+    crate::cpu::long_mem::count_slow_access(addr as u64, bits as u32, false, *cpl == 3);
     match mem_read(addr as u64, bits as u32) {
         Ok(v) => v as i64,
         Err(()) => {
@@ -156,6 +161,7 @@ pub unsafe fn j64_read(addr: i64, bits: i32) -> i64 {
 
 #[no_mangle]
 pub unsafe fn j64_write(addr: i64, v: i64, bits: i32) {
+    crate::cpu::long_mem::count_slow_access(addr as u64, bits as u32, true, *cpl == 3);
     if mem_write(addr as u64, bits as u32, v as u64).is_err() {
         FLAGS[FAULT] = 1;
     }
@@ -842,6 +848,11 @@ struct Gen<'a> {
     t_ea: WasmLocalI64,
     t_v: WasmLocalI64,
     t_a: WasmLocalI64,
+    /// inline tlb lookups: the address, the value to store, the page number and the tlb entry address
+    t_fa: WasmLocalI64,
+    t_fv: WasmLocalI64,
+    t_fp: WasmLocalI64,
+    t_fe: WasmLocal,
     cur: u64,
     next: u64,
     /// offset of a basic block (from the start of the region) -> its index
@@ -1090,10 +1101,125 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Leaves 1 on the stack when the tlb has an entry for the address in t_fa that allows an access of
+    /// `bits` bits inside the page without calling back (see `long_mem::fast_flags`), and sets t_fe
+    /// to the address of the entry
+    fn tlb_hit(&mut self, bits: u32, write: bool) {
+        use crate::cpu::long_mem::*;
+        // page number and entry address
+        self.b.get_local_i64(&self.t_fa);
+        self.b.const_i64(12);
+        self.b.shr_u_i64();
+        self.b.set_local_i64(&self.t_fp);
+        self.b.get_local_i64(&self.t_fp);
+        self.b.wrap_i64_to_i32();
+        self.b.const_i32(TLB_MASK as i32);
+        self.b.and_i32();
+        self.b.const_i32(TLB_ENTRY_SHIFT as i32);
+        self.b.shl_i32();
+        self.b.set_local(&self.t_fe);
+        // the entry is for this page (entries only exist for canonical addresses)
+        let base = tlb_address();
+        self.b.get_local(&self.t_fe);
+        self.b.load_unaligned_i64(base);
+        self.b.get_local_i64(&self.t_fp);
+        self.b.eq_i64();
+        // the access is allowed for the current privilege level
+        self.b.get_local(&self.t_fe);
+        self.b.load_u8(base + TLB_ENTRY_FAST);
+        // mask = (supervisor bit) << (cpl == 3): the user bit is the next one
+        self.b.const_i32(if write { FAST_WRITE_SUPERVISOR } else { FAST_READ_SUPERVISOR } as i32);
+        self.b.load_fixed_u8(cpl as u32);
+        self.b.const_i32(3);
+        self.b.eq_i32();
+        self.b.shl_i32();
+        self.b.and_i32();
+        self.b.eqz_i32();
+        self.b.eqz_i32();
+        self.b.and_i32();
+        if bits > 8 {
+            // does not cross the page
+            self.b.get_local_i64(&self.t_fa);
+            self.b.wrap_i64_to_i32();
+            self.b.const_i32(0xFFF);
+            self.b.and_i32();
+            self.b.const_i32(0x1000 - bits as i32 / 8);
+            self.b.leu_i32();
+            self.b.and_i32();
+        }
+    }
+
+    /// pushes the address in ram of the byte addressed by t_fa (after tlb_hit)
+    fn tlb_ram_address(&mut self) {
+        use crate::cpu::long_mem::*;
+        self.b.get_local(&self.t_fe);
+        self.b.load_unaligned_i32(tlb_address() + TLB_ENTRY_PHYS);
+        self.b.get_local_i64(&self.t_fa);
+        self.b.wrap_i64_to_i32();
+        self.b.const_i32(0xFFF);
+        self.b.and_i32();
+        self.b.or_i32();
+    }
+
     /// [addr on stack] -> value
     fn read_mem(&mut self, bits: u32) {
-        self.b.const_i32(bits as i32);
-        self.b.call_fn2_i64_i32_ret_i64("j64_read");
+        if DISABLE_INLINE_TLB {
+            self.b.const_i32(bits as i32);
+            self.b.call_fn2_i64_i32_ret_i64("j64_read");
+            return;
+        }
+        let mem = unsafe { crate::cpu::memory::mem8 } as u32;
+        self.b.set_local_i64(&self.t_fa);
+        self.tlb_hit(bits, false);
+        self.b.if_i64();
+        {
+            self.tlb_ram_address();
+            match bits {
+                8 => { self.b.load_u8(mem); self.b.extend_unsigned_i32_to_i64(); },
+                16 => { self.b.load_unaligned_u16(mem); self.b.extend_unsigned_i32_to_i64(); },
+                32 => { self.b.load_unaligned_i32(mem); self.b.extend_unsigned_i32_to_i64(); },
+                _ => self.b.load_unaligned_i64(mem),
+            }
+        }
+        self.b.else_();
+        {
+            self.b.get_local_i64(&self.t_fa);
+            self.b.const_i32(bits as i32);
+            self.b.call_fn2_i64_i32_ret_i64("j64_read");
+        }
+        self.b.block_end();
+    }
+
+    /// [addr, value on stack] -> (stores the value, faults are reported through the fault flag)
+    fn write_mem(&mut self, bits: u32) {
+        if DISABLE_INLINE_TLB {
+            self.b.const_i32(bits as i32);
+            self.b.call_fn3_i64_i64_i32("j64_write");
+            return;
+        }
+        let mem = unsafe { crate::cpu::memory::mem8 } as u32;
+        self.b.set_local_i64(&self.t_fv);
+        self.b.set_local_i64(&self.t_fa);
+        self.tlb_hit(bits, true);
+        self.b.if_void();
+        {
+            self.tlb_ram_address();
+            self.b.get_local_i64(&self.t_fv);
+            match bits {
+                8 => { self.b.wrap_i64_to_i32(); self.b.store_u8(mem); },
+                16 => { self.b.wrap_i64_to_i32(); self.b.store_unaligned_u16(mem); },
+                32 => { self.b.wrap_i64_to_i32(); self.b.store_unaligned_i32(mem); },
+                _ => self.b.store_unaligned_i64(mem),
+            }
+        }
+        self.b.else_();
+        {
+            self.b.get_local_i64(&self.t_fa);
+            self.b.get_local_i64(&self.t_fv);
+            self.b.const_i32(bits as i32);
+            self.b.call_fn3_i64_i64_i32("j64_write");
+        }
+        self.b.block_end();
     }
 
     /// reads the operand (address is computed anew)
@@ -1140,8 +1266,7 @@ impl<'a> Gen<'a> {
                 self.b.set_local_i64(&self.t_v);
                 self.b.get_local_i64(&self.t_ea);
                 self.b.get_local_i64(&self.t_v);
-                self.b.const_i32(bits as i32);
-                self.b.call_fn3_i64_i64_i32("j64_write");
+                self.write_mem(bits);
                 self.fault_check();
                 self.smc_check();
             },
@@ -1487,8 +1612,7 @@ impl<'a> Gen<'a> {
                 self.b.set_local_i64(&self.t_ea);
                 self.b.get_local_i64(&self.t_ea);
                 self.b.get_local_i64(&self.t_v);
-                self.b.const_i32(bits as i32);
-                self.b.call_fn3_i64_i64_i32("j64_write");
+                self.write_mem(bits);
                 self.fault_check();
                 self.smc_check();
                 self.b.get_local_i64(&self.t_ea);
@@ -1801,8 +1925,7 @@ impl<'a> Gen<'a> {
                         self.b.set_local_i64(&self.t_ea);
                         self.b.get_local_i64(&self.t_ea);
                         self.b.get_local_i64(&self.t_v);
-                        self.b.const_i32(bits as i32);
-                        self.b.call_fn3_i64_i64_i32("j64_write");
+                        self.write_mem(bits);
                         self.fault_check();
                         self.smc_check();
                         self.get_reg(7, 64, true);
@@ -1819,8 +1942,7 @@ impl<'a> Gen<'a> {
                         self.b.set_local_i64(&self.t_ea);
                         self.b.get_local_i64(&self.t_ea);
                         self.b.get_local_i64(&self.t_v);
-                        self.b.const_i32(bits as i32);
-                        self.b.call_fn3_i64_i64_i32("j64_write");
+                        self.write_mem(bits);
                         self.fault_check();
                         self.smc_check();
                         self.get_reg(6, 64, true);
@@ -1955,13 +2077,17 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
     let t_ea = b.new_local_i64();
     let t_v = b.new_local_i64();
     let t_a = b.new_local_i64();
+    let t_fa = b.new_local_i64();
+    let t_fv = b.new_local_i64();
+    let t_fp = b.new_local_i64();
+    let t_fe = b.new_local();
     let fl_a = b.new_local_i64();
     let fl_b = b.new_local_i64();
     let fl_r = b.new_local_i64();
     let loop_label = b.loop_void();
 
     let mut g = Gen {
-        b, start: rip, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, cur: rip, next: rip, block_index,
+        b, start: rip, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, cur: rip, next: rip, block_index,
         pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false,
     };
 
@@ -2028,8 +2154,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                 g.b.set_local_i64(&g.t_ea);
                 g.b.get_local_i64(&g.t_ea);
                 g.b.const_i64(next as i64);
-                g.b.const_i32(64);
-                g.b.call_fn3_i64_i64_i32("j64_write");
+                g.write_mem(64);
                 g.fault_check();
                 g.smc_check();
                 g.b.get_local_i64(&g.t_ea);
@@ -2050,8 +2175,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                 g.b.set_local_i64(&g.t_ea);
                 g.b.get_local_i64(&g.t_ea);
                 g.b.const_i64(next as i64);
-                g.b.const_i32(64);
-                g.b.call_fn3_i64_i64_i32("j64_write");
+                g.write_mem(64);
                 g.fault_check();
                 g.smc_check();
                 g.b.get_local_i64(&g.t_ea);
@@ -2129,13 +2253,17 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
     // after the last instruction: the final wasm block of the dispatcher is closed by its code
     // (all `count` blocks have been closed by the loop above, one per basic block)
 
-    let Gen { b, n_local, pc, t_ea, t_v, t_a, fl_a, fl_b, fl_r, .. } = g;
+    let Gen { b, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, fl_a, fl_b, fl_r, .. } = g;
     b.block_end(); // loop
     b.free_local(n_local);
     b.free_local(pc);
     b.free_local_i64(t_ea);
     b.free_local_i64(t_v);
     b.free_local_i64(t_a);
+    b.free_local_i64(t_fa);
+    b.free_local_i64(t_fv);
+    b.free_local_i64(t_fp);
+    b.free_local(t_fe);
     b.free_local_i64(fl_a);
     b.free_local_i64(fl_b);
     b.free_local_i64(fl_r);
@@ -2171,7 +2299,9 @@ unsafe fn call_block(index: u16, phys_page: u32) {
     FLAGS[SMC] = 0;
     STAT_RUN += 1;
     EXECUTING_PAGE = phys_page;
+    let counter_before = *instruction_counter;
     call_jit_table(index);
+    STAT_JIT_INSNS = STAT_JIT_INSNS.wrapping_add((*instruction_counter).wrapping_sub(counter_before) as u32);
     EXECUTING_PAGE = u32::MAX;
     FLAGS[FAULT] = 0;
 }
