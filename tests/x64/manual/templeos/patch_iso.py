@@ -1,5 +1,6 @@
 """Writes a copy of a TempleOS ISO whose Once.HC skips the install/tour prompts and runs a serial selftest.
 
+With TOS_SUITE=dungen only the DunGen demo runs, with a "J <jiffies>" heartbeat every second.
 With TOS_SUITE=1 it instead runs the whole OSTestSuite (Tour option 12, 171 programs) and prints
 "TS <n>" on the serial port whenever the test number changes, then "SUITE DONE".
 
@@ -30,7 +31,25 @@ U0 Poll()
 Spawn(&Poll,,"Poll");
 #include "::/Misc/OSTestSuite";
 Ser("SUITE DONE\n");
-'''.encode() if os.environ.get('TOS_SUITE') else r'''U0 Ser(U8 *s)
+'''.encode() if os.environ.get('TOS_SUITE') == '1' else r'''U0 Ser(U8 *s)
+{
+  while (*s)
+    OutU8(0x3F8,*s++);
+}
+U0 Beat()
+{
+  U8 b[48];
+  while (1) {
+    StrPrint(b,"J %d\n",cnts.jiffies);
+    Ser(b);
+    Sleep(1000);
+  }
+}
+Spawn(&Beat,,"Beat");
+Ser("DUNGEN START\n");
+#include "::/Demo/Games/DunGen";
+Ser("DUNGEN DONE\n");
+'''.encode() if os.environ.get('TOS_SUITE') == 'dungen' else r'''U0 Ser(U8 *s)
 {
   while (*s)
     OutU8(0x3F8,*s++);
