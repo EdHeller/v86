@@ -92,7 +92,7 @@ static mut CHECK: bool = true;
 static mut EPOCH: u32 = 1;
 static mut THRESHOLD: u32 = 150;
 static mut EXECUTING_PAGE: u32 = u32::MAX;
-/// bit i set: instructions of kind i are not compiled (for bisecting problems)
+/// bit i set: instructions of kind i are not compiled (for bisecting problems); bit 30: flags are never elided
 pub static mut DISABLE_MASK: u32 = 0;
 pub static mut STAT_COMPILED: u32 = 0;
 pub static mut STAT_FAILED: u32 = 0;
@@ -839,6 +839,11 @@ fn flag_liveness(
         if !changed {
             break;
         }
+    }
+    // bit 30 of the disable mask: assume all flags live everywhere (bisects flag-elision bugs)
+    if unsafe { DISABLE_MASK } >> 30 & 1 != 0 {
+        for v in live_out.values_mut() { *v = true }
+        for v in live_in_block.values_mut() { *v = true }
     }
     (live_out, live_in_block)
 }
