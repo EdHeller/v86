@@ -76,8 +76,15 @@ Measure in the Alpine guest (needs a network or a local repo, or install the apk
    (-8%) and register locals (-15%) were tried and are off/reverted.
 3. Browser snapshot cache (IndexedDB): measure whether restoring a cached snapshot beats a cold boot in
    `browser_bench.mjs`. The compiled-module cache is not worth it (about 5% of one background core).
-4. TempleOS: find why the OSTestSuite (Tour part 12, `::/Demo/...`, 171 programs, test 1 = Talons) eventually dies;
-   compare with `JIT64=0`, and with the user's browser build. Check the last run's log if it still exists.
+4. TempleOS: the OSTestSuite (Tour part 12, 171 demo programs, test 1 = Talons) dies in our emulator, not diagnosed yet.
+   Observed in the last run (`TOS_SHOTS`, `TOS_FPS=30`, JIT on): Talons (1/171) starts and the suite moves on; the screenshots
+   show 3/171 DunGen ("58s" on the progress bar) at guest time 05:48:01, and the display never changes after about t=330 s
+   (fps=0.0 for the remaining 40 minutes, frames identical) while the CPU keeps running at about 20 MIPS (cs=40, eip
+   alternating in low addresses such as 0xaa7a / 0xcac4, jit 50%). So the guest is alive but the screen and guest clock
+   are frozen: look for a wedged task/loop in the guest (interrupts/timer, a stuck Sleep or Yield, a graphics demo
+   stuck in a loop) or an emulator bug (timer/PIT/HPET irq lost, a jit64 miscompile). Next: rerun with `JIT64=0` to
+   compare, dump the guest state at the freeze (`TOS_*` hooks in `templeos.js`, `ALP_TRACE`-style trace ring in
+   `cpu.rs`) and check whether timer interrupts are still delivered. The user also saw it die at Talons in their browser.
 5. Later goals: Mac OS X Tiger, UEFI, a 68000 emulator, a fuller x64 test layer.
 6. Do the gcc/g++ disk-size benchmark above.
 7. GitHub email notifications for the repo must be turned off by the user (the token returns 403).
