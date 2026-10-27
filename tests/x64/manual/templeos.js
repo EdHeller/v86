@@ -123,7 +123,9 @@ function screenshot(path)
 
 // US layout, scancode set 1
 const SC = {};
-SC["\x1b"] = [0x01, false];   // Esc (type with \e)
+SC["\x1b"] = [0x01, false];
+// arrow keys are extended (0xE0-prefixed) scancodes; type: text writes them as \u \d \l \r
+SC["\x11"] = [0x48, false, true]; SC["\x12"] = [0x50, false, true]; SC["\x13"] = [0x4B, false, true]; SC["\x14"] = [0x4D, false, true];
 "1234567890-=".split("").forEach((c, i) => SC[c] = [0x02 + i, false]);
 "qwertyuiop[]".split("").forEach((c, i) => SC[c] = [0x10 + i, false]);
 "asdfghjkl;'".split("").forEach((c, i) => SC[c] = [0x1E + i, false]);
@@ -138,10 +140,16 @@ async function type(text)
 {
     for(const ch of text)
     {
-        const [code, shift] = SC[ch] || [0x39, false];
-        if(shift) emulator.bus.send("keyboard-code", 0x2A);
+        const [code, shift, ext] = SC[ch] || [0x39, false];
+        if(ext) emulator.bus.send("keyboard-code", 0xE0);
+        if(shift)
+        {
+            emulator.bus.send("keyboard-code", 0x2A);
+            await new Promise(r => setTimeout(r, 150));   // the guest polls: let it see shift first
+        }
         emulator.bus.send("keyboard-code", code);
         await new Promise(r => setTimeout(r, +process.env.TOS_HOLD || 150));
+        if(ext) emulator.bus.send("keyboard-code", 0xE0);
         emulator.bus.send("keyboard-code", code | 0x80);
         if(shift) emulator.bus.send("keyboard-code", 0xAA);
         await new Promise(r => setTimeout(r, 150));
@@ -215,6 +223,7 @@ if(process.env.TOS_IRQ0_MS)
 // TOS_CMD=<file>: control channel. Once a second the file is read and deleted; each line is
 //   type:<text>   types the text (\n is an enter key)
 //   shot:<path>   writes a screenshot
+//   mouse:dx,dy[,b]  relative mouse move (y down) and an optional click; down:<b> holds buttons, down:0 releases
 //   save:<path>   writes the hard disk image
 //   quit          saves the disk (HDA_FILE) and exits
 if(process.env.TOS_CMD)
@@ -225,7 +234,21 @@ if(process.env.TOS_CMD)
         fs.unlinkSync(process.env.TOS_CMD);
         for(const l of lines)
         {
-            if(l.startsWith("type:")) await type(l.slice(5).replace(/\\n/g, "\n").replace(/\\e/g, "\x1b"));
+            if(l.startsWith("type:")) await type(l.slice(5).replace(/\\n/g, "\n").replace(/\\e/g, "\x1b").replace(/\\u/g, "\x11").replace(/\\d/g, "\x12").replace(/\\l/g, "\x13").replace(/\\r/g, "\x14"));
+            else if(l.startsWith("mouse:"))
+            {
+                // mouse:dx,dy[,buttons]  moves (screen coordinates, y down), then holds the buttons for 300 ms
+                const [dx, dy, b] = l.slice(6).split(",").map(Number);
+                if(dx || dy) emulator.bus.send("mouse-delta", [dx, -dy]);
+                if(b)
+                {
+                    emulator.bus.send("mouse-click", [!!(b & 1), !!(b & 2), !!(b & 4)]);
+                    await new Promise(r => setTimeout(r, 300));
+                    emulator.bus.send("mouse-click", [false, false, false]);
+                }
+            }
+            else if(l.startsWith("down:")) emulator.bus.send("mouse-click", [!!(+l.slice(5) & 1), !!(+l.slice(5) & 2), false]);
+            if(l.startsWith("mouse:") || l.startsWith("down:")) await new Promise(r => setTimeout(r, 250));
             else if(l.startsWith("shot:")) screenshot(l.slice(5));
             else if(l.startsWith("save:")) fs.writeFileSync(l.slice(5), Buffer.from(current_hda()));
             else if(l.trim() === "quit") process.exit(0);

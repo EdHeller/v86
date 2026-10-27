@@ -21,3 +21,18 @@ of emulated time at current speed; watch the `hda:` page counter and use `TOS_CM
 The installer in VM mode leaves the MBR without boot code, so write `chainload_mbr.asm`
 (`nasm -f bin`, 85 bytes) into the first 446 bytes of the image, then boot with `NO_CDROM=1 HDA_FILE=disk.img`.
 Verified: TempleOS boots from the disk alone to the desktop with C:/Home populated.
+
+## Running programs from the command line
+
+Type the command and press Enter (the runner's `type:` command takes `\n` for Enter, `\e` for Esc,
+`\u \d \l \r` for the arrow keys; `mouse:dx,dy[,b]` and `down:<b>` drive the mouse, the pointer moves
+about dx/2 pixels):
+
+- `Dir;` lists the current directory (`Dir("::/Demo");` any other; subdirectories are blue links).
+- `Cd("::/Demo/Graphics");` changes directory; `Cls;` clears the screen; `Help;` opens the help index.
+- `#include "::/Demo/Graphics/Elephant";` runs a demo (`::` is the boot drive root; names are case sensitive).
+- `Type("::/Demo/Graphics/Lattice.HC.Z");` shows a source file.
+- Games: `#include "::/Apps/Titanium/Run";`, `KeepAway`, `X-Caliber`, `ToTheFront`.
+- Esc or Shift-Esc ends most programs. `Life` is a drawing demo (hold the left button and drag, any key exits);
+  `Lattice` is a turtle: Up/Down speed, Left/Right turn rate, Space draws a segment, `n` restarts, Esc exits
+  (it slows down as speed and width grow, since every frame re-plots the whole path).
