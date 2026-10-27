@@ -24,9 +24,19 @@ two attribution lines the session reminder gives (`Co-Authored-By: Claude ...` a
 
 ## Node 22 vs 24 vs Chromium (Alpine x86_64, busybox `ash` loop `i=$((i+1))`, 40000 iterations, jit64 on)
 
-RESULTS_PLACEHOLDER
+Guest `time` real, seconds (lower is better), loop run from a restored pre-login snapshot:
 
-Earlier estimate: the same wasm32 build is 1.5-1.9x faster on Node 24 (V8 13.6) than on Node 22 (V8 12.4).
+| Engine | run 1 | run 2 | mean |
+|---|---|---|---|
+| Node 22.22 (V8 12.4) | 28.2 | 31.9 | 30.1 |
+| Node 24.22 (V8 13.6) | 22.5 | 26.8 | 24.6 |
+| Chromium 153 (headless, `browser_bench.mjs`) | 22.9 | - | 22.9 |
+
+Node 24 is about 1.22x faster than Node 22 on this loop; Chromium is in the Node 24 range (one run, other harness).
+The spread between runs is 15%, so treat differences under about 10% as noise. Two earlier Node 24 runs with a different
+key schedule gave 24.3 and 19.5 s.
+
+Earlier estimate (other workloads): 1.5-1.9x; this loop shows less.
 memory64 is only worth it for guests needing more than 4 GB; it was 2.5x slower on Node 24 for compute-bound work.
 
 ## Benchmark: how much disk gcc takes on an Alpine-like guest (to do)
