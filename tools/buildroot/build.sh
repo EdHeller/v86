@@ -849,15 +849,30 @@ config BR2_PACKAGE_SHFMT
 	help
 	  shfmt: format shell programs (bash, POSIX sh, mksh).
 EOF
+    # github.com is not reachable from every network, and Buildroot's golang-package fetches
+    # the source from there; this takes the source and its modules from the Go module proxy.
     put "$EXT/package/shfmt/shfmt.mk" <<'EOF'
 SHFMT_VERSION = 3.12.0
-SHFMT_SITE = $(call github,mvdan,sh,v$(SHFMT_VERSION))
+SHFMT_SITE = https://proxy.golang.org/mvdan.cc/sh/v3/@v
+SHFMT_SOURCE = v$(SHFMT_VERSION).zip
 SHFMT_LICENSE = BSD-3-Clause
 SHFMT_LICENSE_FILES = LICENSE
-SHFMT_GOMOD = mvdan.cc/sh/v3
-SHFMT_BUILD_TARGETS = cmd/shfmt
-SHFMT_LDFLAGS = -s -w
-$(eval $(golang-package))
+SHFMT_DEPENDENCIES = host-go
+define SHFMT_EXTRACT_CMDS
+	rm -rf $(@D)/.unzip && mkdir -p $(@D)/.unzip
+	$(UNZIP) -q -d $(@D)/.unzip $(SHFMT_DL_DIR)/$(SHFMT_SOURCE)
+	mv $(@D)/.unzip/mvdan.cc/sh/v3@v$(SHFMT_VERSION)/* $(@D)/
+	rm -rf $(@D)/.unzip
+endef
+define SHFMT_BUILD_CMDS
+	cd $(@D) && $(HOST_GO_TARGET_ENV) GOFLAGS=-mod=mod GOPROXY=https://proxy.golang.org \
+		GONOSUMDB='*' GONOSUMCHECK=1 \
+		$(GO_BIN) build -trimpath -ldflags '-s -w' -o shfmt ./cmd/shfmt
+endef
+define SHFMT_INSTALL_TARGET_CMDS
+	$(INSTALL) -D -m 0755 $(@D)/shfmt $(TARGET_DIR)/usr/bin/shfmt
+endef
+$(eval $(generic-package))
 EOF
     : > "$EXT/package/shfmt/shfmt.hash"
 
