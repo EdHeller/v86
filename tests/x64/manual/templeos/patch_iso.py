@@ -1,5 +1,8 @@
 """Writes a copy of a TempleOS ISO whose Once.HC skips the install/tour prompts and runs a serial selftest.
 
+With TOS_SUITE=1 it instead runs the whole OSTestSuite (Tour option 12, 171 programs) and prints
+"TS <n>" on the serial port whenever the test number changes, then "SUITE DONE".
+
 usage: TOS_ISO=TempleOS.ISO python3 patch_iso.py out.ISO
 """
 import struct, sys
@@ -7,6 +10,32 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tosfile
 body = r'''U0 Ser(U8 *s)
+{
+  while (*s)
+    OutU8(0x3F8,*s++);
+}
+U0 Poll()
+{
+  U8 b[32];
+  I64 l=-1;
+  while (1) {
+    if (progress4!=l) {
+      l=progress4;
+      StrPrint(b,"TS %d\n",l);
+      Ser(b);
+    }
+    Sleep(50);
+  }
+}
+U0 Tmp()
+{
+  Spawn(&Poll,,"Poll");
+  "\nSuite\n";
+  #include "::/Misc/OSTestSuite";
+  Ser("SUITE DONE\n");
+}
+Tmp;
+'''.encode() if os.environ.get('TOS_SUITE') else r'''U0 Ser(U8 *s)
 {
   while (*s)
     OutU8(0x3F8,*s++);
