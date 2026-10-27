@@ -3310,6 +3310,26 @@ unsafe fn single_step_cycle() {
     }
 }
 
+/// Debug aid: a ring buffer of the most recent instruction pointers, read by the host after a crash
+/// (set_jit_config(10, 1) switches it on, get_jit_config(11) is its address, 12 the write index).
+pub const TRACE_LEN: usize = 256;
+pub static mut TRACE_ON: bool = false;
+pub static mut TRACE_BUF: [u32; TRACE_LEN * 4] = [0; TRACE_LEN * 4];
+pub static mut TRACE_POS: u32 = 0;
+
+#[inline(always)]
+pub unsafe fn trace_instruction() {
+    if TRACE_ON {
+        let i = (TRACE_POS as usize % TRACE_LEN) * 4;
+        TRACE_POS = TRACE_POS.wrapping_add(1);
+        let ip = if *is_64 { super::long_mem::rip() } else { *instruction_pointer as u32 as u64 };
+        TRACE_BUF[i] = ip as u32;
+        TRACE_BUF[i + 1] = (ip >> 32) as u32;
+        TRACE_BUF[i + 2] = *sreg.offset(CS as isize) as u32 | (*is_64 as u32) << 16 | ((*efer & EFER_LMA != 0) as u32) << 17;
+        TRACE_BUF[i + 3] = *flags as u32;
+    }
+}
+
 pub unsafe fn cycle_internal() {
     if interrupt_shadow {
         // the instruction after mov ss / pop ss runs before any interrupt is taken
@@ -3334,6 +3354,7 @@ pub unsafe fn cycle_internal() {
         return;
     }
 
+    trace_instruction();
     profiler::stat_increment(stat::CYCLE_INTERNAL);
     let mut jit_entry = None;
     let initial_eip = *instruction_pointer;
@@ -3527,7 +3548,7 @@ unsafe fn jit_run_interpreted(mut phys_addr: u32) {
             jit_block_boundary = true;
         }
 
-        if !*is_32 && *instruction_pointer - get_seg_cs() >= 0x10000 {
+        if !*is_32 && !*is_64 && *instruction_pointer - get_seg_cs() >= 0x10000 {
             // the instruction pointer of 16-bit code wraps around at 64k
             *instruction_pointer -= 0x10000;
             jit_block_boundary = true;

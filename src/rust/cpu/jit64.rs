@@ -96,6 +96,18 @@ static mut EXECUTING_PAGE: u32 = u32::MAX;
 pub static mut DISABLE_MASK: u32 = 0;
 pub static mut STAT_COMPILED: u32 = 0;
 pub static mut STAT_FAILED: u32 = 0;
+/// Debug histogram of the opcodes that ended block discovery: index = opcode, 256 + byte after 0F
+pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
+
+fn count_unsupported(code: &[u8]) {
+    let mut i = 0;
+    while i < code.len() && matches!(code[i], 0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3 | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x40..=0x4F) {
+        i += 1;
+    }
+    let Some(&op) = code.get(i) else { return };
+    let key = if op == 0x0F { 256 + *code.get(i + 1).unwrap_or(&0) as usize } else { op as usize };
+    unsafe { UNSUPPORTED[key] = UNSUPPORTED[key].saturating_add(1) }
+}
 pub static mut STAT_RUN: u32 = 0;
 pub static mut STAT_INVALIDATED: u32 = 0;
 
@@ -1875,7 +1887,10 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
             if decoded.contains_key(&off) || decoded.len() >= MAX_INSTRUCTIONS as usize || off >= code.len() {
                 break;
             }
-            let Some((insn, len)) = decode(&code[off..], rip.wrapping_add(off as u64)) else { break };
+            let Some((insn, len)) = decode(&code[off..], rip.wrapping_add(off as u64)) else {
+                count_unsupported(&code[off..]);
+                break;
+            };
             if off + len > code.len() {
                 break;
             }

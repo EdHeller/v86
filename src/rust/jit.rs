@@ -2580,6 +2580,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         3 => MAX_EXTRA_BASIC_BLOCKS = value,
         4 => crate::cpu::jit64::set_threshold(value),
         9 => crate::cpu::jit64::set_disable_mask(value),
+        10 => crate::cpu::cpu::TRACE_ON = value != 0,
         _ => dbg_assert!(false),
     }
 }
@@ -2596,6 +2597,9 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         6 => crate::cpu::jit64::STAT_FAILED,
         7 => crate::cpu::jit64::STAT_RUN,
         8 => crate::cpu::jit64::STAT_INVALIDATED,
+        11 => crate::cpu::cpu::TRACE_BUF.as_ptr() as u32,
+        12 => crate::cpu::cpu::TRACE_POS,
+        1000..=1511 => crate::cpu::jit64::UNSUPPORTED[(index - 1000) as usize],
         _ => 0,
     }
 }
