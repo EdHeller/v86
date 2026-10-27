@@ -59,3 +59,18 @@ So against `build-base` (about 265 MB installed) a C-only toolchain is roughly 4
 compressed. Almost all of what remains is `cc1`; going lower needs a different compiler (`tcc`, 0.5 MB) or serving
 the toolchain as a separate, optional lazily loaded image or 9p share so the base image stays small.
 Not verified: that this exact file set compiles and links in the guest (needs a guest run), and zstd/squashfs sizes.
+
+## Built from source: C-only gcc 15.2.0 on x86_64 (matches the Buildroot recipe)
+
+Configured as in the luplab patch (`--enable-languages=c --disable-bootstrap --disable-multilib --disable-nls
+--disable-lto --disable-plugin --disable-libsanitizer --disable-libgomp --disable-libquadmath --disable-gcov
+--disable-checking`) with `CFLAGS=-Os`, `make install-strip`, glibc host, in-tree gmp/mpfr/mpc.
+
+* `cc1` is 29.9 MB stripped (Alpine's is 42.5 MB): `-Os` and no checking save about 30%. xz: 8.5 MB, gzip: 11.5 MB.
+* Compiler set (gcc driver, cc1, collect2, include/, libgcc.a with debug stripped, crt*.o) + host `as` and `ld.bfd`:
+  40 MB installed, **10.6 MB tar+xz**, 15.8 MB gzip.
+* Adding Alpine musl-dev (headers + libs, 10 MB): 50 MB installed, **13.2 MB tar+xz**, 19.2 MB gzip.
+
+So a C-only x86_64 compiler with libc, assembler and linker is about 13 MB with xz, in the same range as the
+14 MiB RISC-V rootfs.cpio.zst (that figure is the whole rootfs). zstd was not available to compare directly.
+Caveats: built against glibc on the host, the as/ld are Ubuntu's, and it was not run in a guest.
