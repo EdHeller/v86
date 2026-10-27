@@ -80,3 +80,14 @@ the check sequence on every exit and the tail call through the table cost more t
 Off by default. Ideas that would make chaining pay off: do the lookup only at exits whose target is known to be in
 another compiled page (direct `return_call` to a known table index patched in later), skip it for exits that are
 followed by the interpreter, and make the budget a local instead of memory.
+
+## Experiment: guest registers cached in wasm locals (negative result)
+
+jit64 keeps rax..r15 in memory as two 32-bit halves (two loads, an extend, a shift and an or per 64-bit read). An
+implementation that kept each register used by a module in an i64 local (loaded on entry, stored back at the exits and
+before every helper that can fault or reads registers, two generation passes to find the exact load / store sets, a
+separate exit that skips the store after an exception) passed all tests and the fuzzer, but made Alpine's shell loop
+about **15 % slower** (37.0 / 40.2 s -> 46.0 / 45.6 s for 40000 iterations, alternating runs on the same snapshot).
+Compiled blocks retire only about 14 instructions per run, so loading up to 16 registers on every entry and storing
+the dirty ones on every exit costs more than the memory accesses it removes. Register caching only pays once the runs
+are long (loops inside one module, chained blocks, traces across pages). Make runs longer first.

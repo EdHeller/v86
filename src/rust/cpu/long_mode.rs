@@ -1505,10 +1505,18 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
             let dst = rm_read(p, &m, bits)?;
             let src = get_reg(m.reg, bits, p.has_rex);
             let r = alu(0, dst, src, bits);
-            // the memory write may fault and the instruction is restarted: nothing else may have
-            // changed by then
-            rm_write(p, &m, bits, r)?;
-            set_reg(m.reg, bits, p.has_rex, dst);
+            if let Loc::Mem(_) = m.loc {
+                // the memory write may fault and the instruction is restarted: nothing else may
+                // have changed by then
+                rm_write(p, &m, bits, r)?;
+                set_reg(m.reg, bits, p.has_rex, dst);
+            }
+            else {
+                // a register destination cannot fault; with the same register as both operands the
+                // sum is what remains
+                set_reg(m.reg, bits, p.has_rex, dst);
+                rm_write(p, &m, bits, r)?;
+            }
         },
         0xA4 | 0xA5 | 0xAC | 0xAD => {
             // shld / shrd

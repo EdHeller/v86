@@ -68,6 +68,11 @@ test_main:
     CHECK_EQ 4, qword [PHYS], 123
     CHECK_EQ 5, r9, 100
 
+    ; xadd with the same register as both operands keeps the sum
+    mov rdi, 0x80000000000000
+    xadd rdi, rdi
+    CHECK_EQ 23, rdi, 0x100000000000000
+
     ; xchg
     RO
     mov dword [PHYS], 7
