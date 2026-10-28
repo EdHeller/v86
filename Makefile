@@ -326,6 +326,8 @@ nasmtests-force-jit: build/v86-debug.wasm
 # Most are expected to fail today (EXPECT: xfail); the run only fails on regressions or when an xfail starts passing.
 x64tests: build/v86-debug.wasm
 	./tests/x64/run.js
+	./tests/x64/fuzz.js --seed 1 --count 3000
+	./tests/x64/fuzz.js --seed 2 --count 3000
 
 # Check the x64 tests themselves against the host cpu and against qemu
 x64tests-validate:

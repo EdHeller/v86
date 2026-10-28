@@ -5704,11 +5704,11 @@ pub fn instr_F30F10_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
 }
 
 pub fn instr_0F11_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    instr_0F29_mem_jit(ctx, modrm_byte, r)
+    sse_store128_unaligned_jit(ctx, modrm_byte, r)
 }
 pub fn instr_0F11_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) { sse_mov_xmm_xmm(ctx, r2, r1) }
 pub fn instr_660F11_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    instr_660F29_mem_jit(ctx, modrm_byte, r)
+    sse_store128_unaligned_jit(ctx, modrm_byte, r)
 }
 pub fn instr_660F11_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) { sse_mov_xmm_xmm(ctx, r2, r1) }
 pub fn instr_F20F11_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
@@ -5861,9 +5861,18 @@ pub fn instr_660F28_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32)
 pub fn instr_660F28_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) { sse_mov_xmm_xmm(ctx, r1, r2) }
 
 pub fn instr_0F29_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
+    sse_store128_mem(ctx, modrm_byte, r, true)
+}
+/// movups / movupd / movdqu stores: the same as movaps but without the alignment #gp
+fn sse_store128_unaligned_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
+    sse_store128_mem(ctx, modrm_byte, r, false)
+}
+fn sse_store128_mem(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32, aligned: bool) {
     codegen::gen_modrm_resolve(ctx, modrm_byte);
     let address_local = ctx.builder.set_new_local();
-    codegen::gen_check_aligned_128(ctx, &address_local);
+    if aligned {
+        codegen::gen_check_aligned_128(ctx, &address_local);
+    }
     ctx.builder
         .const_i32(global_pointers::get_reg_xmm_offset(r) as i32);
     ctx.builder.load_aligned_i64(0);
@@ -6894,7 +6903,7 @@ pub fn instr_660F7F_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32)
 }
 pub fn instr_660F7F_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) { sse_mov_xmm_xmm(ctx, r2, r1) }
 pub fn instr_F30F7F_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    instr_0F29_mem_jit(ctx, modrm_byte, r);
+    sse_store128_unaligned_jit(ctx, modrm_byte, r);
 }
 pub fn instr_F30F7F_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) { sse_mov_xmm_xmm(ctx, r2, r1) }
 

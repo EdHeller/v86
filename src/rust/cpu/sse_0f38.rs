@@ -27,7 +27,8 @@ pub enum Mandatory {
 unsafe fn read128(src: Src) -> OrPageFault<reg128> {
     match src {
         Src::Reg(n) => Ok(read_xmm128s(n)),
-        Src::Mem(a) => safe_read128s(a),
+        // legacy sse: a 16 byte memory operand has to be 16 byte aligned
+        Src::Mem(a) => safe_read128s_aligned(a),
     }
 }
 
@@ -283,7 +284,7 @@ pub unsafe fn exec_0f38(op: u8, mandatory: Mandatory, r: i32, src: Src) -> OrPag
         0x2A => match src {
             // movntdqa xmm, m128
             Src::Mem(a) => {
-                write_xmm_reg128(r, safe_read128s(a)?);
+                write_xmm_reg128(r, safe_read128s_aligned(a)?);
                 Ok(())
             },
             Src::Reg(_) => {
@@ -447,8 +448,11 @@ pub unsafe fn exec_0f3a(op: u8, mandatory: Mandatory, r: i32, src: Src, imm: i32
             write_xmm_reg128(r, out);
         },
         0x21 => {
-            // insertps
-            let s = read128(src)?;
+            // insertps: the memory form is a 32 bit operand (no alignment, no read past it)
+            let s = match src {
+                Src::Reg(n) => read_xmm128s(n),
+                Src::Mem(a) => reg128 { u32: [safe_read32s(a)? as u32, 0, 0, 0] },
+            };
             let (count_s, count_d, zmask) = match src {
                 Src::Reg(_) => (imm >> 6 & 3, imm >> 4 & 3, imm & 15),
                 Src::Mem(_) => (0, imm >> 4 & 3, imm & 15),

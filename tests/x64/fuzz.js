@@ -435,7 +435,7 @@ ${body}
     syscall
 %endif
     PASS
-section .data
+section .data align=16
 align 16
 xinit: dq ${xinit.map(v => "0x" + v.toString(16)).join(", ")}
 scratch: times ${SCRATCH_QWORDS} dq 0
@@ -491,7 +491,7 @@ async function run_guest(cases)
             emulator.stop();
             const status = cpu.mem32s[0x600 >> 2] >>> 0;
             const ptr = cpu.mem32s[0x650 >> 2] >>> 0;
-            if(status !== 0x53534150) { reject(new Error("guest failed: status " + status.toString(16) + " id " + (cpu.mem32s[0x604 >> 2] >>> 0).toString(16))); return; }
+            if(status !== 0x53534150) { reject(new Error("guest failed: status " + status.toString(16) + " id " + (cpu.mem32s[0x604 >> 2] >>> 0).toString(16) + " rip " + (cpu.mem32s[0x608 >> 2] >>> 0).toString(16))); return; }
             resolve(Buffer.from(cpu.mem8.slice(ptr, ptr + cases.length * CASE_QWORDS * 8)));
         };
         emulator.bus.register("cpu-event-halt", finish);

@@ -617,6 +617,11 @@ pub unsafe fn instr_0F14(source: u64, r: i32) {
 }
 pub unsafe fn instr_0F14_reg(r1: i32, r2: i32) { instr_0F14(read_xmm64s(r1), r2); }
 pub unsafe fn instr_0F14_mem(addr: i32, r: i32) {
+    // only the low half is used, but the 16 byte operand still has to be aligned
+    if addr & 15 != 0 {
+        trigger_gp(0);
+        return;
+    }
     instr_0F14(return_on_pagefault!(safe_read64s(addr)), r);
 }
 #[no_mangle]
@@ -634,6 +639,11 @@ pub unsafe fn instr_660F14(source: u64, r: i32) {
 }
 pub unsafe fn instr_660F14_reg(r1: i32, r2: i32) { instr_660F14(read_xmm64s(r1), r2); }
 pub unsafe fn instr_660F14_mem(addr: i32, r: i32) {
+    // only the low half is used, but the 16 byte operand still has to be aligned
+    if addr & 15 != 0 {
+        trigger_gp(0);
+        return;
+    }
     instr_660F14(return_on_pagefault!(safe_read64s(addr)), r);
 }
 #[no_mangle]
@@ -2979,13 +2989,21 @@ pub unsafe fn instr_0F7A() { unimplemented_sse(); }
 #[no_mangle]
 pub unsafe fn instr_0F7B() { unimplemented_sse(); }
 
+#[no_mangle]
 pub unsafe fn instr_0F7C_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+#[no_mangle]
 pub unsafe fn instr_0F7C_mem(_addr: i32, _r: i32) { trigger_ud(); }
+#[no_mangle]
 pub unsafe fn instr_0F7D_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+#[no_mangle]
 pub unsafe fn instr_0F7D_mem(_addr: i32, _r: i32) { trigger_ud(); }
+#[no_mangle]
 pub unsafe fn instr_0FD0_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+#[no_mangle]
 pub unsafe fn instr_0FD0_mem(_addr: i32, _r: i32) { trigger_ud(); }
+#[no_mangle]
 pub unsafe fn instr_0FF0_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+#[no_mangle]
 pub unsafe fn instr_0FF0_mem(_addr: i32, _r: i32) { trigger_ud(); }
 
 pub unsafe fn instr_660FD0(source: reg128, r: i32) {
@@ -2993,7 +3011,9 @@ pub unsafe fn instr_660FD0(source: reg128, r: i32) {
     let d = read_xmm128s(r);
     write_xmm_reg128(r, reg128 { f64: [d.f64[0] - source.f64[0], d.f64[1] + source.f64[1]] });
 }
+#[no_mangle]
 pub unsafe fn instr_660FD0_reg(r1: i32, r2: i32) { instr_660FD0(read_xmm128s(r1), r2); }
+#[no_mangle]
 pub unsafe fn instr_660FD0_mem(addr: i32, r: i32) {
     instr_660FD0(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
@@ -3012,11 +3032,15 @@ pub unsafe fn instr_F20FD0(source: reg128, r: i32) {
         },
     );
 }
+#[no_mangle]
 pub unsafe fn instr_F20FD0_reg(r1: i32, r2: i32) { instr_F20FD0(read_xmm128s(r1), r2); }
+#[no_mangle]
 pub unsafe fn instr_F20FD0_mem(addr: i32, r: i32) {
     instr_F20FD0(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
+#[no_mangle]
 pub unsafe fn instr_F20FF0_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+#[no_mangle]
 pub unsafe fn instr_F20FF0_mem(addr: i32, r: i32) {
     // lddqu xmm, m128: unaligned 128 bit load
     write_xmm_reg128(r, return_on_pagefault!(safe_read128s(addr)));
