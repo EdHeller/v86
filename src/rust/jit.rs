@@ -2616,6 +2616,8 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         30 => crate::cpu::cpu::STAT_TSC_READS,
         31 => crate::cpu::cpu::STAT_LOOP_CLOCK_READS,
         20..=27 => crate::cpu::long_mem::SLOW_STATS[(index - 20) as usize],
+        46000..=46063 => { let b = crate::cpu::jit64::visits_bucket(((index - 46000) / 2) as usize); if index & 1 == 0 { b.0 } else { b.1 } },
+        44000..=45023 => crate::cpu::jit64::INVAL_WRITER[(index - 44000) as usize] as u32,
         40000..=42047 => { let e = crate::cpu::jit64::INVAL_LOG[((index - 40000) / 2) as usize]; if index & 1 == 0 { e.0 as u32 } else { e.1 | (e.2 as u32) << 31 } },
         6000..=6007 => crate::cpu::jit64::INTERP_WHY[(index - 6000) as usize],
         5000..=5063 => crate::cpu::jit64::VERIFY_LOG[(index - 5000) as usize],

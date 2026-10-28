@@ -62,6 +62,8 @@ struct Slot {
     phys_page: u32,
     epoch: u32,
     index: u16,
+    /// key of the block (`block_key`)
+    key: u64,
     state: u8, // SLOT_*
     user: bool,
     /// visits needed before the block is compiled (0: the plain threshold); larger for pages whose
@@ -72,7 +74,7 @@ const SLOT_COUNTING: u8 = 0;
 const SLOT_PENDING: u8 = 1;
 const SLOT_READY: u8 = 2;
 const SLOT_FAILED: u8 = 3;
-const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, state: SLOT_COUNTING, user: false, limit: 0 };
+const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, key: 0, state: SLOT_COUNTING, user: false, limit: 0 };
 const SLOTS: usize = 65536;
 
 fn slot_index(r: u64) -> usize { (r ^ r >> 12 ^ r >> 24) as usize & (SLOTS - 1) }
@@ -80,7 +82,7 @@ fn slot_index(r: u64) -> usize { (r ^ r >> 12 ^ r >> 24) as usize & (SLOTS - 1) 
 struct State {
     blocks: HashMap<u64, Block, PageBuildHasher>,
     by_index: HashMap<u16, u64, PageBuildHasher>,
-    page_blocks: HashMap<u32, Vec<u64>, PageBuildHasher>,
+    page_blocks: HashMap<u32, Vec<u64>, PageBuildHasher>, // physical page -> block keys
     slots: Vec<Slot>,
     /// table indices of invalidated modules that are still being compiled by the host: the index
     /// must not be reused before the host is done with it
@@ -109,6 +111,8 @@ pub static mut EXECUTED: [u32; 512] = [0; 512];
 pub static mut HIST_ON: bool = false;
 /// debugging: virtual pages whose blocks were invalidated (page, count, user), hashed
 pub static mut INVAL_LOG: [(u64, u32, bool); 1024] = [(0, 0, false); 1024];
+pub static mut VISITS: Option<HashMap<u64, u32>> = None;
+pub static mut INVAL_WRITER: [u64; 1024] = [0; 1024];
 /// interpreted instructions by why they were interpreted: 0 continuation after a non-jump (no block lookup), 1 slot counting (not hot yet), 2 failed block, 3 other/pending
 pub static mut INTERP_WHY: [u32; 8] = [0; 8];
 /// debugging: after every compiled block run, redo it in the interpreter from the saved state and
@@ -764,11 +768,13 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
     }
     let len = c.pos;
     // rip-relative operands are relative to the end of the instruction
+    // (blocks are position independent: `rip_rel` operands keep this absolute address of the
+    // compile time mapping; the generated code subtracts the block start and adds the address the
+    // block is entered at)
     let end = rip.wrapping_add(len as u64);
     let fix = |o: Opd| match o {
         Opd::Mem(mut ea) if ea.rip_rel => {
             ea.disp = ea.disp.wrapping_add(end as i64);
-            ea.rip_rel = false;
             Opd::Mem(ea)
         },
         o => o,
@@ -781,7 +787,6 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         Insn::Lea { bits, dst, mut ea } => {
             if ea.rip_rel {
                 ea.disp = ea.disp.wrapping_add(end as i64);
-                ea.rip_rel = false;
             }
             Insn::Lea { bits, dst, ea }
         },
@@ -982,6 +987,8 @@ fn hi_addr(n: u8) -> u32 { reg_hi as u32 + 4 * n as u32 }
 struct Gen<'a> {
     b: &'a mut WasmBuilder,
     start: u64,
+    /// the address the block was entered at (the block is position independent)
+    base: WasmLocalI64,
     loop_label: Label,
     /// instructions emitted so far in the current basic block (including the current one)
     n: i32,
@@ -1034,17 +1041,38 @@ impl<'a> Gen<'a> {
         self.b.store_aligned_i32(0);
     }
 
+    /// pushes the i64 address that corresponds to the compile time address `addr` at run time
+    fn rip_val(&mut self, addr: u64) {
+        self.b.get_local_i64(&self.base);
+        let d = addr.wrapping_sub(self.start) as i64;
+        if d != 0 {
+            self.b.const_i64(d);
+            self.b.add_i64();
+        }
+    }
+
+    /// stores the run time address of `addr` to rip
+    fn store_rip(&mut self, addr: u64) {
+        let t = self.b.new_local_i64();
+        self.rip_val(addr);
+        self.b.set_local_i64(&t);
+        self.b.const_i32(instruction_pointer as i32);
+        self.b.get_local_i64(&t);
+        self.b.wrap_i64_to_i32();
+        self.b.store_aligned_i32(0);
+        self.b.const_i32(rip_hi as i32);
+        self.b.get_local_i64(&t);
+        self.b.const_i64(32);
+        self.b.shr_u_i64();
+        self.b.wrap_i64_to_i32();
+        self.b.store_aligned_i32(0);
+        self.b.free_local_i64(t);
+    }
+
     /// leave the block, continuing at `target`
     fn exit_const(&mut self, target: u64, extra: i32) {
         self.materialize();
-        self.b.const_i32(instruction_pointer as i32);
-        self.b.const_i32(target as i32);
-        self.b.store_aligned_i32(0);
-        if (target >> 32) as u32 != (self.start >> 32) as u32 {
-            self.b.const_i32(rip_hi as i32);
-            self.b.const_i32((target >> 32) as i32);
-            self.b.store_aligned_i32(0);
-        }
+        self.store_rip(target);
         self.push_counter_update(extra);
         self.b.return_();
     }
@@ -1072,7 +1100,9 @@ impl<'a> Gen<'a> {
 
     fn set_previous_ip(&mut self) {
         self.b.const_i32(previous_ip as i32);
-        self.b.const_i32(self.cur as i32);
+        let cur = self.cur;
+        self.rip_val(cur);
+        self.b.wrap_i64_to_i32();
         self.b.store_aligned_i32(0);
     }
 
@@ -1221,7 +1251,14 @@ impl<'a> Gen<'a> {
 
     /// pushes the effective address as i64
     fn ea(&mut self, ea: &Ea, with_segment: bool) {
-        self.b.const_i64(ea.disp);
+        if ea.rip_rel {
+            self.b.const_i64(ea.disp.wrapping_sub(self.start as i64));
+            self.b.get_local_i64(&self.base);
+            self.b.add_i64();
+        }
+        else {
+            self.b.const_i64(ea.disp);
+        }
         if ea.base != NONE {
             self.get_reg(ea.base, 64, true);
             self.b.add_i64();
@@ -1830,13 +1867,9 @@ impl<'a> Gen<'a> {
             Insn::Nop => {},
             Insn::Interp => {
                 self.materialize();
-                self.b.const_i32(instruction_pointer as i32);
-                self.b.const_i32(self.cur as i32);
-                self.b.store_aligned_i32(0);
-                self.b.const_i32(rip_hi as i32);
-                self.b.const_i32((self.cur >> 32) as i32);
-                self.b.store_aligned_i32(0);
-                self.b.const_i64(self.next as i64);
+                let (cur, next) = (self.cur, self.next);
+                self.store_rip(cur);
+                self.rip_val(next);
                 self.b.const_i32(0);
                 self.b.call_fn2_i64_i32_ret("j64_interp1");
                 self.b.if_void();
@@ -2365,10 +2398,19 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
     let fl_a = b.new_local_i64();
     let fl_b = b.new_local_i64();
     let fl_r = b.new_local_i64();
+    let base = b.new_local_i64();
+    b.load_fixed_i32(rip_hi as u32);
+    b.extend_unsigned_i32_to_i64();
+    b.const_i64(32);
+    b.shl_i64();
+    b.load_fixed_i32(instruction_pointer as u32);
+    b.extend_unsigned_i32_to_i64();
+    b.or_i64();
+    b.set_local_i64(&base);
     let loop_label = b.loop_void();
 
     let mut g = Gen {
-        b, start: rip, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, cur: rip, next: rip, block_index,
+        b, start: rip, base, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, cur: rip, next: rip, block_index,
         pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false,
     };
 
@@ -2434,7 +2476,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                 g.b.sub_i64();
                 g.b.set_local_i64(&g.t_ea);
                 g.b.get_local_i64(&g.t_ea);
-                g.b.const_i64(next as i64);
+                g.rip_val(next);
                 g.write_mem(64);
                 g.fault_check();
                 g.smc_check();
@@ -2455,7 +2497,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                 g.b.sub_i64();
                 g.b.set_local_i64(&g.t_ea);
                 g.b.get_local_i64(&g.t_ea);
-                g.b.const_i64(next as i64);
+                g.rip_val(next);
                 g.write_mem(64);
                 g.fault_check();
                 g.smc_check();
@@ -2534,9 +2576,10 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
     // after the last instruction: the final wasm block of the dispatcher is closed by its code
     // (all `count` blocks have been closed by the loop above, one per basic block)
 
-    let Gen { b, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, fl_a, fl_b, fl_r, .. } = g;
+    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, fl_a, fl_b, fl_r, .. } = g;
     b.block_end(); // loop
     b.free_local(n_local);
+    b.free_local_i64(base);
     b.free_local(pc);
     b.free_local_i64(t_ea);
     b.free_local_i64(t_v);
@@ -2583,7 +2626,7 @@ pub unsafe fn run() {
     }
     let before = rip();
     if HIST_ON {
-        let why = if !checked { 0 } else {
+        let why = if !checked { let s = &state().slots[slot_index(before)]; if s.rip == before && s.state == SLOT_READY && s.user == (*cpl == 3) { 4 } else { 0 } } else {
             let st = state();
             let s = &st.slots[slot_index(before)];
             if s.rip != before { 1 } else { match s.state { SLOT_COUNTING => 1, SLOT_FAILED => 2, _ => 3 } }
@@ -2700,6 +2743,11 @@ unsafe fn verified_call(index: u16) {
     }
 }
 
+/// Blocks are position independent and keyed by the physical address of their first instruction
+/// (and the privilege level), so a mapping of the same code at another virtual address (every
+/// exec of a program under ASLR) reuses the compiled block.
+fn block_key(phys: u32, user: bool) -> u64 { phys as u64 | (user as u64) << 32 }
+
 unsafe fn try_run_block() -> bool {
     if THRESHOLD == u32::MAX || jit::jit_disabled() {
         return false;
@@ -2707,37 +2755,71 @@ unsafe fn try_run_block() -> bool {
     let r = rip();
     let user = *cpl == 3;
     let st = state();
-    let slot = &mut st.slots[slot_index(r)];
-    if slot.rip != r {
-        *slot = Slot { rip: r, ..SLOT_EMPTY };
+    let si = slot_index(r);
+    if st.slots[si].rip != r {
+        st.slots[si] = Slot { rip: r, ..SLOT_EMPTY };
+        // first visit: the code may be compiled already (another mapping of the same page)
+        if !st.blocks.is_empty() {
+            if let Some(phys) = probe_fetch(r, user) {
+                let key = block_key(phys, user);
+                if st.blocks.contains_key(&key) {
+                    refill_slot(r, key);
+                }
+            }
+        }
     }
+    let slot = &mut st.slots[si];
     match slot.state {
         SLOT_READY => {
             if slot.user != user {
                 return false;
             }
             if slot.epoch != EPOCH {
-                // mappings may have changed: make sure rip still maps to the compiled page
-                match probe_fetch(r, user) {
-                    Some(phys) if phys >> 12 == slot.phys_page => slot.epoch = EPOCH,
-                    _ => {
-                        *slot = SLOT_EMPTY;
-                        remove_block(r);
-                        return false;
+                // mappings may have changed or blocks were invalidated: check that rip still
+                // maps to the block of this slot
+                let ok = match probe_fetch(r, user) {
+                    Some(phys) if block_key(phys, user) == slot.key => {
+                        st.blocks.get(&slot.key).map_or(false, |b| b.index == slot.index && b.state == BlockState::Ready)
                     },
+                    _ => false,
+                };
+                if !ok {
+                    *slot = SLOT_EMPTY;
+                    return false;
                 }
+                slot.epoch = EPOCH;
             }
             call_block(slot.index, slot.phys_page);
             true
         },
+        SLOT_PENDING => {
+            match st.blocks.get(&slot.key) {
+                Some(b) if b.index == slot.index => {
+                    if b.state == BlockState::Ready {
+                        slot.state = SLOT_READY;
+                        slot.epoch = EPOCH.wrapping_sub(1);
+                    }
+                },
+                _ => *slot = SLOT_EMPTY,
+            }
+            false
+        },
         SLOT_COUNTING => {
+            if HIST_ON {
+                if let Some(phys) = probe_fetch(r, user) {
+                    #[allow(static_mut_refs)]
+                    let m = VISITS.get_or_insert_with(HashMap::new);
+                    *m.entry(block_key(phys, user)).or_insert(0) += 1;
+                }
+            }
             slot.count += 1;
             let limit = if slot.limit != 0 { slot.limit } else { THRESHOLD };
             if slot.count < limit {
                 return false;
             }
+            let Some(phys) = probe_fetch(r, user) else { return false };
             if slot.limit == 0 {
-                let backoff = st.invalidations.get(&(r >> 12)).copied().unwrap_or(0) as u32;
+                let backoff = st.invalidations.get(&((phys >> 12) as u64)).copied().unwrap_or(0) as u32;
                 if backoff != 0 {
                     // a page that was invalidated before is compiled later: remember the larger limit
                     slot.limit = THRESHOLD.saturating_mul(1 << backoff.min(12));
@@ -2748,14 +2830,15 @@ unsafe fn try_run_block() -> bool {
             }
             slot.count = 0;
             slot.limit = 0;
-            // an evicted block, or a new one
-            if !st.blocks.contains_key(&r) {
+            let key = block_key(phys, user);
+            // an evicted slot, or a new block
+            if !st.blocks.contains_key(&key) {
                 compile(r, user);
             }
-            refill_slot(r);
+            refill_slot(r, key);
             if THRESHOLD == 0 {
                 // testing mode: run the block right away (needs synchronous compilation)
-                let slot = &st.slots[slot_index(r)];
+                let slot = &st.slots[si];
                 if slot.rip == r && slot.state == SLOT_READY && slot.user == user {
                     call_block(slot.index, slot.phys_page);
                     return true;
@@ -2767,10 +2850,10 @@ unsafe fn try_run_block() -> bool {
     }
 }
 
-/// copies the state of the block at `r` (if any) to its slot
-unsafe fn refill_slot(r: u64) {
+/// copies the state of the block with `key` (if any) to the slot of `r`
+unsafe fn refill_slot(r: u64, key: u64) {
     let st = state();
-    let Some(b) = st.blocks.get(&r) else { return };
+    let Some(b) = st.blocks.get(&key) else { return };
     let slot = &mut st.slots[slot_index(r)];
     if slot.rip != r {
         return;
@@ -2778,7 +2861,8 @@ unsafe fn refill_slot(r: u64) {
     slot.phys_page = b.phys_page;
     slot.user = b.user;
     slot.index = b.index;
-    slot.epoch = b.epoch;
+    slot.key = key;
+    slot.epoch = EPOCH.wrapping_sub(1); // validated on the first run
     slot.state = match b.state {
         BlockState::Pending => SLOT_PENDING,
         BlockState::Ready => SLOT_READY,
@@ -2791,6 +2875,7 @@ unsafe fn probe_fetch(r: u64, user: bool) -> Option<u32> { crate::cpu::long_mem:
 unsafe fn compile(r: u64, user: bool) {
     let Some(phys) = probe_fetch(r, user) else { return };
     let page = phys >> 12;
+    let key = block_key(phys, user);
     let offset = (phys & 0xFFF) as usize;
     let code = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset(phys as isize), 0x1000 - offset);
     // the block lives in a single page, rip and physical address agree on the page offset
@@ -2801,17 +2886,17 @@ unsafe fn compile(r: u64, user: bool) {
         if (STAT_COMPILED as usize) < 64 { COMPILED_RIPS[STAT_COMPILED as usize] = r as u32 }
         STAT_COMPILED += 1;
         if GEN_RMW { st.rmw.insert(index); } else { st.rmw.remove(&index); }
-        st.blocks.insert(r, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: EPOCH });
-        st.by_index.insert(index, r);
-        st.page_blocks.entry(page).or_default().push(r);
+        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: EPOCH });
+        st.by_index.insert(index, key);
+        st.page_blocks.entry(page).or_default().push(key);
         jit::maybe_has_code_set(Page::of_u32(page));
         crate::cpu::cpu::tlb_set_has_code(Page::of_u32(page), true);
     }) };
     if registered.is_none() {
         STAT_FAILED += 1;
         let st = state();
-        st.blocks.insert(r, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: EPOCH });
-        st.page_blocks.entry(page).or_default().push(r);
+        st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: EPOCH });
+        st.page_blocks.entry(page).or_default().push(key);
         jit::maybe_has_code_set(Page::of_u32(page));
     }
 }
@@ -2824,39 +2909,14 @@ pub unsafe fn finalize_finished(index: u16) {
         jit::jit64_free_index(index);
         return;
     }
-    if let Some(&r) = st.by_index.get(&index) {
-        if let Some(b) = st.blocks.get_mut(&r) {
+    if let Some(&key) = st.by_index.get(&index) {
+        if let Some(b) = st.blocks.get_mut(&key) {
             if b.state == BlockState::Pending && b.index == index {
+                // slots that wait for the block notice it on their next visit
                 b.state = BlockState::Ready;
-                refill_slot(r);
             }
         }
     }
-}
-
-unsafe fn forget_slot(r: u64) {
-    let slot = &mut state().slots[slot_index(r)];
-    if slot.rip == r {
-        *slot = SLOT_EMPTY;
-    }
-}
-
-unsafe fn remove_block(r: u64) {
-    let st = state();
-    if let Some(b) = st.blocks.remove(&r) {
-        match b.state {
-            BlockState::Failed => {},
-            BlockState::Pending => {
-                st.by_index.remove(&b.index);
-                st.zombies.insert(b.index);
-            },
-            BlockState::Ready => {
-                st.by_index.remove(&b.index);
-                jit::jit64_free_index(b.index);
-            },
-        }
-    }
-    forget_slot(r);
 }
 
 /// A write hit this physical page: all blocks that were compiled from it become invalid
@@ -2869,19 +2929,17 @@ pub unsafe fn dirty_page(ctx: &mut jit::JitState, page: Page) -> bool {
         if EXECUTING_PAGE == p {
             FLAGS[SMC] = 1;
         }
-        let mut counted: Vec<u64> = vec![];
+        // slots that point to these blocks notice that their block is gone on their next visit
+        EPOCH = EPOCH.wrapping_add(1);
+        if HIST_ON {
+            let e = &mut INVAL_LOG[(p as usize ^ (p >> 16) as usize) & 1023];
+            if e.0 != p as u64 { *e = (p as u64, 0, list.first().map_or(false, |k| k >> 32 != 0)) }
+            e.1 += list.len() as u32;
+            INVAL_WRITER[(p as usize ^ (p >> 16) as usize) & 1023] = rip();
+        }
+        let n = st.invalidations.entry(p as u64).or_insert(0);
+        *n = n.saturating_add(1);
         for r in list {
-            forget_slot(r);
-            if !counted.contains(&(r >> 12)) {
-                counted.push(r >> 12);
-                if HIST_ON {
-                    let e = &mut INVAL_LOG[((r >> 12) as usize ^ (r >> 28) as usize) & 1023];
-                    if e.0 != r >> 12 { *e = (r >> 12, 0, st.blocks.get(&r).map(|b| b.user).unwrap_or(false)) }
-                    e.1 += 1;
-                }
-                let n = st.invalidations.entry(r >> 12).or_insert(0);
-                *n = n.saturating_add(1);
-            }
             if let Some(b) = st.blocks.remove(&r) {
                 STAT_INVALIDATED += 1;
                 match b.state {
@@ -2907,4 +2965,16 @@ pub unsafe fn clear_all(ctx: &mut jit::JitState) {
     for p in pages {
         dirty_page(ctx, Page::of_u32(p));
     }
+}
+
+/// debugging: buckets (log2 of the total visits of a block start) -> (distinct starts, visits)
+#[allow(static_mut_refs)]
+pub unsafe fn visits_bucket(i: usize) -> (u32, u32) {
+    let mut r = (0u32, 0u32);
+    if let Some(m) = VISITS.as_ref() {
+        for &v in m.values() {
+            if (32 - v.leading_zeros()) as usize == i { r.0 += 1; r.1 = r.1.wrapping_add(v) }
+        }
+    }
+    r
 }
