@@ -64,12 +64,15 @@ struct Slot {
     index: u16,
     state: u8, // SLOT_*
     user: bool,
+    /// visits needed before the block is compiled (0: the plain threshold); larger for pages whose
+    /// code was overwritten often, computed once so that the hot path needs no hash lookup
+    limit: u32,
 }
 const SLOT_COUNTING: u8 = 0;
 const SLOT_PENDING: u8 = 1;
 const SLOT_READY: u8 = 2;
 const SLOT_FAILED: u8 = 3;
-const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, state: SLOT_COUNTING, user: false };
+const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, state: SLOT_COUNTING, user: false, limit: 0 };
 const SLOTS: usize = 65536;
 
 fn slot_index(r: u64) -> usize { (r ^ r >> 12 ^ r >> 24) as usize & (SLOTS - 1) }
@@ -2729,14 +2732,22 @@ unsafe fn try_run_block() -> bool {
         },
         SLOT_COUNTING => {
             slot.count += 1;
-            if slot.count < THRESHOLD {
+            let limit = if slot.limit != 0 { slot.limit } else { THRESHOLD };
+            if slot.count < limit {
                 return false;
             }
-            let backoff = st.invalidations.get(&(r >> 12)).copied().unwrap_or(0) as u32;
-            if backoff != 0 && slot.count < THRESHOLD.saturating_mul(1 << backoff.min(12)) {
-                return false;
+            if slot.limit == 0 {
+                let backoff = st.invalidations.get(&(r >> 12)).copied().unwrap_or(0) as u32;
+                if backoff != 0 {
+                    // a page that was invalidated before is compiled later: remember the larger limit
+                    slot.limit = THRESHOLD.saturating_mul(1 << backoff.min(12));
+                    if slot.count < slot.limit {
+                        return false;
+                    }
+                }
             }
             slot.count = 0;
+            slot.limit = 0;
             // an evicted block, or a new one
             if !st.blocks.contains_key(&r) {
                 compile(r, user);
