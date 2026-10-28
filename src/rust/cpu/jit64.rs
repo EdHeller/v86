@@ -115,8 +115,8 @@ static mut UNDO: Vec<(u64, u32, u64)> = Vec::new();
 /// 0: verified blocks, 1: mismatches, then per mismatch (up to 4): block rip lo/hi, insns, what (reg index or 100 flags / 101 rip), jit lo/hi, interp lo/hi
 pub static mut VERIFY_LOG: [u32; 64] = [0; 64];
 /// bisecting: only blocks that start in [RANGE_LO, RANGE_HI) are compiled (default: all)
-pub static mut RANGE_LO: u32 = 0;
-pub static mut RANGE_HI: u32 = u32::MAX;
+pub static mut RANGE_LO: u64 = 0;
+pub static mut RANGE_HI: u64 = u64::MAX;
 /// start addresses (low 32 bits) of the first compiled blocks, in order
 pub static mut COMPILED_RIPS: [u32; 64] = [0; 64];
 /// instructions of compiled blocks run back to back without leaving run() (experiment knob, 0 = off)
@@ -2680,8 +2680,8 @@ unsafe fn compile(r: u64, user: bool) {
     let code = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset(phys as isize), 0x1000 - offset);
     // the block lives in a single page, rip and physical address agree on the page offset
     let st = state();
-    let in_range = r < RANGE_LO as u64 || r >= RANGE_HI as u64;
-    let registered = if in_range { None } else { jit::jit64_compile(phys, |builder| generate(builder, r, code), |index| {
+    let out_of_range = r < RANGE_LO || r >= RANGE_HI;
+    let registered = if out_of_range { None } else { jit::jit64_compile(phys, |builder| generate(builder, r, code), |index| {
         // registered before the module is handed to the host, which may finish synchronously
         if (STAT_COMPILED as usize) < 64 { COMPILED_RIPS[STAT_COMPILED as usize] = r as u32 }
         STAT_COMPILED += 1;
