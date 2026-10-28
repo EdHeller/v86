@@ -17,6 +17,7 @@
     <button id="start" disabled>Boot</button>
     <button id="n">send "n"</button>
     <button id="save">save state</button>
+    <button id="gui">GUI: on (click to disable)</button>
     <button id="lock">mouse: free (click to capture)</button>
     <label><input type="checkbox" id="autoanswer"> answer install prompt with n</label>
 </p>
@@ -46,6 +47,14 @@ document.getElementById("iso").onchange = async function()
     document.getElementById("start").disabled = false;
 };
 
+// a TempleOS.ISO next to this page is loaded automatically
+fetch("TempleOS.ISO").then(r => r.ok ? r.arrayBuffer() : null).then(b => {
+    if(!b) return;
+    iso_buffer = b;
+    document.getElementById("start").disabled = false;
+    log("TempleOS.ISO loaded (" + b.byteLength + " bytes): press Boot");
+}).catch(() => {});
+
 let hd_buffer = null;
 document.getElementById("hd").onchange = async function()
 {
@@ -71,6 +80,7 @@ document.getElementById("start").onclick = function()
     });
 
     // every scancode that reaches the emulated keyboard controller
+    if(!gui_on) emulator.screen_adapter.pause();
     emulator.bus.register("keyboard-code", code => log("kbd scancode 0x" + code.toString(16)));
     emulator.bus.register("mouse-enable", enabled => log("guest mouse driver enabled: " + enabled));
     emulator.bus.register("mouse-pointer-lock", locked => {
@@ -117,6 +127,17 @@ document.getElementById("lock").onclick = e => {
     if(!emulator) return;
     if(document.pointerLockElement) document.exitPointerLock();
     else emulator.lock_mouse();
+};
+// "disable the GUI": stop drawing the emulated screen (the guest keeps running and its VGA state
+// keeps updating; only the canvas work is skipped, which makes a slow machine faster)
+let gui_on = true;
+document.getElementById("gui").onclick = e => {
+    e.stopPropagation();
+    gui_on = !gui_on;
+    document.getElementById("gui").textContent = gui_on ? "GUI: on (click to disable)" : "GUI: off (click to enable)";
+    document.getElementById("screen_container").style.opacity = gui_on ? 1 : 0.15;
+    if(!emulator) return;
+    if(gui_on) emulator.screen_adapter.continue(); else emulator.screen_adapter.pause();
 };
 document.getElementById("n").onclick = () => sendKey("n");
 document.getElementById("save").onclick = async () => {
