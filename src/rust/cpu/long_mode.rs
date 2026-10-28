@@ -248,7 +248,7 @@ unsafe fn pop_val(bits: u32) -> OrPageFault<u64> {
 // ---------------------------------------------------------------------------------------------
 // flags
 
-static PARITY: [bool; 256] = {
+pub static PARITY: [bool; 256] = {
     let mut t = [false; 256];
     let mut i = 0;
     while i < 256 {

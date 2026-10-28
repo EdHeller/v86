@@ -102,6 +102,8 @@ pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
 /// Debug histogram of the opcodes the interpreter executed (same indexing), when HIST_ON
 pub static mut EXECUTED: [u32; 512] = [0; 512];
 pub static mut HIST_ON: bool = false;
+/// compute pending flags inline in the generated code instead of calling j64_flags (experiment knob)
+pub static mut INLINE_FLAGS: bool = true;
 /// Debug: interpreted instruction addresses, hashed: (rip, count); read through get_jit_config(3000 + 2 * i / + 1)
 pub static mut HIST_RIPS: [(u64, u32); 4096] = [(0, 0); 4096];
 
@@ -1301,9 +1303,115 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// the same as j64_flags, in wasm: flags = flags & !ARITH | cf | pf | af | zf | sf | of
+    fn inline_flags(&mut self, p: Pending) {
+        let msb = p.bits as i64 - 1;
+        let fl = flags as u32;
+        self.b.const_i32(fl as i32);
+        self.b.load_fixed_i32(fl);
+        if p.kind == 3 {
+            // carry flag only: r holds the new carry in bit 0
+            self.b.const_i32(!FLAG_CARRY);
+            self.b.and_i32();
+            self.b.get_local_i64(&self.fl_r);
+            self.b.const_i64(1);
+            self.b.and_i64();
+            self.b.wrap_i64_to_i32();
+            self.b.or_i32();
+            self.b.store_aligned_i32(0);
+        }
+        else {
+            self.b.const_i32(!FLAGS_ALL);
+            self.b.and_i32();
+            // pf
+            self.b.get_local_i64(&self.fl_r);
+            self.b.wrap_i64_to_i32();
+            self.b.const_i32(0xFF);
+            self.b.and_i32();
+            self.b.load_u8((&raw const long_mode::PARITY) as u32);
+            self.b.const_i32(2);
+            self.b.shl_i32();
+            self.b.or_i32();
+            // zf
+            self.b.get_local_i64(&self.fl_r);
+            self.b.eqz_i64();
+            self.b.const_i32(6);
+            self.b.shl_i32();
+            self.b.or_i32();
+            // sf
+            self.b.get_local_i64(&self.fl_r);
+            self.b.const_i64(msb);
+            self.b.shr_u_i64();
+            self.b.const_i64(1);
+            self.b.and_i64();
+            self.b.wrap_i64_to_i32();
+            self.b.const_i32(7);
+            self.b.shl_i32();
+            self.b.or_i32();
+            if p.kind != 1 {
+                // cf
+                if p.kind == 0 {
+                    self.b.get_local_i64(&self.fl_r);
+                    self.b.get_local_i64(&self.fl_a);
+                }
+                else {
+                    // sub / cmp: a < b
+                    self.b.get_local_i64(&self.fl_a);
+                    self.b.get_local_i64(&self.fl_b);
+                }
+                self.b.ltu_i64();
+                self.b.or_i32();
+                // af
+                self.b.get_local_i64(&self.fl_a);
+                self.b.get_local_i64(&self.fl_b);
+                self.b.xor_i64();
+                self.b.get_local_i64(&self.fl_r);
+                self.b.xor_i64();
+                self.b.const_i64(0x10);
+                self.b.and_i64();
+                self.b.wrap_i64_to_i32();
+                self.b.or_i32();
+                // of
+                if p.kind == 0 {
+                    self.b.get_local_i64(&self.fl_a);
+                    self.b.get_local_i64(&self.fl_r);
+                    self.b.xor_i64();
+                    self.b.get_local_i64(&self.fl_b);
+                    self.b.get_local_i64(&self.fl_r);
+                    self.b.xor_i64();
+                }
+                else {
+                    self.b.get_local_i64(&self.fl_a);
+                    self.b.get_local_i64(&self.fl_b);
+                    self.b.xor_i64();
+                    self.b.get_local_i64(&self.fl_a);
+                    self.b.get_local_i64(&self.fl_r);
+                    self.b.xor_i64();
+                }
+                self.b.and_i64();
+                self.b.const_i64(msb);
+                self.b.shr_u_i64();
+                self.b.const_i64(1);
+                self.b.and_i64();
+                self.b.wrap_i64_to_i32();
+                self.b.const_i32(11);
+                self.b.shl_i32();
+                self.b.or_i32();
+            }
+            self.b.store_aligned_i32(0);
+        }
+        self.b.const_i32(flags_changed as i32);
+        self.b.const_i32(0);
+        self.b.store_aligned_i32(0);
+    }
+
     /// stores the pending flags into memory
     fn materialize(&mut self) {
         if let Some(p) = self.pending.take() {
+            if unsafe { INLINE_FLAGS } {
+                self.inline_flags(p);
+                return;
+            }
             self.b.const_i32((p.kind as i32) << 8 | p.bits as i32);
             self.b.get_local_i64(&self.fl_a);
             self.b.get_local_i64(&self.fl_b);

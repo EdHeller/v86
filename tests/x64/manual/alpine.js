@@ -54,6 +54,7 @@ let serial = "";
 emulator.add_listener("emulator-ready", () => {
     if(process.env.ALP_TRACE) emulator.v86.cpu.wm.exports.set_jit_config(10, 1);
     if(process.env.ALP_HIST) emulator.v86.cpu.wm.exports.set_jit_config(40, 1);
+    if(process.env.INLINE_FLAGS) emulator.v86.cpu.wm.exports.set_jit_config(42, +process.env.INLINE_FLAGS);
     // ALP_TRACE_SYSCALL=<number>: log every guest syscall with this number (202 = futex)
     // ALP_WATCH=<hex virtual address>: debug build logs every guest write that touches it (interpreter only: JIT64=4294967295)
     if(process.env.ALP_WATCH)

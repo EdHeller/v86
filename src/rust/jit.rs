@@ -2584,6 +2584,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         4 => crate::cpu::jit64::set_threshold(value),
         9 => crate::cpu::jit64::set_disable_mask(value),
         40 => crate::cpu::jit64::HIST_ON = value != 0,
+        42 => crate::cpu::jit64::INLINE_FLAGS = value != 0,
         10 => crate::cpu::cpu::TRACE_ON = value != 0,
         14 => crate::cpu::long_mode::SYSCALL_TRACE = value,
         17 => crate::cpu::cpu::JIT_CHAINING = value != 0,
