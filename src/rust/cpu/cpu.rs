@@ -3299,6 +3299,9 @@ pub unsafe fn run_instruction0f_32(opcode: i32) { gen::interpreter0f::run(opcode
 /// Set by instructions that inhibit interrupts until the instruction after them has completed
 /// (mov ss, pop ss)
 pub static mut interrupt_shadow: bool = false;
+/// the instruction that follows mov ss / pop ss / sti is being run: no interrupt may be taken inside it
+/// either (a device that raises an irq from an i/o instruction calls handle_irqs while it executes)
+pub static mut IN_SHADOW_STEP: bool = false;
 
 /// Executes exactly one instruction, bypassing the jit
 unsafe fn single_step_one() {
@@ -3350,17 +3353,18 @@ pub unsafe fn trace_instruction() {
 
 pub unsafe fn cycle_internal() {
     if interrupt_shadow {
-        // the instruction after mov ss / pop ss runs before any interrupt is taken
+        // the instruction after mov ss / pop ss / sti runs before any interrupt is taken, and a pending
+        // one is taken right after it (unless that instruction starts a shadow of its own)
         interrupt_shadow = false;
+        IN_SHADOW_STEP = true;
         if *flags & FLAG_TRAP != 0 {
             single_step_cycle();
         }
         else {
             single_step_one();
         }
-        if *is_64 {
-            handle_irqs();
-        }
+        IN_SHADOW_STEP = false;
+        handle_irqs();
         return;
     }
 
@@ -4847,7 +4851,7 @@ pub unsafe fn store_current_tsc() { *current_tsc = read_tsc(); }
 
 #[no_mangle]
 pub unsafe fn handle_irqs() {
-    if *flags & FLAG_INTERRUPT != 0 && !interrupt_shadow {
+    if *flags & FLAG_INTERRUPT != 0 && !interrupt_shadow && !IN_SHADOW_STEP {
         if let Some(irq) = pic::pic_acknowledge_irq() {
             pic_call_irq(irq)
         }

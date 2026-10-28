@@ -2391,7 +2391,12 @@ pub unsafe fn instr_FB() {
         *prefixes = 0;
         *previous_ip = *instruction_pointer;
         *instruction_counter += 1;
+        // the instruction after sti runs before any interrupt is taken, also one raised by the
+        // instruction itself (an i/o write whose device raises an irq)
+        let outer = IN_SHADOW_STEP;
+        IN_SHADOW_STEP = true;
         run_instruction(return_on_pagefault!(read_imm8()) | (is_osize_32() as i32) << 8);
+        IN_SHADOW_STEP = outer;
 
         handle_irqs();
     }
