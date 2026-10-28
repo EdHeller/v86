@@ -58,7 +58,8 @@ const t0 = performance.now();
 const cmdline = "modules=loop,squashfs,sd-mod,usb-storage quiet console=tty0 console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on";
 const options = {
     wasm_path: new URLSearchParams(location.search).get("wasm") === "prev" ? "../build/v86-prev.wasm" : "../build/v86.wasm",
-    acpi: new URLSearchParams(location.search).has("acpi"),   // ?acpi=1: ACPI + APIC/IOAPIC
+    acpi: new URLSearchParams(location.search).has("acpi") || +new URLSearchParams(location.search).get("cores") > 1,   // ?acpi=1: ACPI + APIC/IOAPIC
+    cpu_cores: +new URLSearchParams(location.search).get("cores") || 1,                                                // ?cores=2: cores that take turns
     memory_size: 512 * 1024 * 1024,
     vga_memory_size: 8 * 1024 * 1024,
     screen_container: document.getElementById("screen_container"),
