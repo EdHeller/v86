@@ -18,7 +18,9 @@ const LEN: usize = BLOCK_END - BLOCK_START;
 const MAX: usize = apic::MAX_CORES;
 
 /// instructions per slice of a core
-const SLICE: u32 = 20_011;
+pub static mut SLICE: u32 = 20_011;
+#[no_mangle]
+pub unsafe fn smp_set_slice(n: u32) { SLICE = n }
 
 /// (offset, size) of the fields of the block that belong to the machine, not to a core
 const SHARED: [(usize, usize); 6] = [
@@ -35,6 +37,8 @@ static mut RESET_STATE: [u8; LEN] = [0; LEN];
 static mut RUNNING: [bool; MAX] = [false; MAX];
 static mut SHADOW: [bool; MAX] = [false; MAX];
 static mut ROUND: usize = 0;
+/// set by a core that has just sent an IPI or executed PAUSE: its slice ends after the current instruction
+pub static mut YIELD: bool = false;
 pub static mut SLICES: [u32; MAX] = [0; MAX];
 
 unsafe fn block() -> &'static mut [u8] { std::slice::from_raw_parts_mut(BLOCK_START as *mut u8, LEN) }
@@ -45,6 +49,12 @@ pub unsafe fn count() -> usize { apic::CORE_COUNT }
 #[no_mangle]
 pub unsafe fn smp_init(count: u32) {
     apic::apic_set_core_count(count);
+    // compiled code returns to the scheduler often enough for the slices to be short
+    let limit = if apic::CORE_COUNT > 1 { 4_000 } else { 0 };
+    if limit != 0 {
+        JIT_LOOP_LIMIT = limit;
+        jit64::JIT64_LOOP_LIMIT = limit;
+    }
     machine_reset();
 }
 
@@ -83,11 +93,23 @@ unsafe fn load(bytes: &[u8; LEN]) {
     }
 }
 
+const DEBUG_CLEAR_TLB_CODE: bool = false;
+pub static mut TRANS_LOG: [[u32; 4]; 256] = [[0; 4]; 256];
+pub static mut TRANS_COUNT: u32 = 0;
+#[no_mangle]
+pub unsafe fn smp_trans_log(i: u32, j: u32) -> u32 { if i == 0xFFFF { TRANS_COUNT } else { TRANS_LOG[i as usize & 255][j as usize] } }
+pub static mut SWITCH_LOG: [[u32; 6]; 256] = [[0; 6]; 256];
+pub static mut SWITCH_COUNT: u32 = 0;
+#[no_mangle]
+pub unsafe fn smp_switch_log(i: u32, j: u32) -> u32 { if i == 0xFFFF { SWITCH_COUNT } else { SWITCH_LOG[i as usize & 255][j as usize] } }
+
 unsafe fn switch_to(to: usize) {
     let from = apic::CURRENT_CORE;
     if from == to {
         return;
     }
+    let eip_from = *instruction_pointer as u32;
+    let esp_from = *reg32.offset(4) as u32;
     SAVED[from].copy_from_slice(block());
     SHADOW[from] = interrupt_shadow;
     let next = SAVED[to];
@@ -96,7 +118,10 @@ unsafe fn switch_to(to: usize) {
     interrupt_shadow = SHADOW[to];
     IN_SHADOW_STEP = false;
     full_clear_tlb();
+    if DEBUG_CLEAR_TLB_CODE { for p in 0..0x2000 { clear_tlb_code(p) } }
     jit64::core_switched();
+    SWITCH_LOG[SWITCH_COUNT as usize & 255] = [from as u32, to as u32, eip_from, esp_from, *instruction_pointer as u32, *reg32.offset(4) as u32];
+    SWITCH_COUNT += 1;
 }
 
 /// a field of a core's block, whether or not the core is the running one
@@ -185,8 +210,13 @@ unsafe fn round() -> f64 {
             }
         }
         let start = *instruction_counter;
-        while (*instruction_counter).wrapping_sub(start) < SLICE && !*in_hlt {
+        YIELD = false;
+        while (*instruction_counter).wrapping_sub(start) < SLICE && !*in_hlt && !YIELD {
             cycle_internal();
+            if IRQ_CHECK {
+                IRQ_CHECK = false;
+                handle_irqs();
+            }
         }
         handle_irqs();
         SLICES[core] = SLICES[core].wrapping_add(1);
@@ -215,3 +245,7 @@ pub unsafe fn main_loop() -> f64 {
         }
     }
 }
+
+/// debugging: a 32-bit field of a core's block (`core` need not be the running one)
+#[no_mangle]
+pub unsafe fn smp_debug_field(core: u32, off: u32) -> i32 { field32(core as usize, off as usize) }

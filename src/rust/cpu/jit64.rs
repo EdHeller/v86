@@ -30,6 +30,8 @@ const NONE: u8 = 255;
 const MAX_INSTRUCTIONS: u32 = 300;
 /// instructions executed by a looping block before it returns to the dispatcher
 const LOOP_LIMIT: i32 = 20000;
+/// read by the compiled code (smaller with several cores, see smp.rs)
+pub static mut JIT64_LOOP_LIMIT: i32 = LOOP_LIMIT;
 
 // ---------------------------------------------------------------------------------------------
 // state
@@ -2419,7 +2421,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
 
     // budget: return to the dispatcher now and then so that interrupts can be handled
     g.b.get_local(&g.n_local);
-    g.b.const_i32(LOOP_LIMIT);
+    g.b.load_fixed_i32(unsafe { &raw const JIT64_LOOP_LIMIT } as u32);
     g.b.geu_i32();
     g.b.if_void();
     {

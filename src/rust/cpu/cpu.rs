@@ -305,6 +305,8 @@ pub const CHECK_TLB_INVARIANTS: bool = false;
 pub const DEBUG: bool = cfg!(debug_assertions);
 
 pub const LOOP_COUNTER: i32 = 100_003;
+/// instructions a compiled function runs before it returns to the main loop (read by the compiled code, smaller with several cores)
+pub static mut JIT_LOOP_LIMIT: i32 = LOOP_COUNTER;
 
 // should probably be kept in sync with APIC_TIMER_FREQ in apic.js
 pub const TSC_RATE: f64 = 1_000_000.0;
@@ -3684,6 +3686,10 @@ pub unsafe fn do_many_cycles_native() {
         && !*in_hlt
     {
         cycle_internal();
+        if IRQ_CHECK {
+            IRQ_CHECK = false;
+            handle_irqs();
+        }
     }
 }
 
@@ -4853,6 +4859,12 @@ pub unsafe fn trigger_ss(code: i32) {
 #[no_mangle]
 pub unsafe fn store_current_tsc() { *current_tsc = read_tsc(); }
 
+/// Set by writes to the (I/O) APIC registers: they can raise an interrupt, but they run in the middle of an instruction
+/// (possibly inside compiled code that cannot cope with its eip changing), so the check happens after the instruction
+pub static mut IRQ_CHECK: bool = false;
+
+pub unsafe fn request_irq_check() { IRQ_CHECK = true }
+
 #[no_mangle]
 pub unsafe fn handle_irqs() {
     if *flags & FLAG_INTERRUPT != 0 && !interrupt_shadow && !IN_SHADOW_STEP {
@@ -4868,7 +4880,14 @@ pub unsafe fn handle_irqs() {
     }
 }
 
+pub static mut IRQ_LOG: [[u32; 5]; 256] = [[0; 5]; 256];
+pub static mut IRQ_COUNT: u32 = 0;
+#[no_mangle]
+pub unsafe fn irq_log(i: u32, j: u32) -> u32 { if i == 0xFFFF { IRQ_COUNT } else { IRQ_LOG[i as usize & 255][j as usize] } }
+
 pub unsafe fn pic_call_irq(interrupt_nr: u8) {
+    IRQ_LOG[IRQ_COUNT as usize & 255] = [apic::CURRENT_CORE as u32, interrupt_nr as u32, *instruction_pointer as u32, *reg32.offset(4) as u32, *flags as u32];
+    IRQ_COUNT += 1;
     *previous_ip = *instruction_pointer; // XXX: What if called after instruction (port IO)
     if *in_hlt {
         js::stop_idling();

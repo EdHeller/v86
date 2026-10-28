@@ -122,6 +122,28 @@ struct CoreEvents {
 const NO_EVENTS: CoreEvents = CoreEvents { init: false, sipi: false, sipi_vector: 0, nmi: false, smi: false };
 static mut EVENTS: [CoreEvents; MAX_CORES] = [NO_EVENTS; MAX_CORES];
 
+/// debugging: the last IPIs (sender, icr1, icr0)
+pub static mut IPI_LOG: [(u32, u32, u32); 256] = [(0, 0, 0); 256];
+pub static mut IPI_COUNT: u32 = 0;
+#[no_mangle]
+pub unsafe fn apic_debug(i: u32) -> u32 {
+    if i == 0xFFFF { return IPI_COUNT }
+    let e = IPI_LOG[(i / 3) as usize & 255];
+    [e.0, e.1, e.2][(i % 3) as usize]
+}
+
+#[no_mangle]
+pub unsafe fn apic_debug_state(core: u32, what: u32) -> u32 {
+    let a = apic_of(core as usize);
+    match what {
+        0 => register_get_highest_bit(&a.irr).map_or(0x1000, |x| x as u32),
+        1 => register_get_highest_bit(&a.isr).map_or(0x1000, |x| x as u32),
+        2 => a.tpr,
+        3 => a.spurious_vector,
+        _ => 0,
+    }
+}
+
 pub const CORE_EVENT_INIT: u32 = 1;
 pub const CORE_EVENT_SIPI: u32 = 2;
 
@@ -443,6 +465,14 @@ fn write32_internal(apic: &mut Apic, addr: u32, value: u32) {
             let mut value = value;
             value &= !(1 << 12);
             apic.icr0 = value;
+            unsafe {
+                IPI_LOG[IPI_COUNT as usize & 255] = (CURRENT_CORE as u32, apic.icr1, value);
+                IPI_COUNT += 1;
+                if CORE_COUNT > 1 {
+                    // let the receiver run soon
+                    crate::cpu::smp::YIELD = true;
+                }
+            }
 
             if destination_shorthand == 0 {
                 // no shorthand

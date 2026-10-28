@@ -712,7 +712,8 @@ unsafe fn exec() -> OrPageFault<()> {
                 set_reg(n, osz, true, a);
             }
             else if p.rep == 0xF3 {
-                // pause
+                // pause: another core may be the one we wait for
+                super::smp::YIELD = true;
             }
         },
         0x91..=0x97 => {

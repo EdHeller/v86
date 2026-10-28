@@ -1237,7 +1237,7 @@ fn jit_generate_module(
     let main_loop_label = builder.loop_void();
     if unsafe { JIT_USE_LOOP_SAFETY } {
         builder.get_local(&instruction_counter);
-        builder.const_i32(cpu::LOOP_COUNTER);
+        builder.load_fixed_i32(unsafe { &raw const cpu::JIT_LOOP_LIMIT } as u32);
         builder.geu_i32();
         if cfg!(feature = "profiler") {
             builder.if_void();
@@ -1910,7 +1910,7 @@ fn jit_generate_module(
                     codegen::gen_profiler_stat_increment(ctx.builder, stat::LOOP_SAFETY);
                     if unsafe { JIT_USE_LOOP_SAFETY } {
                         ctx.builder.get_local(&ctx.instruction_counter);
-                        ctx.builder.const_i32(cpu::LOOP_COUNTER);
+                        ctx.builder.load_fixed_i32(unsafe { &raw const cpu::JIT_LOOP_LIMIT } as u32);
                         ctx.builder.geu_i32();
                         if cfg!(feature = "profiler") {
                             ctx.builder.if_void();
