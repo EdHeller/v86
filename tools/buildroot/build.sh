@@ -19,7 +19,7 @@
 #                         no font antialiasing anywhere, 1 workspace
 #
 # Named builds (shortcuts; the same options spelled out get the same short name):
-#   --dev-env             --min --SDL3-net --man --no-shellcheck --upx -> v86-dev-env-*
+#   --dev-env             --min --SDL3-net --man --no-shellcheck --upx --gdb -> v86-dev-env-*
 #   --bash-env            --min --no-SDL3 --man --tcc --wincc         -> v86-bash-env-*
 #                         With --release: v86-dev-env-release-*, v86-bash-env-release-*.
 #                         Other options added after one change the build and give it the
@@ -86,9 +86,9 @@
 #   --bashdb              add bashdb 5.2-1.2.0, a debugger for bash scripts: bashdb script.sh
 #                         (only bash scripts, under 1 MB)
 #   --no-bashdb           leave it out (the default)
-#   --gdb                 add gdb and gdbserver (about 12 MB installed in Alpine; with python
+#   --gdb                 (always in --dev-env, never in --bash-env) add gdb and gdbserver (about 12 MB installed in Alpine; with python
 #                         off); programs built on the target with gcc -g can then be debugged
-#   --no-gdb              leave it out (the default)
+#   --no-gdb              leave it out (the default, except --dev-env)
 #   --no-bash-dev         leave it out (the default, except --bash-env; undoes --bash-dev)
 #   --no-upx              leave it out (the default, except --dev-env; undoes an earlier --upx)
 #   --xz                  compress kernel + rootfs with xz instead of zstd: ~12% smaller for
@@ -210,7 +210,7 @@ while (($#)); do
         --vesa=*)         set_mode vesa; parse_vesa "${1#*=}" ;;
         --min)            set_mode vesa; parse_vesa 800x600x16; MIN=1 ;;
         # named builds: the options they stand for, in their place (later options still apply)
-        --dev-env)        shift; set -- --min --SDL3-net --man --no-shellcheck --upx "$@"; continue ;;
+        --dev-env)        shift; set -- --min --SDL3-net --man --no-shellcheck --upx --gdb "$@"; continue ;;
         --bash-env)       shift; set -- --min --no-SDL3 --man --tcc --wincc --bash-dev "$@"; continue ;;
         --smoke)          set_mode smoke ;;
         --all)            ALL=1 ;;
@@ -368,7 +368,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     # short name, debug or --release (then -release on the end, so the two never overwrite
     # each other's images); anything else added gives the usual long name
     case "${NAME%-release}" in
-        min-sdl3net-noshellcheck-upx-man) NAME=dev-env${NAME#min-sdl3net-noshellcheck-upx-man} ;;
+        min-sdl3net-noshellcheck-upx-gdb-man) NAME=dev-env${NAME#min-sdl3net-noshellcheck-upx-gdb-man} ;;
         min-nosdl3-tcc-wincc-bashdev-man)     NAME=bash-env${NAME#min-nosdl3-tcc-wincc-bashdev-man} ;;
     esac
 fi
