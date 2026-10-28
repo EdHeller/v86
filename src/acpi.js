@@ -92,6 +92,15 @@ export function ACPI(cpu)
         return value;
     });
 
+    // PCI hotplug registers of the firmware's DSDT (the slot devices' _STA/_EJ0 and the GPE 1 handler read them):
+    // no slot is being inserted (PCIU) or removed (PCID), ejecting does nothing. Unhandled reads return all ones,
+    // which made Linux's acpiphp "remove" every device (the IDE controller disappeared and nothing could boot).
+    io.register_read(0xAE00, this, undefined, undefined, function() { return 0; });
+    io.register_read(0xAE04, this, undefined, undefined, function() { return 0; });
+    io.register_read(0xAE0C, this, undefined, undefined, function() { return 0; });
+    io.register_write(0xAE08, this, undefined, undefined, function(value) { dbg_log("ACPI pci eject: " + h(value >>> 0), LOG_ACPI); });
+    io.register_write(0xAE0C, this, undefined, undefined, function(value) {});
+
     // ACPI, gpe
     io.register_read(0xAFE0, this, function()
     {
