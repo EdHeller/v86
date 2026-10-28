@@ -495,6 +495,7 @@ unsafe fn exec() -> OrPageFault<()> {
 
     let _ = p.lock;
     let osz = p.opsize();
+    if super::jit64::HIST_ON && opcode != 0x0F { let c = &mut super::jit64::EXECUTED[opcode as usize]; *c = c.wrapping_add(1) }
 
     match opcode {
         // ALU: 00-3F, op in bits 5:3, form in bits 2:0
@@ -1165,6 +1166,7 @@ unsafe fn string_op(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
 unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
     let opcode = fetch8()? as u8;
     let osz = p.opsize();
+    if super::jit64::HIST_ON { let c = &mut super::jit64::EXECUTED[256 + opcode as usize]; *c = c.wrapping_add(1) }
 
     match opcode {
         0x01 => {

@@ -122,3 +122,17 @@ machine (7 minutes -> seconds) is the cache that matters.
   on Node 22 (noisy machine: 25.9 s in a second run).
 - the same build on Node 24 (V8 13.6): 17.0 s and 18.6 s, i.e. 1.5-1.9x faster than Node 22 (V8 12.4). Newer engines
   are faster for our generated code, the 2.5x slower case above is specific to memory64.
+
+## Slot table size (2026-10-28): 1.5x on the Alpine shell loop
+
+The hotness counters live in a direct-mapped table of `SLOTS` entries indexed by a hash of rip (`slot_index`). With 4096
+entries the kernel's thousands of jump targets evicted each other's counters (`slot.rip != r` resets the count) before
+they reached the threshold of 150, so about 15 % of all instructions stayed interpreted and the interpreter, decode and
+`main_loop` cost about 40 % of host time. `SLOTS = 65536` halves the interpreted instructions (114 M to 57 M in the
+loop run) and cuts the guest time of 40000 `i=$((i+1))` iterations from about 14.8 s to 8.6-9.0 s (Node 24, release
+wasm via `WASM=build/v86.wasm`, snapshot before login, sequential A/B runs, Buildroot builds paused with SIGSTOP). 262144
+entries gives no further gain. Things that did not help: a lower threshold (10 vs 150: about 5 %, within noise) and
+re-checking for a block start after every block exit (slower once the table is large).
+
+Tooling: `ALP_HIST=1` prints the opcodes the interpreter executed (counts and share) and hashed hot interpreted
+addresses; `alpine.js` uses the *debug* wasm unless `WASM=build/v86.wasm` is set (measure with the release build).

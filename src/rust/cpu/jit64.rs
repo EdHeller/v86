@@ -70,7 +70,7 @@ const SLOT_PENDING: u8 = 1;
 const SLOT_READY: u8 = 2;
 const SLOT_FAILED: u8 = 3;
 const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, state: SLOT_COUNTING, user: false };
-const SLOTS: usize = 4096;
+const SLOTS: usize = 65536;
 
 fn slot_index(r: u64) -> usize { (r ^ r >> 12 ^ r >> 24) as usize & (SLOTS - 1) }
 
@@ -98,6 +98,12 @@ pub static mut STAT_COMPILED: u32 = 0;
 pub static mut STAT_FAILED: u32 = 0;
 /// Debug histogram of the opcodes that ended block discovery: index = opcode, 256 + byte after 0F
 pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
+
+/// Debug histogram of the opcodes the interpreter executed (same indexing), when HIST_ON
+pub static mut EXECUTED: [u32; 512] = [0; 512];
+pub static mut HIST_ON: bool = false;
+/// Debug: interpreted instruction addresses, hashed: (rip, count); read through get_jit_config(3000 + 2 * i / + 1)
+pub static mut HIST_RIPS: [(u64, u32); 4096] = [(0, 0); 4096];
 
 fn count_unsupported(code: &[u8]) {
     let mut i = 0;
@@ -2316,6 +2322,11 @@ pub unsafe fn run() {
         }
     }
     let before = rip();
+    if HIST_ON {
+        let e = &mut HIST_RIPS[slot_index(before) & 4095];
+        if e.0 != before { *e = (before, 0) }
+        e.1 = e.1.wrapping_add(1);
+    }
     long_mode::step64();
     let after = rip();
     // a jump (or an exception): rip is a potential block start. In testing mode (threshold 0)

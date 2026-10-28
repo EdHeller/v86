@@ -2583,6 +2583,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         3 => MAX_EXTRA_BASIC_BLOCKS = value,
         4 => crate::cpu::jit64::set_threshold(value),
         9 => crate::cpu::jit64::set_disable_mask(value),
+        40 => crate::cpu::jit64::HIST_ON = value != 0,
         10 => crate::cpu::cpu::TRACE_ON = value != 0,
         14 => crate::cpu::long_mode::SYSCALL_TRACE = value,
         17 => crate::cpu::cpu::JIT_CHAINING = value != 0,
@@ -2610,6 +2611,9 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         30 => crate::cpu::cpu::STAT_TSC_READS,
         31 => crate::cpu::cpu::STAT_LOOP_CLOCK_READS,
         20..=27 => crate::cpu::long_mem::SLOW_STATS[(index - 20) as usize],
+        3000..=11191 => { let e = crate::cpu::jit64::HIST_RIPS[((index - 3000) / 2) as usize]; if index & 1 == 0 { e.0 as u32 } else { e.1 } },
+        12000..=15999 => (crate::cpu::jit64::HIST_RIPS[(index - 12000) as usize].0 >> 32) as u32,
+        2000..=2511 => crate::cpu::jit64::EXECUTED[(index - 2000) as usize],
         1000..=1511 => crate::cpu::jit64::UNSUPPORTED[(index - 1000) as usize],
         _ => 0,
     }
