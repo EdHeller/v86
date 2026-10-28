@@ -151,6 +151,14 @@ function why() {
     const g = i => emulator.v86.cpu.wm.exports.get_jit_config(6000 + i) >>> 0;
     console.error("interpreted because: continuation " + g(0) + ", counting " + g(1) + ", failed " + g(2) + ", other " + g(3));
 }
+function invalidations() {
+    const g = i => emulator.v86.cpu.wm.exports.get_jit_config(40000 + i) >>> 0;
+    const rows = []; let total = 0, user = 0;
+    for(let i = 0; i < 1024; i++) { const v = g(2 * i + 1); const n = v & 0x7FFFFFFF; if(!n) continue; total += n; if(v >>> 31) user += n; rows.push([n, g(2 * i).toString(16) + (v >>> 31 ? " user" : " kernel")]); }
+    rows.sort((a, b) => b[0] - a[0]);
+    console.error("invalidated blocks by virtual page (page numbers low 32 bits): total " + total + ", of user code " + user);
+    for(const [n, p] of rows.slice(0, 12)) console.error("  " + p + "  " + n);
+}
 function rips() {
     const g = i => emulator.v86.cpu.wm.exports.get_jit_config(i);
     const rows = []; let total = 0;
@@ -173,7 +181,7 @@ function unsupported() {
 setTimeout(async () => {
     if(process.env.ALP_CPU) { const u = process.cpuUsage(); console.error("cpu: user %ss system %ss in %ss of wall time", (u.user / 1e6).toFixed(1), (u.system / 1e6).toFixed(1), ((Date.now() - t0) / 1000).toFixed(1)); }
     if(process.env.ALP_STATS) { const { stats_to_string } = await import("../../../src/browser/print_stats.js"); console.error(stats_to_string(emulator.v86.cpu)); }
-    if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); if(process.env.ALP_HIST) { executed(); why(); rips(); } if(process.env.ALP_DUMP) dump_virtual(); process.exit(0); }, +timeout * 1000);
+    if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); if(process.env.ALP_HIST) { executed(); why(); invalidations(); rips(); } if(process.env.ALP_DUMP) dump_virtual(); process.exit(0); }, +timeout * 1000);
 
 // on a crash print the registers and the code around eip, so the failing instruction can be disassembled
 function dump() {

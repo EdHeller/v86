@@ -104,6 +104,8 @@ pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
 /// Debug histogram of the opcodes the interpreter executed (same indexing), when HIST_ON
 pub static mut EXECUTED: [u32; 512] = [0; 512];
 pub static mut HIST_ON: bool = false;
+/// debugging: virtual pages whose blocks were invalidated (page, count, user), hashed
+pub static mut INVAL_LOG: [(u64, u32, bool); 1024] = [(0, 0, false); 1024];
 /// interpreted instructions by why they were interpreted: 0 continuation after a non-jump (no block lookup), 1 slot counting (not hot yet), 2 failed block, 3 other/pending
 pub static mut INTERP_WHY: [u32; 8] = [0; 8];
 /// debugging: after every compiled block run, redo it in the interpreter from the saved state and
@@ -2861,6 +2863,11 @@ pub unsafe fn dirty_page(ctx: &mut jit::JitState, page: Page) -> bool {
             forget_slot(r);
             if !counted.contains(&(r >> 12)) {
                 counted.push(r >> 12);
+                if HIST_ON {
+                    let e = &mut INVAL_LOG[((r >> 12) as usize ^ (r >> 28) as usize) & 1023];
+                    if e.0 != r >> 12 { *e = (r >> 12, 0, st.blocks.get(&r).map(|b| b.user).unwrap_or(false)) }
+                    e.1 += 1;
+                }
                 let n = st.invalidations.entry(r >> 12).or_insert(0);
                 *n = n.saturating_add(1);
             }
