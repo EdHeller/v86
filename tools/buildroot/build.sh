@@ -896,7 +896,7 @@ BASHDB_CONF_OPTS = --with-POSIXSHELL=/bin/bash
 BASHDB_DEPENDENCIES = bash
 $(eval $(autotools-package))
 EOF
-    printf '%s  %s\n' c6015c625d0d05bceb19d33bec89b5faa4e964fd3db2380ac03ec16dc5e20c6b bashdb-5.2-1.2.0.tar.gz \
+    printf 'sha256  %s  %s\n' c6015c625d0d05bceb19d33bec89b5faa4e964fd3db2380ac03ec16dc5e20c6b bashdb-5.2-1.2.0.tar.gz \
         > "$EXT/package/bashdb/bashdb.hash"
 
     # ── SDL3 X11 build order ─────────────────────────────────────────────────
