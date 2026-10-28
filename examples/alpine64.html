@@ -62,6 +62,11 @@ function instructions()
     return total;
 }
 
+// the guest also logs to the serial console (kernel option console=ttyS0): unlike the screen it stays
+// readable text after the graphics driver has switched the display to a framebuffer
+let serial = "";
+emulator.add_listener("serial0-output-byte", b => { serial += String.fromCharCode(b); if(serial.length > 20000) serial = serial.slice(-10000); });
+
 const lines = [];
 function log(text)
 {
@@ -75,8 +80,8 @@ log("page loaded, " + arch + " ISO requested");
 document.getElementById("login").onclick = () => emulator.keyboard_send_text("root\n");
 // 40000 iterations of i=$((i+1)) in busybox ash
 document.getElementById("bench").onclick = () => {
-    log("benchmark typed: 40000-iteration shell loop");
-    emulator.keyboard_send_text("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\n");
+    log("benchmark started (serial shell): 40000-iteration shell loop");
+    emulator.serial0_send("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\n");
 };
 document.getElementById("copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText(arch + "\n" + lines.join("\n"));
 
@@ -106,16 +111,26 @@ setInterval(() => {
     if(!seen.prompt && /boot:/.test(text)) {
         seen.prompt = true;
         log("boot: prompt");
-        if(document.getElementById("autoenter").checked) { emulator.keyboard_send_text("\n"); log("pressed Enter"); }
+        if(document.getElementById("autoenter").checked) {
+            // the boot prompt drops keys that arrive too fast: one character every 120 ms
+            const opts = "virt console=tty0 console=ttyS0,115200\n";
+            [...opts].forEach((ch, i) => setTimeout(() => emulator.keyboard_send_text(ch), i * 120));
+            log("typed boot options (console=tty0 console=ttyS0): serial log on");
+        }
     }
-    if(!seen.kernel && /OpenRC|Welcome to Alpine Linux|Mounting|Loading/.test(text)) { seen.kernel = true; log("kernel is up, init scripts running"); }
-    if(!seen.login && /localhost login:/.test(text)) {
+    if(!seen.kernel && /Linux version|OpenRC .* is starting up/.test(serial)) { seen.kernel = true; log("kernel is up"); }
+    if(!seen.init && /OpenRC .* is starting up/.test(serial)) { seen.init = true; log("init scripts running (OpenRC)"); }
+    if(!seen.login && /localhost login:/.test(serial)) {
         seen.login = true;
         log("LOGIN PROMPT REACHED  (boot time)");
-        if(document.getElementById("autologin").checked) { emulator.keyboard_send_text("root\n"); log("typed root"); }
+        if(document.getElementById("autologin").checked) {
+            emulator.serial0_send("root\n");            // the serial console, whose output the timeline reads
+            emulator.keyboard_send_text("root\n");      // and the screen console, for you
+            log("typed root");
+        }
     }
-    if(!seen.shell && /Welcome to Alpine!/.test(text)) { seen.shell = true; log("logged in (shell)"); }
-    const results = text.match(/real\s+\S+/g) || [];
+    if(!seen.shell && /Welcome to Alpine!/.test(serial)) { seen.shell = true; log("logged in (shell)"); }
+    const results = serial.match(/real\s+\S+/g) || [];
     if(results.length > bench_results) {
         bench_results = results.length;
         log("benchmark result: " + results[results.length - 1].replace(/\s+/g, " "));
