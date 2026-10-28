@@ -1,31 +1,45 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Alpine Linux (x86_64)</title>
+<title>Alpine Linux in v86 (boot timer)</title>
 <style>
     body { font: 14px sans-serif; margin: 16px; background: #222; color: #ddd; }
-    #screen_container { display: inline-block; background: #000; }
+    #screen_container { display: inline-block; background: #000; vertical-align: top; }
     #screen_container canvas { image-rendering: pixelated; }
+    #side { display: inline-block; vertical-align: top; margin-left: 16px; }
     button { margin-right: 8px; }
     #status { font: 12px monospace; margin-top: 8px; }
+    #log { font: 12px monospace; white-space: pre; background: #111; padding: 8px; min-width: 38em; min-height: 14em; }
+    a { color: #8cf; }
 </style>
 
-<p>Boots the Alpine "virt" x86_64 ISO (alpine.iso next to this page) with the 64-bit JIT.
-Press Enter at the <code>boot:</code> prompt, wait for <code>localhost login:</code> (a few minutes), log in as root (no password).</p>
+<p id="title"></p>
 <p>
     <button id="login">type "root"</button>
     <button id="bench">type shell-loop benchmark</button>
     <button id="gui">GUI: on (click to disable)</button>
+    <button id="copy">copy timing log</button>
+    <label><input type="checkbox" id="autoenter" checked> press Enter at the boot: prompt</label>
+    <label><input type="checkbox" id="autologin" checked> log in as root automatically</label>
 </p>
 <div id="screen_container">
     <div style="white-space: pre; font: 14px monospace; line-height: 14px"></div>
     <canvas style="display: none"></canvas>
 </div>
-<div id="status"></div>
+<div id="side">
+    <div id="log"></div>
+    <div id="status"></div>
+</div>
 
 <script src="../build/libv86.js"></script>
 <script>
 "use strict";
 
+const arch = new URLSearchParams(location.search).get("arch") === "x86" ? "x86" : "x86_64";
+const iso = arch === "x86" ? "alpine-x86.iso" : "alpine.iso";
+document.getElementById("title").innerHTML = "Alpine Linux 3.24 <b>" + (arch === "x86" ? "32-bit (x86)" : "64-bit (x86_64)") +
+    "</b> in v86 &nbsp; <a href='?'>64-bit</a> | <a href='?arch=x86'>32-bit</a> &nbsp; (timer starts when the page loads)";
+
+const t0 = performance.now();
 const emulator = window.emulator = new V86({
     wasm_path: "../build/v86.wasm",
     memory_size: 512 * 1024 * 1024,
@@ -33,16 +47,39 @@ const emulator = window.emulator = new V86({
     screen_container: document.getElementById("screen_container"),
     bios: { url: "../bios/seabios.bin" },
     vga_bios: { url: "../bios/vgabios.bin" },
-    cdrom: { url: "alpine.iso" },
+    cdrom: { url: iso },
     autostart: true,
 });
 
-document.getElementById("login").onclick = () => emulator.keyboard_send_text("root\n");
-// the same loop the x86_64 JIT notes use: 40000 iterations of i=$((i+1)) in busybox ash
-document.getElementById("bench").onclick = () =>
-    emulator.keyboard_send_text("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\n");
+// instructions retired so far (the guest counter is 32 bits and wraps: accumulate the deltas)
+let total = 0, last_counter = 0;
+function instructions()
+{
+    if(!emulator.v86) return total;     // the emulator object appears once the wasm has loaded
+    const c = emulator.v86.cpu.instruction_counter[0] >>> 0;
+    total += (c - last_counter) >>> 0;
+    last_counter = c;
+    return total;
+}
 
-// "disable the GUI": stop drawing the emulated screen (the guest keeps running)
+const lines = [];
+function log(text)
+{
+    const s = (performance.now() - t0) / 1000;
+    const n = instructions();
+    lines.push(s.toFixed(1).padStart(7) + " s  " + text + "   [" + (n / 1e6).toFixed(0) + " M instr, avg " + (n / 1e6 / s).toFixed(1) + " MIPS]");
+    document.getElementById("log").textContent = lines.join("\n");
+}
+log("page loaded, " + arch + " ISO requested");
+
+document.getElementById("login").onclick = () => emulator.keyboard_send_text("root\n");
+// 40000 iterations of i=$((i+1)) in busybox ash
+document.getElementById("bench").onclick = () => {
+    log("benchmark typed: 40000-iteration shell loop");
+    emulator.keyboard_send_text("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\n");
+};
+document.getElementById("copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText(arch + "\n" + lines.join("\n"));
+
 let gui_on = true;
 document.getElementById("gui").onclick = () => {
     gui_on = !gui_on;
@@ -51,14 +88,41 @@ document.getElementById("gui").onclick = () => {
     if(gui_on) emulator.screen_adapter.continue(); else emulator.screen_adapter.pause();
 };
 
+// timeline: watch the text screen for the boot prompt, the login prompt and the benchmark result
+const seen = {};
+let bench_results = 0;
+setInterval(() => {
+    let text = "";
+    try { text = emulator.screen_adapter.get_text_screen().join("\n"); } catch(e) {}
+    if(!seen.first && text.trim()) { seen.first = true; log("first text on screen (BIOS)"); }
+    if(!seen.prompt && /boot:/.test(text)) {
+        seen.prompt = true;
+        log("boot: prompt");
+        if(document.getElementById("autoenter").checked) { emulator.keyboard_send_text("\n"); log("pressed Enter"); }
+    }
+    if(!seen.kernel && /OpenRC|Welcome to Alpine Linux|Mounting|Loading/.test(text)) { seen.kernel = true; log("kernel is up, init scripts running"); }
+    if(!seen.login && /localhost login:/.test(text)) {
+        seen.login = true;
+        log("LOGIN PROMPT REACHED  (boot time)");
+        if(document.getElementById("autologin").checked) { emulator.keyboard_send_text("root\n"); log("typed root"); }
+    }
+    if(!seen.shell && /Welcome to Alpine!/.test(text)) { seen.shell = true; log("logged in (shell)"); }
+    const results = text.match(/real\s+\S+/g) || [];
+    if(results.length > bench_results) {
+        bench_results = results.length;
+        log("benchmark result: " + results[results.length - 1].replace(/\s+/g, " "));
+    }
+}, 300);
+
 let last = 0, last_t = performance.now();
 setInterval(() => {
+    if(!emulator.v86) return;
     const cpu = emulator.v86.cpu;
     const mem = new Uint8Array(cpu.wasm_memory.buffer);
-    const n = cpu.instruction_counter[0] >>> 0, t = performance.now();
-    const mips = ((n - last) >>> 0) / ((t - last_t) * 1000);
+    const n = instructions(), t = performance.now();
+    const mips = (n - last) / ((t - last_t) * 1000);
     last = n; last_t = t;
     document.getElementById("status").textContent =
-        "eip=" + (cpu.instruction_pointer[0] >>> 0).toString(16) + " is_64=" + mem[1444] + " " + mips.toFixed(1) + " MIPS";
+        "eip=" + (cpu.instruction_pointer[0] >>> 0).toString(16) + " is_64=" + mem[1444] + "  now " + mips.toFixed(1) + " MIPS";
 }, 1000);
 </script>
