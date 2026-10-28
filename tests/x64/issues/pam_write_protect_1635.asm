@@ -1,7 +1,7 @@
-; EXPECT: xfail
+; EXPECT: pass
 ; ISSUE: copy/v86#1635
 ; DESC: i440FX PAM registers: a read-only shadow region (PAM=01) ignores writes (Windows 98 corrupts the VGA BIOS otherwise)
-; NOTE: needs a write-only protection flag in the TLB: reusing TLB_IN_MAPPED_RANGE (mmap handlers) would make the shadowed BIOS non-executable, since v86 assumes code never lives in mapped memory (memory::in_mapped_range asserts in read_imm/jit).
+; NOTE: fixed by memory::PAM_READ_ONLY: pages in a read-only PAM region carry TLB_HAS_CODE (every write takes the slow path) and the lowest write functions drop the write. TLB_IN_MAPPED_RANGE would have made the shadowed BIOS non-executable.
 %include "inc/real.inc"
 
 ; PAM1 (config offset 0x5A) controls 0xC0000-0xC7FFF: bits 1:0 = C0000-C3FFF,

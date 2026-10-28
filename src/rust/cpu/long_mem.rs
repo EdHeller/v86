@@ -449,7 +449,7 @@ fn window_entry(page: i32, phys: u32, writable: bool) -> i32 {
     unsafe {
         let high = phys & !0xFFF;
         let mapped = memory::in_mapped_range(high);
-        let has_code = !mapped && jit::jit_page_has_code(Page::page_of(high));
+        let has_code = !mapped && (jit::jit_page_has_code(Page::page_of(high)) || memory::write_ignored(high));
         let info = TLB_VALID
             | if writable { 0 } else { TLB_READONLY }
             | if mapped { TLB_IN_MAPPED_RANGE } else { 0 }

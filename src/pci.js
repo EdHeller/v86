@@ -265,6 +265,8 @@ PCI.prototype.set_state = function(state)
     this.pci_value.set(state[257]);
     this.pci_response.set(state[258]);
     this.pci_status.set(state[259]);
+
+    this.update_pam();
 };
 
 PCI.prototype.pci_query = function()
@@ -341,6 +343,39 @@ PCI.prototype.pci_write8 = function(address, written)
             " value=" + h(written, 2), LOG_PCI);
 
     space[addr] = written;
+
+    if(bdf === 0 && addr >= 0x59 && addr <= 0x5F)
+    {
+        this.update_pam();
+    }
+};
+
+/**
+ * i440FX programmable attribute map (config bytes 0x59-0x5F): a region set to read-only (01)
+ * reads RAM and drops writes. Regions: 0x59 bits 5:4 = F0000, then 0x5A-0x5F two per byte
+ * (bits 1:0 and 5:4) from C0000 in steps of 16 KB up to EFFFF.
+ */
+PCI.prototype.update_pam = function()
+{
+    const space = new Uint8Array(this.device_spaces[0].buffer);
+    let lo = 0, hi = 0;
+    const set_region = (address, pam) => {
+        if(pam === 1)
+        {
+            for(let page = address >> 12; page < (address >> 12) + (address === 0xF0000 ? 16 : 4); page++)
+            {
+                const bit = page - 0xC0;
+                if(bit < 32) lo |= 1 << bit; else hi |= 1 << (bit - 32);
+            }
+        }
+    };
+    set_region(0xF0000, space[0x59] >> 4 & 3);
+    for(let i = 0; i < 6; i++)
+    {
+        set_region(0xC0000 + i * 0x8000, space[0x5A + i] & 3);
+        set_region(0xC0000 + i * 0x8000 + 0x4000, space[0x5A + i] >> 4 & 3);
+    }
+    this.cpu.wm.exports["set_pam_read_only"](lo, hi);
 };
 
 PCI.prototype.pci_write16 = function(address, written)
@@ -372,6 +407,11 @@ PCI.prototype.pci_write16 = function(address, written)
             " value=" + h(written, 4), LOG_PCI);
 
     space[addr >>> 1] = written;
+
+    if(bdf === 0 && addr >= 0x58 && addr <= 0x5F)
+    {
+        this.update_pam();
+    }
 };
 
 PCI.prototype.pci_write32 = function(address, written)
@@ -482,6 +522,11 @@ PCI.prototype.pci_write32 = function(address, written)
         dbg_log("PCI write dev=" + h(bdf >> 3, 2) + " (" + device.name + ") addr=" + h(addr, 4) +
                 " value=" + h(written >>> 0, 8), LOG_PCI);
         space[addr >>> 2] = written;
+
+        if(bdf === 0 && addr >= 0x58 && addr <= 0x5F)
+        {
+            this.update_pam();
+        }
     }
 };
 

@@ -2388,7 +2388,7 @@ pub unsafe fn do_page_walk(
 
     let is_in_mapped_range = memory::in_mapped_range(high);
     let has_code = if side_effects {
-        !is_in_mapped_range && jit::jit_page_has_code(Page::page_of(high))
+        !is_in_mapped_range && (jit::jit_page_has_code(Page::page_of(high)) || memory::write_ignored(high))
     }
     else {
         // If side_effects is false, don't call into jit::jit_page_has_code. This value is not used

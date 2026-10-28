@@ -71,6 +71,24 @@ pub fn svga_allocate_memory(size: u32) -> u32 {
     ptr as u32
 }
 
+/// Pages 0xC0..0xFF (0xC0000-0xFFFFF) whose i440FX PAM setting is read-only (01): reads come from
+/// RAM, writes are dropped. Bit n is page 0xC0 + n.
+pub static mut PAM_READ_ONLY: u64 = 0;
+
+/// is `addr` in a page that ignores writes (shadowed ROM)? Pages like this also carry TLB_HAS_CODE,
+/// so that every write takes the slow path
+#[inline]
+pub fn write_ignored(addr: u32) -> bool {
+    let page = (addr >> 12).wrapping_sub(0xC0);
+    page < 64 && unsafe { PAM_READ_ONLY } >> page & 1 != 0
+}
+
+#[no_mangle]
+pub unsafe fn set_pam_read_only(lo: u32, hi: u32) {
+    PAM_READ_ONLY = lo as u64 | (hi as u64) << 32;
+    crate::cpu::cpu::full_clear_tlb();
+}
+
 #[no_mangle]
 pub fn in_mapped_range(addr: u32) -> bool {
     return addr >= 0xA0000 && addr < 0xC0000 || addr >= unsafe { *memory_size };
@@ -197,6 +215,7 @@ pub unsafe fn write8(addr: u32, value: i32) {
 }
 
 pub unsafe fn write8_no_mmap_or_dirty_check(addr: u32, value: i32) {
+    if write_ignored(addr) { return }
     *mem8.offset(addr as isize) = value as u8
 }
 
@@ -211,6 +230,7 @@ pub unsafe fn write16(addr: u32, value: i32) {
     };
 }
 pub unsafe fn write16_no_mmap_or_dirty_check(addr: u32, value: i32) {
+    if write_ignored(addr) { return }
     ptr::write_unaligned(mem8.offset(addr as isize) as *mut u16, value as u16)
 }
 
@@ -226,24 +246,41 @@ pub unsafe fn write32(addr: u32, value: i32) {
 }
 
 pub unsafe fn write32_no_mmap_or_dirty_check(addr: u32, value: i32) {
+    if write_ignored(addr) { return }
     ptr::write_unaligned(mem8.offset(addr as isize) as *mut i32, value)
 }
 
 pub unsafe fn write64_no_mmap_or_dirty_check(addr: u32, value: u64) {
+    if write_ignored(addr) { return }
     ptr::write_unaligned(mem8.offset(addr as isize) as *mut u64, value)
 }
 
 pub unsafe fn write128_no_mmap_or_dirty_check(addr: u32, value: reg128) {
+    if write_ignored(addr) { return }
     ptr::write_unaligned(mem8.offset(addr as isize) as *mut reg128, value)
 }
 
 pub unsafe fn memset_no_mmap_or_dirty_check(addr: u32, value: u8, count: u32) {
+    if PAM_READ_ONLY != 0 && addr < 0x100000 && addr as u64 + count as u64 > 0xC0000 {
+        for i in 0..count { write8_no_mmap_or_dirty_check(addr + i, value as i32) }
+        return;
+    }
     ptr::write_bytes(mem8.offset(addr as isize), value, count as usize);
 }
 
 pub unsafe fn memcpy_no_mmap_or_dirty_check(src_addr: u32, dst_addr: u32, count: u32) {
     dbg_assert!(src_addr < *memory_size);
     dbg_assert!(dst_addr < *memory_size);
+    if PAM_READ_ONLY != 0 && dst_addr < 0x100000 && dst_addr as u64 + count as u64 > 0xC0000 {
+        // a forward copy, like the overlapping-safe ptr::copy of the common case, one byte at a time
+        if dst_addr <= src_addr {
+            for i in 0..count { write8_no_mmap_or_dirty_check(dst_addr + i, *mem8.offset((src_addr + i) as isize) as i32) }
+        }
+        else {
+            for i in (0..count).rev() { write8_no_mmap_or_dirty_check(dst_addr + i, *mem8.offset((src_addr + i) as isize) as i32) }
+        }
+        return;
+    }
     ptr::copy(
         mem8.offset(src_addr as isize),
         mem8.offset(dst_addr as isize),
