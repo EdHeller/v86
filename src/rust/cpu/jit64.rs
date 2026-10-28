@@ -104,6 +104,8 @@ pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
 /// Debug histogram of the opcodes the interpreter executed (same indexing), when HIST_ON
 pub static mut EXECUTED: [u32; 512] = [0; 512];
 pub static mut HIST_ON: bool = false;
+/// interpreted instructions by why they were interpreted: 0 continuation after a non-jump (no block lookup), 1 slot counting (not hot yet), 2 failed block, 3 other/pending
+pub static mut INTERP_WHY: [u32; 8] = [0; 8];
 /// debugging: after every compiled block run, redo it in the interpreter from the saved state and
 /// record the first differences (read through get_jit_config(5000 + i)); the interpreter's result is kept
 pub static mut VERIFY: bool = false;
@@ -200,6 +202,19 @@ pub unsafe fn j64_write(addr: i64, v: i64, bits: i32) {
     if mem_write(addr as u64, bits as u32, v as u64).is_err() {
         FLAGS[FAULT] = 1;
     }
+}
+
+/// Runs the one instruction at rip in the interpreter (an Insn::Interp of a block) and tells
+/// whether the block has to be left: 1 when rip is not `next` (exception, jump, mode switch), when
+/// interrupts were just enabled, the cpu halted or the mode changed.
+#[no_mangle]
+pub unsafe fn j64_interp1(next: i64, _unused: i32) -> i32 {
+    // the block counts this instruction itself
+    let counter = *instruction_counter;
+    long_mode::step64();
+    *instruction_counter = counter;
+    let stay = rip() == next as u64 && !interrupt_shadow && !*in_hlt && *is_64 && *flags & FLAG_TRAP == 0;
+    !stay as i32
 }
 
 #[no_mangle]
@@ -312,6 +327,8 @@ enum Insn {
     Xchg { bits: u32, a: Opd, b: Opd },
     /// cbw / cwde / cdqe (0x98) and cwd / cdq / cqo (0x99)
     Sext { opcode: u8, bits: u32 },
+    /// an instruction the jit cannot compile: the interpreter runs just this one from inside the block
+    Interp,
 }
 
 struct Cursor<'a> {
@@ -345,6 +362,7 @@ fn kind(i: &Insn) -> u32 {
         Insn::CallInd { .. } | Insn::JmpInd { .. } => 21,
         Insn::Xchg { .. } => 22,
         Insn::Sext { .. } => 23,
+        Insn::Interp => 24,
     }
 }
 
@@ -820,14 +838,69 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::JmpInd { src } => (false, false, has_mem(&src)),
         Insn::Xchg { a, b, .. } => (false, false, has_mem(&a) || has_mem(&b)),
         Insn::Sext { .. } => (false, false, false),
+        Insn::Interp => (true, false, true),
     };
     FlagFx { reads, writes_all, fault }
 }
 
 /// writes memory in a way the VERIFY undo log does not see (string instructions run through the interpreter)
+/// Length of an instruction the jit cannot compile but can hand to the interpreter one at a time
+/// (system and flag instructions, cmpxchg / xadd / bsf / bsr, the SSE moves and logic ops)
+fn interp_len(code: &[u8]) -> Option<usize> {
+    let mut c = Cursor { code, pos: 0 };
+    let mut p = Pfx { rex: 0, has_rex: false, osz16: false, asz32: false, seg: -1 };
+    let mut rep = false;
+    let opcode = loop {
+        let b = c.u8()?;
+        match b {
+            0x66 => p.osz16 = true,
+            0x67 => p.asz32 = true,
+            0xF2 | 0xF3 => rep = true,
+            0xF0 | 0x26 | 0x2E | 0x36 | 0x3E => {},
+            0x64 => p.seg = FS,
+            0x65 => p.seg = GS,
+            0x40..=0x4F => {
+                p.rex = b;
+                p.has_rex = true;
+                break c.u8()?;
+            },
+            _ => break b,
+        }
+    };
+    match opcode {
+        // pushf popf cli sti hlt clc..std pause iretq in/out dx
+        0x9C | 0x9D | 0xFA | 0xFB | 0xF4 | 0xF8..=0xFD | 0xCF | 0xEC..=0xEF => {},
+        // pause (a plain 0x90 is a nop that decode knows)
+        0x90 if rep => {},
+        0xE4..=0xE7 => { c.u8()?; },
+        0xF6 | 0xF7 => {
+            // mul imul div idiv (test, not and neg are decoded)
+            let m = modrm(&mut c, &p)?;
+            if m.reg & 7 < 4 {
+                return None;
+            }
+        },
+        0x0F => {
+            let op2 = c.u8()?;
+            match op2 {
+                // syscall sysret ud2 wrmsr rdtsc rdmsr sysenter sysexit cpuid
+                0x05 | 0x07 | 0x0B | 0x30 | 0x31 | 0x32 | 0x34 | 0x35 | 0xA2 => {},
+                0x01 | 0x20..=0x23 | 0x6E | 0x6F | 0x7E | 0x7F | 0xD6 | 0xE7 | 0xEF | 0xDB | 0xDF | 0xEB
+                | 0xF8..=0xFE | 0xD4 | 0x10..=0x17 | 0x28 | 0x29 | 0x2B | 0x54..=0x5F | 0x60..=0x6D | 0x74..=0x76 | 0xD0..=0xD5
+                | 0xD8..=0xDA | 0xDC | 0xDD | 0xE0..=0xE6 | 0xE8..=0xEA | 0xEC..=0xEE | 0xF1..=0xF7 | 0xAE | 0xB0 | 0xB1
+                | 0xBC | 0xBD | 0xC0 | 0xC1 | 0xC3 => { modrm(&mut c, &p)?; },
+                0x70..=0x73 | 0xC2 | 0xC4..=0xC6 => { modrm(&mut c, &p)?; c.u8()?; },
+                _ => return None,
+            }
+        },
+        _ => return None,
+    }
+    Some(c.pos)
+}
+
 fn is_rmw(i: &Insn) -> bool {
     match *i {
-        Insn::Str { .. } => true,
+        Insn::Str { .. } | Insn::Interp => true,
         _ => false,
     }
 }
@@ -1748,6 +1821,22 @@ impl<'a> Gen<'a> {
         }
         match *insn {
             Insn::Nop => {},
+            Insn::Interp => {
+                self.materialize();
+                self.b.const_i32(instruction_pointer as i32);
+                self.b.const_i32(self.cur as i32);
+                self.b.store_aligned_i32(0);
+                self.b.const_i32(rip_hi as i32);
+                self.b.const_i32((self.cur >> 32) as i32);
+                self.b.store_aligned_i32(0);
+                self.b.const_i64(self.next as i64);
+                self.b.const_i32(0);
+                self.b.call_fn2_i64_i32_ret("j64_interp1");
+                self.b.if_void();
+                self.exit_keep_rip();
+                self.b.block_end();
+                self.smc_check();
+            },
             Insn::Alu { op, bits, dst, src } => self.emit_alu(op, bits, dst, src, true),
             Insn::Test { bits, a, b } => self.emit_alu(4, bits, a, b, false),
             Insn::Mov { bits, dst, src } => {
@@ -2189,7 +2278,11 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
             if decoded.contains_key(&off) || decoded.len() >= MAX_INSTRUCTIONS as usize || off >= code.len() {
                 break;
             }
-            let Some((insn, len)) = decode(&code[off..], rip.wrapping_add(off as u64)) else {
+            let decoded_insn = decode(&code[off..], rip.wrapping_add(off as u64)).or_else(|| {
+                if DISABLE_MASK >> 24 & 1 != 0 { return None }
+                interp_len(&code[off..]).map(|l| (Insn::Interp, l))
+            });
+            let Some((insn, len)) = decoded_insn else {
                 count_unsupported(&code[off..]);
                 break;
             };
@@ -2458,6 +2551,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
 /// Runs one step of 64-bit code: a compiled block if there is one at rip, otherwise one
 /// interpreted instruction
 pub unsafe fn run() {
+    let checked = CHECK;
     if CHECK {
         CHECK = false;
         if try_run_block() {
@@ -2482,6 +2576,12 @@ pub unsafe fn run() {
     }
     let before = rip();
     if HIST_ON {
+        let why = if !checked { 0 } else {
+            let st = state();
+            let s = &st.slots[slot_index(before)];
+            if s.rip != before { 1 } else { match s.state { SLOT_COUNTING => 1, SLOT_FAILED => 2, _ => 3 } }
+        };
+        INTERP_WHY[why] = INTERP_WHY[why].wrapping_add(1);
         let e = &mut HIST_RIPS[slot_index(before) & 4095];
         if e.0 != before { *e = (before, 0) }
         e.1 = e.1.wrapping_add(1);

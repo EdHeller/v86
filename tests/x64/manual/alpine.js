@@ -47,6 +47,7 @@ const emulator = new V86({
     autostart: true,
     disable_jit: +process.env.DISABLE_JIT,
     jit_chaining: process.env.CHAIN === "1" ? true : undefined,
+    jit64_disable_mask: +process.env.JIT64_MASK || 0,
     jit64_threshold: process.env.JIT64 === undefined ? undefined : +process.env.JIT64,
 });
 
@@ -146,10 +147,14 @@ function executed() {
     console.error("opcodes executed by the interpreter (count %opcode), total " + total);
     for(const [n, op] of rows.slice(0, 30)) console.error("  %s  %s%  %s", String(n).padStart(10), (100 * n / total).toFixed(1).padStart(5), op);
 }
+function why() {
+    const g = i => emulator.v86.cpu.wm.exports.get_jit_config(6000 + i) >>> 0;
+    console.error("interpreted because: continuation " + g(0) + ", counting " + g(1) + ", failed " + g(2) + ", other " + g(3));
+}
 function rips() {
     const g = i => emulator.v86.cpu.wm.exports.get_jit_config(i);
     const rows = []; let total = 0;
-    for(let i = 0; i < 4096; i++) { const n = g(3000 + 2 * i + 1) >>> 0; if(!n) continue; total += n; rows.push([n, (BigInt(g(12000 + i) >>> 0) << 32n | BigInt(g(3000 + 2 * i) >>> 0)).toString(16)]); }
+    for(let i = 0; i < 4096; i++) { const n = g(20000 + 2 * i + 1) >>> 0; if(!n) continue; total += n; rows.push([n, (BigInt(g(30000 + i) >>> 0) << 32n | BigInt(g(20000 + 2 * i) >>> 0)).toString(16)]); }
     rows.sort((a, b) => b[0] - a[0]);
     const pages = new Map(); for(const [n, a] of rows) { const p = a.slice(0, -3); pages.set(p, (pages.get(p) || 0) + n); }
     console.error("interpreted insns sampled: " + total + "; top pages:");
@@ -168,7 +173,7 @@ function unsupported() {
 setTimeout(async () => {
     if(process.env.ALP_CPU) { const u = process.cpuUsage(); console.error("cpu: user %ss system %ss in %ss of wall time", (u.user / 1e6).toFixed(1), (u.system / 1e6).toFixed(1), ((Date.now() - t0) / 1000).toFixed(1)); }
     if(process.env.ALP_STATS) { const { stats_to_string } = await import("../../../src/browser/print_stats.js"); console.error(stats_to_string(emulator.v86.cpu)); }
-    if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); if(process.env.ALP_HIST) { executed(); rips(); } if(process.env.ALP_DUMP) dump_virtual(); process.exit(0); }, +timeout * 1000);
+    if(process.env.ALP_TRACE) dump(); if(process.env.ALP_UNSUPPORTED) unsupported(); if(process.env.ALP_HIST) { executed(); why(); rips(); } if(process.env.ALP_DUMP) dump_virtual(); process.exit(0); }, +timeout * 1000);
 
 // on a crash print the registers and the code around eip, so the failing instruction can be disassembled
 function dump() {

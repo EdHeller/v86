@@ -3,7 +3,7 @@
 //   - every mask still gives the right result (the interpreter takes over for the masked instructions),
 //   - an all-ones mask compiles nothing and an empty mask compiles something,
 //   - bits above the last kind change nothing,
-//   - every bit 0..23 changes how much code is compiled for at least one test (a bit that did nothing would be a
+//   - every bit 0..24 changes how much code is compiled for at least one test (a bit that did nothing would be a
 //     dead or mis-numbered kind).
 // Needs nasm; runs worker.js once per (test, mask), a few at a time.
 
@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
-const KINDS = 24;
+const KINDS = 25;
 const ALL = (1 << KINDS) - 1;
 const TESTS = ["01_loops", "02_blit", "03_flags_conditions", "06_instruction_forms", "07_flag_liveness", "08_bit_string_misc", "09_masked_kinds"];
 
@@ -43,7 +43,7 @@ const results = new Map();
 for(const name of TESTS)
 {
     const bin = await build(name);
-    const masks = [0, ALL, 1 << 24, 1 << 31, ...Array.from({ length: KINDS }, (_, k) => 1 << k)];
+    const masks = [0, ALL, 1 << 25, 1 << 31, ...Array.from({ length: KINDS }, (_, k) => 1 << k)];
     for(const m of masks) jobs.push([name, bin, m]);
 }
 let next = 0;
@@ -64,7 +64,7 @@ for(const name of TESTS)
         errors.push(`${name} mask 0x${(+key.split(":")[1] >>> 0).toString(16)}: status ${res.status} (check ${res.id}, actual ${res.actual}, expected ${res.expected})`);
     if(!(r(0).jit64.insns > 0)) errors.push(`${name}: nothing compiled with an empty mask`);
     if(r(ALL).jit64.compiled !== 0 || r(ALL).jit64.insns !== 0) errors.push(`${name}: all-ones mask still compiled ${r(ALL).jit64.compiled} blocks / ${r(ALL).jit64.insns} instructions`);
-    for(const m of [1 << 24, 1 << 31])
+    for(const m of [1 << 25, 1 << 31])
         if(r(m).jit64.insns !== r(0).jit64.insns || r(m).jit64.compiled !== r(0).jit64.compiled)
             errors.push(`${name}: reserved mask bit 0x${(m >>> 0).toString(16)} changed the compiled code`);
     for(let k = 0; k < KINDS; k++)
