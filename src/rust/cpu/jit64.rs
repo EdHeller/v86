@@ -873,6 +873,8 @@ fn interp_len(code: &[u8]) -> Option<usize> {
         // pause (a plain 0x90 is a nop that decode knows)
         0x90 if rep => {},
         0xE4..=0xE7 => { c.u8()?; },
+        // x87: modrm only
+        0xD8..=0xDF => { modrm(&mut c, &p)?; },
         0xF6 | 0xF7 => {
             // mul imul div idiv (test, not and neg are decoded)
             let m = modrm(&mut c, &p)?;
