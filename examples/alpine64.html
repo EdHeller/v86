@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Alpine Linux (x86_64)</title>
+<style>
+    body { font: 14px sans-serif; margin: 16px; background: #222; color: #ddd; }
+    #screen_container { display: inline-block; background: #000; }
+    #screen_container canvas { image-rendering: pixelated; }
+    button { margin-right: 8px; }
+    #status { font: 12px monospace; margin-top: 8px; }
+</style>
+
+<p>Boots the Alpine "virt" x86_64 ISO (alpine.iso next to this page) with the 64-bit JIT.
+Press Enter at the <code>boot:</code> prompt, wait for <code>localhost login:</code> (a few minutes), log in as root (no password).</p>
+<p>
+    <button id="login">type "root"</button>
+    <button id="bench">type shell-loop benchmark</button>
+    <button id="gui">GUI: on (click to disable)</button>
+</p>
+<div id="screen_container">
+    <div style="white-space: pre; font: 14px monospace; line-height: 14px"></div>
+    <canvas style="display: none"></canvas>
+</div>
+<div id="status"></div>
+
+<script src="../build/libv86.js"></script>
+<script>
+"use strict";
+
+const emulator = window.emulator = new V86({
+    wasm_path: "../build/v86.wasm",
+    memory_size: 512 * 1024 * 1024,
+    vga_memory_size: 8 * 1024 * 1024,
+    screen_container: document.getElementById("screen_container"),
+    bios: { url: "../bios/seabios.bin" },
+    vga_bios: { url: "../bios/vgabios.bin" },
+    cdrom: { url: "alpine.iso" },
+    autostart: true,
+});
+
+document.getElementById("login").onclick = () => emulator.keyboard_send_text("root\n");
+// the same loop the x86_64 JIT notes use: 40000 iterations of i=$((i+1)) in busybox ash
+document.getElementById("bench").onclick = () =>
+    emulator.keyboard_send_text("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\n");
+
+// "disable the GUI": stop drawing the emulated screen (the guest keeps running)
+let gui_on = true;
+document.getElementById("gui").onclick = () => {
+    gui_on = !gui_on;
+    document.getElementById("gui").textContent = gui_on ? "GUI: on (click to disable)" : "GUI: off (click to enable)";
+    document.getElementById("screen_container").style.opacity = gui_on ? 1 : 0.15;
+    if(gui_on) emulator.screen_adapter.continue(); else emulator.screen_adapter.pause();
+};
+
+let last = 0, last_t = performance.now();
+setInterval(() => {
+    const cpu = emulator.v86.cpu;
+    const mem = new Uint8Array(cpu.wasm_memory.buffer);
+    const n = cpu.instruction_counter[0] >>> 0, t = performance.now();
+    const mips = ((n - last) >>> 0) / ((t - last_t) * 1000);
+    last = n; last_t = t;
+    document.getElementById("status").textContent =
+        "eip=" + (cpu.instruction_pointer[0] >>> 0).toString(16) + " is_64=" + mem[1444] + " " + mips.toFixed(1) + " MIPS";
+}, 1000);
+</script>
