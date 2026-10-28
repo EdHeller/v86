@@ -102,6 +102,8 @@ pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
 /// Debug histogram of the opcodes the interpreter executed (same indexing), when HIST_ON
 pub static mut EXECUTED: [u32; 512] = [0; 512];
 pub static mut HIST_ON: bool = false;
+/// instructions of compiled blocks run back to back without leaving run() (experiment knob, 0 = off)
+pub static mut CHAIN_BUDGET: u32 = 0;
 /// compute pending flags inline in the generated code instead of calling j64_flags (experiment knob)
 pub static mut INLINE_FLAGS: bool = true;
 /// Debug: interpreted instruction addresses, hashed: (rip, count); read through get_jit_config(3000 + 2 * i / + 1)
@@ -2425,8 +2427,23 @@ pub unsafe fn run() {
     if CHECK {
         CHECK = false;
         if try_run_block() {
-            CHECK = true;
-            return;
+            if CHAIN_BUDGET == 0 {
+                CHECK = true;
+                return;
+            }
+            // compiled blocks cannot change the interrupt shadow, the trap flag or the mode, so the
+            // next blocks can follow without the checks of cycle_internal; stop after a budget so
+            // that timers and interrupts are still serviced by the caller
+            let start = *instruction_counter;
+            loop {
+                if (*instruction_counter).wrapping_sub(start) >= CHAIN_BUDGET {
+                    CHECK = true;
+                    return;
+                }
+                if !try_run_block() {
+                    break;
+                }
+            }
         }
     }
     let before = rip();
