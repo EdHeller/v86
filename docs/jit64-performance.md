@@ -136,3 +136,9 @@ re-checking for a block start after every block exit (slower once the table is l
 
 Tooling: `ALP_HIST=1` prints the opcodes the interpreter executed (counts and share) and hashed hot interpreted
 addresses; `alpine.js` uses the *debug* wasm unless `WASM=build/v86.wasm` is set (measure with the release build).
+
+Status after the slot-table change (same snapshot, release wasm, Node 24): 40000 iterations in 8.6-9.0 s, about 4500
+iterations/s, against about 5200/s for the 32-bit JIT on the i686 loop (earlier: 1500/s, 3.5x behind), so the gap is
+now about 1.15x. The interpreter executes about 34 M instructions in that run (down from 114 M), mostly plain
+mov/xor/add/jcc in cold kernel paths; the top block enders are hlt, ud2, F7 (mul/div), cmpxchg, movq/pxor, xadd.
+Remaining profile (active time): compiled code 39 %, `main_loop` dispatch 13 %, interpreter 16 %, `j64_flags` 7 %.
