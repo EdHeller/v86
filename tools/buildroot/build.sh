@@ -171,6 +171,8 @@ warn() { printf '%s[warn ]%s %s\n' "$C2" "$C0" "$*" >&2; }
 die()  { printf '%s[fatal]%s %s\n' "$C3" "$C0" "$*" >&2; exit 1; }
 step() { printf '\n%s━━ %s ━━%s\n' "$C4" "$*" "$C0"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# rm -rf that also removes read-only trees: Go's module cache (host/share/go-path, from shfmt) is read-only
+rmrf() { chmod -R u+w -- "$@" 2>/dev/null || true; rm -rf -- "$@"; }
 usage() { sed -n '2,/^set -E/{/^set -E/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; }
 trap 'die "aborted at line $LINENO"' ERR
 
@@ -281,7 +283,7 @@ clean_caches() {
         case "$t" in ""|/|"$HOME"|"$w"|"$SCRIPT_DIR") die "refusing to delete '$t'" ;; esac
         if [[ -e "$t" ]]; then
             sz=$(du -sh "$t" 2>/dev/null | cut -f1 || true)
-            rm -rf -- "$t"
+            rmrf "$t"
             msg "removed ${sz:-?}  $t"
         else
             msg "already empty  $t"
@@ -865,7 +867,7 @@ define SHFMT_EXTRACT_CMDS
 	rm -rf $(@D)/.unzip
 endef
 define SHFMT_BUILD_CMDS
-	cd $(@D) && $(HOST_GO_TARGET_ENV) GOFLAGS=-mod=mod GOPROXY=https://proxy.golang.org \
+	cd $(@D) && $(HOST_GO_TARGET_ENV) GOFLAGS='-mod=mod -modcacherw' GOPROXY=https://proxy.golang.org \
 		GONOSUMDB='*' GONOSUMCHECK=1 \
 		$(GO_BIN) build -trimpath -ldflags '-s -w' -o shfmt ./cmd/shfmt
 endef
@@ -4210,7 +4212,7 @@ host_stage() {
     br -j"$JOBS" $pkgs
     if [[ "$HOST_CACHE" == 1 && ! -d "$snap" ]]; then
         msg "saving toolchain + host tools to the host-tool cache ($key)"
-        rm -rf "$snap.part"; mkdir -p "$snap.part/build"
+        rmrf "$snap.part"; mkdir -p "$snap.part/build"
         cp -a "$OUT/host" "$OUT/target" "$snap.part/"
         rsync -a -m --include='*/' --include='.stamp_*' --include='.files-list*.txt' --exclude='*' \
             "$OUT/build/" "$snap.part/build/"
@@ -4221,7 +4223,7 @@ host_stage() {
         while IFS= read -r old; do
             [[ -d "$old" ]] || continue
             if [[ "${old##*/}" =~ ^[0-9a-f]{16}$ ]] && ((keep < 4)); then keep=$((keep + 1)); continue; fi
-            rm -rf -- "$old"
+            rmrf "$old"
         done < <(ls -1dt "$HOST_CACHE_DIR"/*/ 2>/dev/null | sed 's|/$||')
         msg "host-tool cache: saved $(du -sh "$snap" | cut -f1); shared by every image with the same toolchain + host tools"
     fi
@@ -4329,7 +4331,7 @@ EOF
 
 preflight
 if ((DRY)); then
-    rm -rf "$BUILD"; mkdir -p "$BUILD"
+    rmrf "$BUILD"; mkdir -p "$BUILD"
     have_br=0; get_buildroot && have_br=1
     get_shellcheck                                # uses a cached package; never downloads
     write_tree
@@ -4387,7 +4389,7 @@ if ((!INCR && !FRESH)) && [[ "$last" == "$NAME" && -f "$BUILD/.v86-complete" && 
         rm -rf "$EXT.prev"
     fi
 fi
-((INCR)) || rm -rf "$BUILD"                     # fresh: only the caches survive
+((INCR)) || rmrf "$BUILD"                     # fresh: only the caches survive
 mkdir -p "$BUILD"
 rm -f "$BUILD/.v86-complete"
 echo "$NAME" > "$BUILD/.v86-image"
