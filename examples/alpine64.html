@@ -1,24 +1,26 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>Alpine Linux in v86 (boot timer)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
 <style>
     body { font: 14px sans-serif; margin: 16px; background: #222; color: #ddd; }
     #screen_container { display: inline-block; background: #000; vertical-align: top; }
     #screen_container canvas { image-rendering: pixelated; }
-    #side { display: inline-block; vertical-align: top; margin-left: 16px; }
+    #side { display: inline-block; vertical-align: top; margin-left: 16px; max-width: 900px; }
     button { margin-right: 8px; }
-    #status { font: 12px monospace; margin-top: 8px; }
-    #log { font: 12px monospace; white-space: pre; background: #111; padding: 8px; min-width: 38em; min-height: 14em; }
+    #status { font: 12px monospace; margin: 8px 0; }
+    #log { font: 12px monospace; white-space: pre; background: #111; padding: 8px; min-width: 38em; min-height: 12em; }
+    #terminal { margin-top: 8px; background: #000; }
+    #serialpre { font: 12px monospace; white-space: pre-wrap; background: #000; height: 16em; overflow: auto; margin-top: 8px; display: none; }
     a { color: #8cf; }
 </style>
 
 <p id="title"></p>
 <p>
-    <button id="login">type "root"</button>
-    <button id="bench">type shell-loop benchmark</button>
+    <button id="login">type "root" (screen)</button>
+    <button id="bench">run shell-loop benchmark (serial)</button>
     <button id="gui">GUI: on (click to disable)</button>
     <button id="copy">copy timing log</button>
-    <label><input type="checkbox" id="autoenter" checked> press Enter at the boot: prompt</label>
     <label><input type="checkbox" id="autologin" checked> log in as root automatically</label>
 </p>
 <div id="screen_container">
@@ -28,29 +30,54 @@
 <div id="side">
     <div id="log"></div>
     <div id="status"></div>
+    <div id="terminal"></div>
+    <div id="serialpre"></div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
 <script src="../build/libv86.js"></script>
 <script>
 "use strict";
 
+// 64-bit: ?  32-bit (3.24.3): ?arch=x86  32-bit (3.21.9): ?arch=x86old
 const arch_param = new URLSearchParams(location.search).get("arch");
-const arch = arch_param === "x86" || arch_param === "x86old" ? "x86" : "x86_64";
-const iso = arch_param === "x86" ? "alpine-x86.iso" : arch_param === "x86old" ? "alpine-x86-3.21.iso" : "alpine.iso";
-const version = arch_param === "x86old" ? "3.21.9" : "3.24.3";
-document.getElementById("title").innerHTML = "Alpine Linux " + version + " <b>" + (arch === "x86" ? "32-bit (x86)" : "64-bit (x86_64)") +
+const tag = arch_param === "x86" ? "x86" : arch_param === "x86old" ? "x86-3.21" : "x86_64";
+const iso = { "x86_64": "alpine.iso", "x86": "alpine-x86.iso", "x86-3.21": "alpine-x86-3.21.iso" }[tag];
+const version = tag === "x86-3.21" ? "3.21.9" : "3.24.3";
+document.getElementById("title").innerHTML = "Alpine Linux " + version + " <b>" + (tag === "x86_64" ? "64-bit (x86_64)" : "32-bit (x86)") +
     "</b> in v86 &nbsp; <a href='?'>64-bit</a> | <a href='?arch=x86'>32-bit</a> | <a href='?arch=x86old'>32-bit (3.21.9)</a> &nbsp; (timer starts when the page loads)";
 
 const t0 = performance.now();
-const emulator = window.emulator = new V86({
+
+// The kernel and initramfs are taken out of the ISO and booted directly, so that the kernel command line
+// can send the console to the serial port (the ISO itself is the root media, as usual). tty0 stays a console
+// for the screen; the last console= is the one init and the serial getty use.
+const cmdline = "modules=loop,squashfs,sd-mod,usb-storage quiet console=tty0 console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on";
+const options = {
     wasm_path: "../build/v86.wasm",
     memory_size: 512 * 1024 * 1024,
     vga_memory_size: 8 * 1024 * 1024,
     screen_container: document.getElementById("screen_container"),
     bios: { url: "../bios/seabios.bin" },
     vga_bios: { url: "../bios/vgabios.bin" },
+    bzimage: { url: "vmlinuz-" + tag },
+    initrd: { url: "initramfs-" + tag },
+    cmdline: cmdline,
     cdrom: { url: iso },
     autostart: true,
+};
+// v86's serial terminal (xterm.js) when the library could be loaded, a plain log otherwise
+if(window.Terminal) options.serial_container_xtermjs = document.getElementById("terminal");
+const emulator = window.emulator = new V86(options);
+
+let serial = "";
+const serialpre = document.getElementById("serialpre");
+if(!window.Terminal) serialpre.style.display = "block";
+emulator.add_listener("serial0-output-byte", b => {
+    const c = String.fromCharCode(b);
+    serial += c;
+    if(serial.length > 20000) serial = serial.slice(-10000);
+    if(!window.Terminal) { serialpre.textContent += c; serialpre.scrollTop = serialpre.scrollHeight; }
 });
 
 // instructions retired so far (the guest counter is 32 bits and wraps: accumulate the deltas)
@@ -64,11 +91,6 @@ function instructions()
     return total;
 }
 
-// the guest also logs to the serial console (kernel option console=ttyS0): unlike the screen it stays
-// readable text after the graphics driver has switched the display to a framebuffer
-let serial = "";
-emulator.add_listener("serial0-output-byte", b => { serial += String.fromCharCode(b); if(serial.length > 20000) serial = serial.slice(-10000); });
-
 const lines = [];
 function log(text)
 {
@@ -77,15 +99,15 @@ function log(text)
     lines.push(s.toFixed(1).padStart(7) + " s  " + text + "   [" + (n / 1e6).toFixed(0) + " M instr, avg " + (n / 1e6 / s).toFixed(1) + " MIPS]");
     document.getElementById("log").textContent = lines.join("\n");
 }
-log("page loaded, " + arch + " ISO requested");
+log("page loaded: " + tag + " kernel + initramfs + ISO requested");
 
 document.getElementById("login").onclick = () => emulator.keyboard_send_text("root\n");
-// 40000 iterations of i=$((i+1)) in busybox ash
+// 40000 iterations of i=$((i+1)) in busybox ash, run over the serial console so that the result is logged here
 document.getElementById("bench").onclick = () => {
     log("benchmark started (serial shell): 40000-iteration shell loop");
     emulator.serial0_send("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\n");
 };
-document.getElementById("copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText(arch + "\n" + lines.join("\n"));
+document.getElementById("copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText(tag + "\n" + lines.join("\n"));
 
 let gui_on = true;
 document.getElementById("gui").onclick = () => {
@@ -95,32 +117,11 @@ document.getElementById("gui").onclick = () => {
     if(gui_on) emulator.screen_adapter.continue(); else emulator.screen_adapter.pause();
 };
 
-// timeline: watch the text screen for the boot prompt, the login prompt and the benchmark result
+// timeline from the serial console
 const seen = {};
 let bench_results = 0;
 setInterval(() => {
-    let text = "";
-    // read the VGA text buffer (80x25 at 0xB8000) from guest memory: unlike the screen adapter it does not
-    // depend on the tab being visible and drawing
-    try {
-        const mem = emulator.read_memory(0xB8000, 4000);
-        const rows = [];
-        for(let r = 0; r < 25; r++) { let row = ""; for(let c = 0; c < 80; c++) row += String.fromCharCode(mem[(r * 80 + c) * 2] || 32); rows.push(row); }
-        text = rows.join("\n");
-    } catch(e) {}
-    if(!text.trim()) { try { text = emulator.screen_adapter.get_text_screen().join("\n"); } catch(e) {} }
-    if(!seen.first && text.trim()) { seen.first = true; log("first text on screen (BIOS)"); }
-    if(!seen.prompt && /boot:/.test(text)) {
-        seen.prompt = true;
-        log("boot: prompt");
-        if(document.getElementById("autoenter").checked) {
-            // the boot prompt drops keys that arrive too fast: one character every 120 ms
-            const opts = "virt console=tty0 console=ttyS0,115200\n";
-            [...opts].forEach((ch, i) => setTimeout(() => emulator.keyboard_send_text(ch), i * 120));
-            log("typed boot options (console=tty0 console=ttyS0): serial log on");
-        }
-    }
-    if(!seen.kernel && /Linux version|OpenRC .* is starting up/.test(serial)) { seen.kernel = true; log("kernel is up"); }
+    if(!seen.kernel && /Linux version/.test(serial)) { seen.kernel = true; log("kernel is up"); }
     if(!seen.init && /OpenRC .* is starting up/.test(serial)) { seen.init = true; log("init scripts running (OpenRC)"); }
     if(!seen.login && /localhost login:/.test(serial)) {
         seen.login = true;
