@@ -39,13 +39,12 @@
 <script>
 "use strict";
 
-// 64-bit: ?  32-bit (3.24.3): ?arch=x86  32-bit (3.21.9): ?arch=x86old
-const arch_param = new URLSearchParams(location.search).get("arch");
-const tag = arch_param === "x86" ? "x86" : arch_param === "x86old" ? "x86-3.21" : "x86_64";
-const iso = { "x86_64": "alpine.iso", "x86": "alpine-x86.iso", "x86-3.21": "alpine-x86-3.21.iso" }[tag];
-const version = tag === "x86-3.21" ? "3.21.9" : "3.24.3";
+// 64-bit: ?   32-bit: ?arch=x86
+const tag = new URLSearchParams(location.search).get("arch") === "x86" ? "x86" : "x86_64";
+const iso = tag === "x86" ? "alpine-x86.iso" : "alpine.iso";
+const version = "3.24.3";
 document.getElementById("title").innerHTML = "Alpine Linux " + version + " <b>" + (tag === "x86_64" ? "64-bit (x86_64)" : "32-bit (x86)") +
-    "</b> in v86 &nbsp; <a href='?'>64-bit</a> | <a href='?arch=x86'>32-bit</a> | <a href='?arch=x86old'>32-bit (3.21.9)</a> &nbsp; (timer starts when the page loads)";
+    "</b> in v86 &nbsp; <a href='?'>64-bit</a> | <a href='?arch=x86'>32-bit</a> &nbsp; (timer starts when the page loads)";
 
 const t0 = performance.now();
 

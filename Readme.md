@@ -1,231 +1,97 @@
-[![Join the chat at https://gitter.im/copy/v86](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/copy/v86) or #v86 on [irc.libera.chat](https://libera.chat/)
+# v86 fork: x86_64 support and a 64-bit JIT
 
-v86 emulates an x86-compatible CPU and hardware. Machine code is translated to
-WebAssembly modules at runtime in order to achieve decent performance. Here's a
-list of emulated hardware:
+A fork of [copy/v86](https://github.com/copy/v86) (branch `Vibe-Claude`) that adds 64-bit (x86_64) guests: long mode in the
+interpreter, a 64-bit JIT (`src/rust/cpu/jit64.rs`), 64-bit SSE/x87, XSAVE, and test layers for all of it.
+The original upstream readme is kept in [docs/upstream-Readme.md](docs/upstream-Readme.md).
 
-- An x86-compatible CPU. The instruction set is around Pentium 4 level,
-  including full SSE3 support. Some features are missing, in particular:
-  - Task gates, far calls in protected mode
-  - Some 16 bit protected mode features
-  - Single stepping (trap flag, debug registers)
-  - Some exceptions, especially floating point and SSE
-  - Multicore
-  - 64-bit extensions
-- A floating point unit (FPU). Calculations are done using the Berkeley
-  SoftFloat library and therefore should be precise (but slow). Trigonometric
-  and log functions are emulated using 64-bit floats and may be less precise.
-  Not all FPU exceptions are supported.
-- A floppy disk controller (8272A).
-- An 8042 Keyboard Controller, PS2. With mouse support.
-- An 8254 Programmable Interval Timer (PIT).
-- An 8259 Programmable Interrupt Controller (PIC).
-- Partial APIC support.
-- A CMOS Real Time Clock (RTC).
-- A generic VGA card with SVGA support and Bochs VBE Extensions.
-- A PCI bus. This one is partly incomplete and not used by every device.
-- An IDE disk controller.
-  - A built-in ISO 9660 CD-ROM generator with Joliet support.
-- An NE2000 (RTL8390) PCI network card.
-- Various virtio devices: Filesystem, network and balloon.
-- A SoundBlaster 16 sound card.
-- A hayes-compatible dial-up Modem.
+## What runs
 
-## Demos
+| Guest | State |
+|---|---|
+| TempleOS x86_64 (live CD, installed disk) | boots; the whole OSTestSuite ("Tour" part 12) passes in a real browser (Firefox) |
+| Alpine Linux 3.24 x86_64 (virt ISO) | boots to the login prompt; about 190 s on a fast machine (32-bit takes about 27 s) |
+| Alpine Linux 3.24 x86 (32-bit) | boots to login in about 20-27 s |
+| Buildroot images with a native gcc/g++ (i686) | `tools/buildroot/build.sh` (see below) |
 
-[9front](https://copy.sh/v86/?profile=9front) —
-[Arch Linux](https://copy.sh/v86/?profile=archlinux) —
-[Android-x86 1.6-r2](https://copy.sh/v86?profile=android) —
-[Android-x86 4.4-r2](https://copy.sh/v86?profile=android4) —
-[BasicLinux](https://copy.sh/v86/?profile=basiclinux) —
-[Buildroot Linux](https://copy.sh/v86/?profile=buildroot) —
-[Damn Small Linux](https://copy.sh/v86/?profile=dsl) —
-[ELKS](https://copy.sh/v86/?profile=elks) —
-[FreeDOS](https://copy.sh/v86/?profile=freedos) —
-[FreeBSD](https://copy.sh/v86/?profile=freebsd) —
-[FiwixOS](https://copy.sh/v86/?profile=fiwix) —
-[Haiku](https://copy.sh/v86/?profile=haiku) —
-[SkiffOS](https://copy.sh/v86/?profile=copy/skiffos) —
-[ReactOS](https://copy.sh/v86/?profile=reactos) —
-[Windows 2000](https://copy.sh/v86/?profile=windows2000) —
-[Windows 98](https://copy.sh/v86/?profile=windows98) —
-[Windows 95](https://copy.sh/v86/?profile=windows95) —
-[Windows 1.01](https://copy.sh/v86/?profile=windows1) —
-[MS-DOS 6.22](https://copy.sh/v86/?profile=msdos) —
-[OpenBSD](https://copy.sh/v86/?profile=openbsd) —
-[Oberon](https://copy.sh/v86/?profile=oberon) —
-[KolibriOS](https://copy.sh/v86/?profile=kolibrios) —
-[SkiftOS](https://copy.sh/v86?profile=skift) —
-[QNX](https://copy.sh/v86/?profile=qnx)
+## Build, test, run
 
-## Documentation
+    make build/v86.wasm build/libv86.js        # release build (needs closure-compiler/compiler.jar and the wasm32 rust target)
+    make build/v86-debug.wasm
+    make x64tests                              # the 64-bit, stub and open-issue tests, plus a short differential fuzz run
+    node tests/x64/manual/alpine.js alpine-virt-3.24.3-x86_64.iso 600     # see tests/x64/manual/alpine/README.md
+    examples/templeos.html, examples/alpine64.html                          # browser pages (boot timer, serial console, GUI on/off)
 
-[How it works](docs/how-it-works.md) —
-[Networking](docs/networking.md) —
-[Dial-up modem networking](docs/modem.md) —
-[Alpine Linux guest setup](tools/docker/alpine/) —
-[Arch Linux guest setup](docs/archlinux.md) —
-[Debian with xfce guest setup](tools/docker/debian/) —
-[MS-DOS/FreeDOS guest setup](docs/dos.md) —
-[Windows 3.1x guest setup](docs/windows-31x.md) —
-[Windows 9x guest setup](docs/windows-9x.md) —
-[Windows NT guest setup](docs/windows-nt.md) —
-[9p filesystem](docs/filesystem.md) —
-[Linux rootfs on 9p](docs/linux-9p-image.md) —
-[Profiling](docs/profiling.md)
+Benchmarks: use `WASM=build/v86.wasm` (the runners default to the slower debug build), one run at a time, alternate A/B.
 
-## Compatibility
+## Notes: issues encountered so far
 
-Here's an overview of the operating systems supported in v86:
+Each entry: what went wrong, the cause, the fix, and the test that now guards it.
 
-- Linux works pretty well. 64-bit kernels are not supported.
-  - [Buildroot](https://buildroot.org/) can be used to build a minimal image.
-    [humphd/browser-vm](https://github.com/humphd/browser-vm) and
-    [darin755/browser-buildroot](https://github.com/Darin755/browser-buildroot) have some useful scripts for building one.
-  - [SkiffOS](https://github.com/skiffos/SkiffOS/tree/master/configs/browser/v86) (based on Buildroot) can cross-compile a custom image.
-  - Ubuntu and other Debian derivatives works up to the latest version that supported i386 (16.04 LTS or 18.04 LTS for some variants).
-  - Alpine Linux works. An image can be built from a Dockerfile, see [tools/docker/alpine/](tools/docker/alpine/).
-  - Arch Linux 32 works. See [archlinux.md](docs/archlinux.md) for building an image.
-- ReactOS works.
-- FreeDOS, Windows 1.01 and MS-DOS run very well.
-- KolibriOS works.
-- Haiku works.
-- Android-x86 has been tested up to 4.4-r2.
-- Windows 1, 3.x, 95, 98, ME, NT and 2000 work reasonably well.
-  - In Windows 2000 and higher the PC type has to be changed from ACPI PC to Standard PC
-  - There are some known boot issues ([#250](https://github.com/copy/v86/issues/250), [#433](https://github.com/copy/v86/issues/433), [#507](https://github.com/copy/v86/issues/507), [#555](https://github.com/copy/v86/issues/555), [#620](https://github.com/copy/v86/issues/620), [#645](https://github.com/copy/v86/issues/645))
-  - See [Windows 9x guest setup](docs/windows-9x.md)
-- Windows XP, Vista and 8 work under certain conditions (see [#86](https://github.com/copy/v86/issues/86), [#208](https://github.com/copy/v86/issues/208))
-  - See [Windows NT guest setup](docs/windows-nt.md)
-- Many hobby operating systems work.
-- 9front works.
-- Plan 9 doesn't work.
-- QNX works.
-- OS/2 doesn't work.
-- FreeBSD works.
-- OpenBSD works with a specific boot configuration. At the `boot>` prompt type
-  `boot -c`, then at the `UKC>` prompt `disable mpbios` and `exit`.
-- NetBSD works only with a custom kernel, see [#350](https://github.com/copy/v86/issues/350).
-- SerenityOS works (only 32-bit versions).
-- [SkiftOS](https://skiftos.org/) works.
+### Correctness
 
-You can get some information on the disk images here: https://github.com/copy/images.
+1. **TempleOS OSTestSuite froze in DunGen (test 3), JIT on only.** Not a miscompile: a verify mode that re-ran 20 M compiled blocks in the
+   interpreter found no difference. The emulator polls timers/interrupts every 100,003 instructions at block boundaries; TempleOS's
+   scheduler loop runs with interrupts off, and with the JIT the poll point locked onto the disabled stretch, so `jiffies` never advanced.
+   Fix: a pending interrupt is taken after the instruction that enables interrupts (`sti`, `popf`, `iretq`). Test: `tests/x64/long/32_irq_after_sti.asm`
+   (fails without the fix).
+2. **Alpine 3.24 x86 died with a segmentation fault in early boot (32-bit JIT).** `movups`/`movupd`/`movdqu` stores were compiled by calling the
+   *aligned* store (`movaps`), which gained a #GP-on-misaligned check with the SSE alignment work, so musl's `memcpy` faulted. Fix: separate unaligned store.
+   Found by bisecting against upstream; the bisect pointed at the XSAVE/alignment commits and the experiment "JIT off boots" located it.
+   Test: `tests/x64/issues/sse_unaligned_ok_jit.asm` (fails without the fix).
+3. **`LinkError: function import requires a callable` when a guest ran `lddqu`/`addsubps`/`haddps` hot.** The JIT calls instruction handlers by
+   name; 14 handlers had no `#[no_mangle]`, so they were not exported from the main wasm. Test: `tests/x64/js/jit_exports.js` (every name the jit
+   mentions must be exported).
+4. **Alignment gaps.** Memory forms of SSSE3/SSE4.1 (0F38/0F3A) and `unpcklps/pd` did not fault on a misaligned 16-byte operand; `insertps` read 128 bits
+   for a 32-bit operand. Generated test: `tests/x64/gen_sse_alignment.py` -> `issues/sse_alignment_matrix.asm` and `long/34_...` (about 180 instruction forms,
+   interpreted and compiled). Not implemented (#UD): `pcmpistri/pcmpistrm/pcmpestri/pcmpestrm`.
+5. **XSAVE family.** `xrstor` was still an unimplemented stub (#UD) in 32-bit compiled code; `xcr0` was not saved in states. Tests: `stubs/xsave_*`,
+   `issues/xsave_xrstor_jit.asm`, `js/state_roundtrip.js`.
+6. **PAM read-only regions (copy/v86#1635).** Writes to a shadowed ROM range (i440FX PAM = 01) are now dropped; pages carry `TLB_HAS_CODE` so every write
+   takes the slow path. Test: `issues/pam_write_protect_1635.asm`.
+7. **Interrupt shadow (copy/v86#1631).** No interrupt may be taken after `mov ss`/`pop ss`/`sti` until the next instruction has finished, also not one raised
+   from inside it (idea from jlxip/slop86). `IN_SHADOW_STEP` in `cpu.rs`.
+8. **`insertps`/fuzz scratch area** needed 16-byte alignment in the guest image (`section .data align=16`); fuzz runs are part of `make x64tests`.
 
-## How to build, run and embed?
+### Speed (64-bit JIT)
 
-You need:
+9. **Hotness table too small:** 4096 direct-mapped slots; kernel jump targets evicted each other's counters, 15 % of instructions stayed interpreted. 65536 slots: 1.5x on the Alpine shell loop.
+10. **Flags** were computed by a helper call at every block exit: inline wasm instead, 12-16 %.
+11. **Unsupported instructions ended a block** and the rest ran interpreted up to the next jump (35 M of 39 M interpreted instructions): compiled as an in-block call to the
+    interpreter (`Insn::Interp`: pushf/popf/cli/sti/cmpxchg/xadd/bsf/bsr/rdtsc/x87/SSE moves...), 10-25 %.
+12. Tried without gain: lower hotness threshold, block chaining with tail calls (-8 %), registers in wasm locals (-15 %), re-checking for a block start after every block exit,
+    back-to-back dispatch (`CHAIN_BUDGET`, within noise).
+13. **Open:** a cold 64-bit Alpine boot is about 7x slower than 32-bit (about 190 s vs 27 s on a fast machine): 35 % of boot instructions are still interpreted (cold code),
+    about 99 % of compiled blocks are invalidated again (pages reused for different code). Next: interpreter decode cache, cheaper/batched compilation.
 
-- make
-- Rust with the wasm32-unknown-unknown target
-- A version of clang compatible with Rust
-- java (for Closure Compiler, not necessary when using `debug.html`)
-- nodejs (a recent version is required, v24.16 is known to be working)
-- To run tests: nasm, gdb, qemu-system, gcc, libc-i386 and rustfmt
+### Test infrastructure pitfalls
 
-See [tools/docker/test-image/Dockerfile](tools/docker/test-image/Dockerfile)
-for a full setup on Debian or
-[WSL](https://docs.microsoft.com/en-us/windows/wsl/install).
+14. **The 32-bit JIT only compiles a page after about 200,000 instructions** (`JIT_THRESHOLD`). Loops of a few thousand iterations are never compiled, so a "JIT" test can pass on
+    broken code. Verify a new test fails without the fix (`git stash` the fix, rebuild, run).
+15. `alpine.js` and friends use the debug wasm unless `WASM=build/v86.wasm` is set (about 2x slower, and the numbers are not comparable).
+16. Typing at the ISOLINUX `boot:` prompt drops keys. Boot the kernel and initramfs from the ISO directly (`bzimage` + `initrd` + `cmdline`) and use the serial console.
+17. After the graphics driver loads, the text screen is a framebuffer: detect login from the serial console, not from the text buffer.
+18. The Node runner can sit forever on a TempleOS test that a real browser passes (test 17 "Strut"); confirm in a browser before debugging the emulator.
+19. A tiny block cache bug looks like a "freeze" long before it is a wrong result: bisect with `LO`/`HI` block-address ranges (`tests/x64/manual/templeos/tools/bisect_state.mjs`) and a
+    verify mode (`VERIFY` knob, compares registers/flags/memory per block).
+20. Profiling aids: `ALP_HIST=1` (interpreted opcodes, why code was interpreted, hot interpreted pages, invalidated pages), `TOS_FPS`, `TOS_SAMPLE`.
 
-- Run `make` to build the debug build (at `debug.html`).
-- Run `make all` to build the optimized build (at `index.html`).
-- ROM and disk images are loaded via XHR, so if you want to try out `index.html`
-  locally, make sure to serve it from a local webserver. You can use `make run`
-  to serve the files using Python's http module.
-- If you only want to embed v86 in a webpage you can use `libv86.js`. For usage,
-  check out the [examples](examples/). You can download it from the [release section](https://github.com/copy/v86/releases).
-- For bundler-based setups (Vite/React/Next/Webpack), there is also an official npm package:
-https://www.npmjs.com/package/v86
+### Environment and tooling
 
-  This package was originally maintained by [@giulioz](https://github.com/giulioz) (bundler-optimized fork) and was made "official" for this repo by [@basicer](https://github.com/basicer) with the author's permission.
-  It is published automatically from this repository via GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml), Upload release job) on pushes to `master` and uses `npm publish --provenance`.
+21. GitHub is only reachable for the repo in scope (403 for others): Go sources come from `proxy.golang.org`; Buildroot hash files need the `sha256  <hash>  <file>` format.
+22. Go's module cache is read-only: a fresh Buildroot build could not delete its old build folder (`rmrf` helper in `tools/buildroot/build.sh`).
+23. Background jobs are stopped after 2 hours and by container restarts (and the download proxy port changes): relaunch long runs, keep state in files.
+    `pkill -f <pattern>` kills the shell that contains the pattern: kill by pid.
+24. `-sh: can't access tty; job control turned off` after login on the serial console is cosmetic (busybox init starts that getty without a controlling terminal; stock Alpine does the same).
+25. `btc-*` nasm tests time out in the debug build on this machine (also on the commit this work started from); `pit_irq0_rate_1614` is timing sensitive.
 
-  Install: `npm install v86`
+## Size of a C compiler on the guest (see docs/gcc-disk-size.md)
 
-### Alternatively, to build using Docker
+C-only gcc 15 (x86_64, `-Os`, stripped) with libc, binutils and the sanitizer runtime: 14.7 MB with zstd, about 64 MB installed; with C++: 21 MB / 118 MB.
+`tools/buildroot/build.sh --bash-env` / `--dev-env` build small Buildroot images with a native gcc and a shell development kit (`--bash-dev`, `--bashdb`, `--gdb`).
 
-- If you have Docker installed, you can run the whole system inside a container.
-- See `tools/docker/exec` to find the Dockerfile required for this.
-- You can run `docker build -f tools/docker/exec/Dockerfile -t v86:alpine-3.19 .` from the root directory to generate docker image.
-- Then you can simply run `docker run -it -p 8000:8000 v86:alpine-3.19` to start the server.
-- Check `localhost:8000` for hosted server.
+## More
 
-### Running via Dev Container
-
-- If you are using an IDE that supports Dev Containers, such as GitHub Codespaces, the Visual Studio Code Remote Container extension, or possibly others such as Jetbrains' IntelliJ IDEA, you can setup the development environment in a Dev Container.
-- Follow the instructions from your development environment to setup the container.
-- Run the Task "Fetch images" in order to download images for testing.
-
-## Testing
-
-The disk images for testing are not included in this repository. You can
-download them directly from the website using:
-
-`mkdir -p images && curl --compressed --output-dir images/ --remote-name-all https://i.copy.sh/{linux.iso,linux3.iso,linux4.iso,buildroot-bzimage68.bin,TinyCore-11.0.iso,oberon.img,msdos.img,openbsd-floppy.img,kolibri.img,windows101.img,os8.img,freedos722.img,mobius-fd-release5.img,msdos622.img}`
-
-Run integration tests: `make tests`
-
-Run all tests: `make jshint rustfmt kvm-unit-test nasmtests nasmtests-force-jit expect-tests jitpagingtests qemutests rust-test tests`
-
-See [tests/Readme.md](tests/Readme.md) for more information.
-
-## API examples
-
-- [Basic](examples/basic.html)
-- [Programmatically using the serial terminal](examples/serial.html)
-- [A Lua interpreter](examples/lua.html)
-- [Two instances in one window](examples/two_instances.html)
-- [Networking between browser windows/tabs using the Broadcast Channel API](examples/broadcast-network.html)
-- [TCP Terminal (fetch-based networking)](examples/tcp_terminal.html)
-- [Saving and restoring emulator state](examples/save_restore.html)
-
-Using v86 for your own purposes is as easy as:
-
-```javascript
-var emulator = new V86({
-    screen_container: document.getElementById("screen_container"),
-    bios: {
-        url: "../../bios/seabios.bin",
-    },
-    vga_bios: {
-        url: "../../bios/vgabios.bin",
-    },
-    cdrom: {
-        url: "../../images/linux.iso",
-    },
-    autostart: true,
-});
-```
-
-See [v86.d.ts](v86.d.ts) for TypeScript definitions. You can use `make doc` (TypeDoc) or `make denodoc` (Deno) to generate HTML documentation in `./docs/api/`.
-
-## Generative AI
-
-At this time, v86 does not accept pull requests or issues written partially or entirely by generative AI tools.
-Exceptions may be made on a case-by-case basis.
-
-## License
-
-v86 is distributed under the terms of the Simplified BSD License, see
-[LICENSE](LICENSE). The following third-party dependencies are included in the
-repository under their own licenses:
-
-- [`lib/softfloat/softfloat.c`](lib/softfloat/softfloat.c)
-- [`lib/zstd/zstddeclib.c`](lib/zstd/zstddeclib.c)
-- [`tests/kvm-unit-tests/`](tests/kvm-unit-tests)
-- [`tests/qemutests/`](tests/qemutests)
-- [`src/floppy.js/`](src/floppy.js) contains parts ported from qemu under the MIT license, see LICENSE.MIT.
-
-## Credits
-
-- CPU test cases via [QEMU](https://wiki.qemu.org/Main_Page)
-- More tests via [kvm-unit-tests](https://www.linux-kvm.org/page/KVM-unit-tests)
-- [zstd](https://github.com/facebook/zstd) support is included for better compression of state images
-- [Berkeley SoftFloat](http://www.jhauser.us/arithmetic/SoftFloat.html) is included to precisely emulate 80-bit floating point numbers
-- [The jor1k project](https://github.com/s-macke/jor1k) for 9p, filesystem and uart drivers
-- [WinWorld](https://winworldpc.com/) sources of some old operating systems
-- [OS/2 Museum](https://www.os2museum.com/) sources of some old operating systems
-- [ArchiveOS](https://archiveos.org/) sources of several operating systems
-
-## More questions?
-
-Shoot me an email to `copy@copy.sh`. Please report bugs on GitHub.
+- [docs/next-session.md](docs/next-session.md): handoff notes and what to do next
+- [docs/jit64-performance.md](docs/jit64-performance.md): measurements and ideas for the 64-bit JIT
+- [docs/os-targets.md](docs/os-targets.md): guests the 32-bit JIT must not break
+- [tests/x64/Readme.md](tests/x64/Readme.md): the x64, stub and open-issue test layers
