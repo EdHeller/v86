@@ -34,7 +34,11 @@
     <div id="serialpre"></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script>
+// ?coi=1 registers a service worker that makes the page cross-origin isolated (COOP/COEP) on hosts that cannot send the headers
+if(new URLSearchParams(location.search).get("coi")) document.write('<script src="coi-serviceworker.js"><\/script>');
+</script>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" crossorigin="anonymous"></script>
 <script src="../build/libv86.js"></script>
 <script>
 "use strict";
@@ -53,7 +57,7 @@ const t0 = performance.now();
 // for the screen; the last console= is the one init and the serial getty use.
 const cmdline = "modules=loop,squashfs,sd-mod,usb-storage quiet console=tty0 console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on";
 const options = {
-    wasm_path: "../build/v86.wasm",
+    wasm_path: new URLSearchParams(location.search).get("wasm") === "prev" ? "../build/v86-prev.wasm" : "../build/v86.wasm",
     memory_size: 512 * 1024 * 1024,
     vga_memory_size: 8 * 1024 * 1024,
     screen_container: document.getElementById("screen_container"),
