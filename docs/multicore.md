@@ -25,6 +25,15 @@ not supported yet (only the first core's state is saved).
   returns the time until the next device timer.
 - **CPUID.** Leaf 1: initial APIC id of the running core, logical processor count, HTT bit; leaf 4: cores in the package.
 
+## Pitfall found on the way
+
+The APIC register writes used to call `handle_irqs()` from the memory-mapped write itself. In compiled code that delivers the interrupt in the
+middle of an instruction: the compiled function then goes on with an `eip` whose page is the handler's, and runs the wrong code (found with
+`tests/x64/smp/03_broadcast_ipis.asm`, and in Linux as a crash in `native_send_call_func_ipi` once all cores were up and the kernel
+used shorthand IPIs). The write now only sets `IRQ_CHECK`; the loops that call `cycle_internal` act on it between instructions. Lowering the
+instruction limit of compiled functions (`JIT_LOOP_LIMIT`, the compiled code reads it at run time) to get shorter slices stopped SeaBIOS from
+booting with 2 cores (cause not found), so slices end at `SLICE` instructions or at the first compiled-function exit.
+
 ## Limits
 
 - No parallelism, and a spinning core burns its slice (PAUSE does not yield yet).
@@ -35,4 +44,4 @@ not supported yet (only the first core's state is saved).
 ## Tests
 
 `tests/x64/smp/01_two_cores.asm`: CPUID and APIC ids, INIT + start-up IPI, fixed IPI to a physical destination, broadcast, and an IPI to
-a core that does not exist. Linux: `?cores=2` on `examples/alpine64.html`, then `nproc`.
+a core that does not exist. `smp/02` (registers, xmm and x87 state of three cores survive the switches) and `smp/03` (the same while the cores send each other broadcast IPIs). Linux 32-bit with 2, 3 and 4 cores boots and runs busy loops on all of them; `?cores=N` on `examples/alpine64.html`, then `nproc`.

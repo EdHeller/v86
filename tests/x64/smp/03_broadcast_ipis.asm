@@ -206,7 +206,7 @@ test_main:
     jnz .wait_end
     FAIL16 2
 .done:
-    cmp dword [IPI_COUNT], 20
+    cmp dword [IPI_COUNT], 5
     jb .noirq
     PASS
 .noirq:

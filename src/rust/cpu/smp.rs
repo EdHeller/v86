@@ -49,12 +49,6 @@ pub unsafe fn count() -> usize { apic::CORE_COUNT }
 #[no_mangle]
 pub unsafe fn smp_init(count: u32) {
     apic::apic_set_core_count(count);
-    // compiled code returns to the scheduler often enough for the slices to be short
-    let limit = if apic::CORE_COUNT > 1 { 4_000 } else { 0 };
-    if limit != 0 {
-        JIT_LOOP_LIMIT = limit;
-        jit64::JIT64_LOOP_LIMIT = limit;
-    }
     machine_reset();
 }
 
