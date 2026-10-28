@@ -453,8 +453,16 @@ pub unsafe fn step64() {
     super::cpu::trace_instruction();
     *previous_ip = *instruction_pointer;
     *instruction_counter += 1;
+    let was_enabled = *flags & FLAG_INTERRUPT != 0;
     // An Err means an exception has already been raised (and rip reset)
     let _ = exec();
+    // interrupts were just enabled (sti, popf, iretq): a pending one is taken after the next
+    // instruction. Without this a guest that spends nearly all of its time with interrupts
+    // disabled (a scheduler loop) would only see them at the polling points between batches,
+    // which a periodic loop can line up with the disabled stretch forever.
+    if !was_enabled && *flags & FLAG_INTERRUPT != 0 {
+        interrupt_shadow = true;
+    }
 }
 
 unsafe fn unimplemented_opcode(opcode: u32) -> OrPageFault<()> {

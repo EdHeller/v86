@@ -3358,6 +3358,9 @@ pub unsafe fn cycle_internal() {
         else {
             single_step_one();
         }
+        if *is_64 {
+            handle_irqs();
+        }
         return;
     }
 

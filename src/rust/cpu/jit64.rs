@@ -82,6 +82,8 @@ struct State {
     /// table indices of invalidated modules that are still being compiled by the host: the index
     /// must not be reused before the host is done with it
     zombies: HashSet<u16>,
+    /// debugging (VERIFY): modules whose blocks modify memory they read
+    rmw: HashSet<u16>,
     /// per virtual page: how often blocks of it were invalidated (code mixed with data is not
     /// worth compiling again and again)
     invalidations: HashMap<u64, u8, PageBuildHasher>,
@@ -102,6 +104,21 @@ pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
 /// Debug histogram of the opcodes the interpreter executed (same indexing), when HIST_ON
 pub static mut EXECUTED: [u32; 512] = [0; 512];
 pub static mut HIST_ON: bool = false;
+/// debugging: after every compiled block run, redo it in the interpreter from the saved state and
+/// record the first differences (read through get_jit_config(5000 + i)); the interpreter's result is kept
+pub static mut VERIFY: bool = false;
+/// the block generate() produced last contains an instruction that modifies memory it reads
+static mut GEN_RMW: bool = false;
+/// VERIFY: memory writes of the compiled block just run: (address, bits, old value, new value)
+static mut UNDO_ON: bool = false;
+static mut UNDO: Vec<(u64, u32, u64)> = Vec::new();
+/// 0: verified blocks, 1: mismatches, then per mismatch (up to 4): block rip lo/hi, insns, what (reg index or 100 flags / 101 rip), jit lo/hi, interp lo/hi
+pub static mut VERIFY_LOG: [u32; 64] = [0; 64];
+/// bisecting: only blocks that start in [RANGE_LO, RANGE_HI) are compiled (default: all)
+pub static mut RANGE_LO: u32 = 0;
+pub static mut RANGE_HI: u32 = u32::MAX;
+/// start addresses (low 32 bits) of the first compiled blocks, in order
+pub static mut COMPILED_RIPS: [u32; 64] = [0; 64];
 /// instructions of compiled blocks run back to back without leaving run() (experiment knob, 0 = off)
 pub static mut CHAIN_BUDGET: u32 = 0;
 /// compute pending flags inline in the generated code instead of calling j64_flags (experiment knob)
@@ -119,7 +136,7 @@ fn count_unsupported(code: &[u8]) {
     unsafe { UNSUPPORTED[key] = UNSUPPORTED[key].saturating_add(1) }
 }
 /// inline tlb lookups in generated code (set false to call the helpers for every access)
-const DISABLE_INLINE_TLB: bool = false;
+static mut INLINE_TLB_OFF: bool = false;
 pub static mut STAT_RUN: u32 = 0;
 /// instructions retired inside compiled blocks (wraps)
 pub static mut STAT_JIT_INSNS: u32 = 0;
@@ -128,6 +145,7 @@ pub static mut STAT_INVALIDATED: u32 = 0;
 pub unsafe fn set_threshold(t: u32) { THRESHOLD = t }
 pub unsafe fn set_disable_mask(m: u32) { DISABLE_MASK = m }
 pub unsafe fn threshold() -> u32 { THRESHOLD }
+pub unsafe fn set_inline_tlb_off(v: bool) { INLINE_TLB_OFF = v }
 
 #[allow(static_mut_refs)]
 unsafe fn state() -> &'static mut State {
@@ -138,6 +156,7 @@ unsafe fn state() -> &'static mut State {
             page_blocks: HashMap::default(),
             slots: vec![SLOT_EMPTY; SLOTS],
             zombies: HashSet::new(),
+            rmw: HashSet::new(),
             invalidations: HashMap::default(),
         });
     }
@@ -171,6 +190,12 @@ pub unsafe fn j64_read(addr: i64, bits: i32) -> i64 {
 
 #[no_mangle]
 pub unsafe fn j64_write(addr: i64, v: i64, bits: i32) {
+    if UNDO_ON {
+        if let Ok(old) = mem_read(addr as u64, bits as u32) {
+            #[allow(static_mut_refs)]
+            UNDO.push((addr as u64, bits as u32, old));
+        }
+    }
     crate::cpu::long_mem::count_slow_access(addr as u64, bits as u32, true, *cpl == 3);
     if mem_write(addr as u64, bits as u32, v as u64).is_err() {
         FLAGS[FAULT] = 1;
@@ -799,6 +824,14 @@ fn flag_fx(i: &Insn) -> FlagFx {
     FlagFx { reads, writes_all, fault }
 }
 
+/// writes memory in a way the VERIFY undo log does not see (string instructions run through the interpreter)
+fn is_rmw(i: &Insn) -> bool {
+    match *i {
+        Insn::Str { .. } => true,
+        _ => false,
+    }
+}
+
 /// For every instruction: are the flags it leaves behind (possibly) read afterwards?
 fn flag_liveness(
     decoded: &std::collections::BTreeMap<usize, (Insn, usize)>,
@@ -1194,7 +1227,7 @@ impl<'a> Gen<'a> {
 
     /// [addr on stack] -> value
     fn read_mem(&mut self, bits: u32) {
-        if DISABLE_INLINE_TLB {
+        if unsafe { INLINE_TLB_OFF } {
             self.b.const_i32(bits as i32);
             self.b.call_fn2_i64_i32_ret_i64("j64_read");
             return;
@@ -1223,7 +1256,7 @@ impl<'a> Gen<'a> {
 
     /// [addr, value on stack] -> (stores the value, faults are reported through the fault flag)
     fn write_mem(&mut self, bits: u32) {
-        if DISABLE_INLINE_TLB {
+        if unsafe { INLINE_TLB_OFF } {
             self.b.const_i32(bits as i32);
             self.b.call_fn3_i64_i64_i32("j64_write");
             return;
@@ -2209,6 +2242,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
         block_index.insert(off, i);
     }
 
+    GEN_RMW = decoded.values().any(|(i, _)| is_rmw(i));
     let (live_out, live_in) = flag_liveness(&decoded, &block_starts, rip, code.len());
 
     b.reset();
@@ -2467,10 +2501,96 @@ unsafe fn call_block(index: u16, phys_page: u32) {
     STAT_RUN += 1;
     EXECUTING_PAGE = phys_page;
     let counter_before = *instruction_counter;
+    if VERIFY {
+        verified_call(index);
+        EXECUTING_PAGE = u32::MAX;
+        FLAGS[FAULT] = 0;
+        return;
+    }
     call_jit_table(index);
     STAT_JIT_INSNS = STAT_JIT_INSNS.wrapping_add((*instruction_counter).wrapping_sub(counter_before) as u32);
     EXECUTING_PAGE = u32::MAX;
     FLAGS[FAULT] = 0;
+}
+
+unsafe fn save_regs() -> [i32; 46] {
+    let mut s = [0i32; 46];
+    for i in 0..8 { s[i] = *reg32.add(i); s[8 + i] = *reg_ext.add(i) }
+    for i in 0..16 { s[16 + i] = *reg_hi.add(i) }
+    s[32] = *instruction_pointer; s[33] = *rip_hi; s[34] = *flags; s[35] = *flags_changed; s[36] = *previous_ip;
+    s[37] = *instruction_counter as i32;
+    s
+}
+unsafe fn restore_regs(s: &[i32; 46]) {
+    for i in 0..8 { *reg32.add(i) = s[i]; *reg_ext.add(i) = s[8 + i] }
+    for i in 0..16 { *reg_hi.add(i) = s[16 + i] }
+    *instruction_pointer = s[32]; *rip_hi = s[33]; *flags = s[34]; *flags_changed = s[35]; *previous_ip = s[36];
+    *instruction_counter = s[37] as u32;
+}
+
+/// debugging aid (VERIFY): runs the block, then the same number of instructions in the interpreter
+/// from the saved state, and records the first differences. Memory written by the block stays
+/// written (an instruction that modifies memory runs twice), so only register state is compared.
+unsafe fn verified_call(index: u16) {
+    if state().rmw.contains(&index) {
+        call_jit_table(index);
+        VERIFY_LOG[63] += 1;
+        return;
+    }
+    let start_rip = rip();
+    let before = save_regs();
+    #[allow(static_mut_refs)]
+    UNDO.clear();
+    UNDO_ON = true;
+    call_jit_table(index);
+    UNDO_ON = false;
+    // the flags of the compiled code may still be lazy in memory: materialize like the interpreter does
+    let after_flags = get_eflags();
+    let mut jit = save_regs();
+    jit[34] = after_flags;
+    let n = (*instruction_counter).wrapping_sub(before[37] as u32);
+    // what the compiled block left in memory, then undo its writes
+    #[allow(static_mut_refs)]
+    let log = UNDO.clone();
+    let mut jit_mem = Vec::with_capacity(log.len());
+    for &(addr, bits, _) in &log { jit_mem.push(mem_read(addr, bits).ok()) }
+    for &(addr, bits, old) in log.iter().rev() { let _ = mem_write(addr, bits, old); }
+    restore_regs(&before);
+    let mut done = 0;
+    while done < n {
+        long_mode::step64();
+        done += 1;
+    }
+    let mut interp = save_regs();
+    interp[34] = get_eflags();
+    VERIFY_LOG[0] += 1;
+    let mut diff = None;
+    for i in 0..33 {
+        let (a, b) = (jit[i], interp[i]);
+        if a != b { diff = Some((i, a, b)); break }
+    }
+    if diff.is_none() && (jit[34] ^ interp[34]) & 0x8D5 != 0 { diff = Some((34, jit[34], interp[34])) }
+    if diff.is_none() {
+        for (k, &(addr, bits, _)) in log.iter().enumerate() {
+            let now = mem_read(addr, bits).ok();
+            if now != jit_mem[k] {
+                diff = Some((100, addr as i32, now.unwrap_or(0) as i32));
+                VERIFY_LOG[60] = (addr >> 32) as u32; VERIFY_LOG[61] = jit_mem[k].unwrap_or(0) as u32; VERIFY_LOG[62] = (jit_mem[k].unwrap_or(0) >> 32) as u32;
+                break
+            }
+        }
+    }
+    if let Some((i, a, b)) = diff {
+        let k = VERIFY_LOG[1] as usize;
+        VERIFY_LOG[1] += 1;
+        if k < 4 {
+            let o = 2 + k * 8;
+            VERIFY_LOG[o] = start_rip as u32; VERIFY_LOG[o + 1] = (start_rip >> 32) as u32;
+            VERIFY_LOG[o + 2] = n; VERIFY_LOG[o + 3] = i as u32;
+            VERIFY_LOG[o + 4] = a as u32; VERIFY_LOG[o + 5] = b as u32;
+            VERIFY_LOG[o + 6] = jit[34] as u32; VERIFY_LOG[o + 7] = interp[34] as u32;
+        }
+    }
 }
 
 unsafe fn try_run_block() -> bool {
@@ -2560,15 +2680,18 @@ unsafe fn compile(r: u64, user: bool) {
     let code = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset(phys as isize), 0x1000 - offset);
     // the block lives in a single page, rip and physical address agree on the page offset
     let st = state();
-    let registered = jit::jit64_compile(phys, |builder| generate(builder, r, code), |index| {
+    let in_range = r < RANGE_LO as u64 || r >= RANGE_HI as u64;
+    let registered = if in_range { None } else { jit::jit64_compile(phys, |builder| generate(builder, r, code), |index| {
         // registered before the module is handed to the host, which may finish synchronously
+        if (STAT_COMPILED as usize) < 64 { COMPILED_RIPS[STAT_COMPILED as usize] = r as u32 }
         STAT_COMPILED += 1;
+        if GEN_RMW { st.rmw.insert(index); } else { st.rmw.remove(&index); }
         st.blocks.insert(r, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: EPOCH });
         st.by_index.insert(index, r);
         st.page_blocks.entry(page).or_default().push(r);
         jit::maybe_has_code_set(Page::of_u32(page));
         crate::cpu::cpu::tlb_set_has_code(Page::of_u32(page), true);
-    });
+    }) };
     if registered.is_none() {
         STAT_FAILED += 1;
         let st = state();
