@@ -1043,6 +1043,10 @@ CPU.prototype.init = function(settings, device_bus)
 
     this.acpi_enabled[0] = +settings.acpi;
 
+    // cores that take turns on this thread (src/rust/cpu/smp.rs); they need the APIC, so the ACPI tables
+    const cores = settings.acpi ? Math.max(1, Math.min(8, settings.cpu_cores | 0 || 1)) : 1;
+    this.cpu_cores = cores;
+    this.wm.exports["smp_init"](cores);
     this.reset_cpu();
 
     var io = new IO(this);
@@ -1720,7 +1724,7 @@ CPU.prototype.fill_cmos = function(rtc, settings)
 
     rtc.cmos_write(CMOS_EQUIPMENT_INFO, 0x2F);
 
-    rtc.cmos_write(CMOS_BIOS_SMP_COUNT, 0);
+    rtc.cmos_write(CMOS_BIOS_SMP_COUNT, Math.max(1, Math.min(8, settings.cpu_cores | 0 || 1)) - 1);
 
     // Used by bochs BIOS to skip the boot menu delay.
     if(settings.fastboot) rtc.cmos_write(0x3f, 0x01);

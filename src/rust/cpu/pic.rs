@@ -302,6 +302,9 @@ impl Pic {
     }
 }
 
+/// whether an interrupt is waiting (without acknowledging it)
+pub fn pic_has_pending() -> bool { get_pic().master.get_irq().is_some() }
+
 // called by the cpu
 pub fn pic_acknowledge_irq() -> Option<u8> {
     let mut pic = get_pic();

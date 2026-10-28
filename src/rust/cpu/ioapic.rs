@@ -139,7 +139,7 @@ fn check_irq(ioapic: &mut Ioapic, apic: &mut apic::Apic, irq: u8) {
     }
 }
 
-pub fn set_irq(i: u8) { set_irq_internal(&mut get_ioapic(), &mut apic::get_apic(), i) }
+pub fn set_irq(i: u8) { set_irq_internal(&mut get_ioapic(), apic::get_apic(), i) }
 
 fn set_irq_internal(ioapic: &mut Ioapic, apic: &mut apic::Apic, i: u8) {
     if i as usize >= IOAPIC_IRQ_COUNT {
@@ -244,7 +244,7 @@ pub fn write32(addr: u32, value: u32) {
     if unsafe { !*acpi_enabled } {
         return;
     }
-    write32_internal(&mut get_ioapic(), &mut apic::get_apic(), addr, value)
+    write32_internal(&mut get_ioapic(), apic::get_apic(), addr, value)
 }
 
 fn write32_internal(ioapic: &mut Ioapic, apic: &mut apic::Apic, addr: u32, value: u32) {

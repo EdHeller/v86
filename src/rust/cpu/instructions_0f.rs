@@ -3310,7 +3310,9 @@ pub unsafe fn instr_0FA2() {
 
         1 => {
             eax = 3 | 7 << 4 | 6 << 8; // pentium3
-            ebx = 1 << 16 | 8 << 8; // cpu count, clflush size
+            let cores = crate::cpu::apic::CORE_COUNT as i32;
+            // initial APIC id, cpu count, clflush size
+            ebx = (crate::cpu::apic::CURRENT_CORE as i32) << 24 | cores << 16 | 8 << 8;
             ecx = 1 << 0 | 1 << 13 | 1 << 23 | 1 << 26 | 1 << 30; // sse3, cx16, popcnt, xsave, rdrand
             if *cr.offset(4) & CR4_OSXSAVE != 0 {
                 ecx |= 1 << 27; // osxsave
@@ -3329,6 +3331,9 @@ pub unsafe fn instr_0FA2() {
             {
                 edx |= 1 << 9; // apic
             }
+            if cores > 1 {
+                edx |= 1 << 28; // htt: ebx holds the number of logical processors
+            }
         },
 
         2 => {
@@ -3343,7 +3348,7 @@ pub unsafe fn instr_0FA2() {
             // from my local machine
             match read_reg32(ECX) {
                 0 => {
-                    eax = 0x00000121;
+                    eax = 0x00000121 | (crate::cpu::apic::CORE_COUNT as i32 - 1) << 26; // cores in the package
                     ebx = 0x01c0003f;
                     ecx = 0x0000003f;
                     edx = 0x00000001;

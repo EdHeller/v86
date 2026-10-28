@@ -178,6 +178,9 @@ unsafe fn state() -> &'static mut State {
 /// revalidated
 pub unsafe fn tlb_flushed() { EPOCH = EPOCH.wrapping_add(1) }
 
+/// another core's state was loaded: the next instruction may be a block start
+pub unsafe fn core_switched() { EPOCH = EPOCH.wrapping_add(1); CHECK = true }
+
 // ---------------------------------------------------------------------------------------------
 // helpers called from the generated code
 

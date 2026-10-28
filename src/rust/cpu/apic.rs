@@ -1,7 +1,6 @@
 // See Intel's System Programming Guide
 
 use crate::cpu::{cpu::js, global_pointers::acpi_enabled, ioapic};
-use std::sync::{Mutex, MutexGuard};
 
 const APIC_LOG_VERBOSE: bool = false;
 
@@ -77,7 +76,7 @@ pub struct Apic {
     lvt_thermal_sensor: u32,
 }
 
-static APIC: Mutex<Apic> = Mutex::new(Apic {
+const APIC_INIT: Apic = Apic {
     apic_id: 0,
     timer_divider: 0,
     timer_divider_shift: 1,
@@ -101,18 +100,103 @@ static APIC: Mutex<Apic> = Mutex::new(Apic {
     local_destination: 0,
     error: 0,
     read_error: 0,
-});
+};
 
-pub fn get_apic() -> MutexGuard<'static, Apic> { APIC.try_lock().unwrap() }
+pub const MAX_CORES: usize = 8;
+
+// One local APIC per core (docs/multicore.md); the first is the one the state images contain
+static mut APICS: [Apic; MAX_CORES] = [APIC_INIT; MAX_CORES];
+pub static mut CORE_COUNT: usize = 1;
+/// the core whose state is loaded (the one the CPU registers belong to)
+pub static mut CURRENT_CORE: usize = 0;
+
+/// INIT / start-up IPIs and NMI/SMI sent to a core and not taken by the scheduler yet
+#[derive(Clone, Copy)]
+struct CoreEvents {
+    init: bool,
+    sipi: bool,
+    sipi_vector: u8,
+    nmi: bool,
+    smi: bool,
+}
+const NO_EVENTS: CoreEvents = CoreEvents { init: false, sipi: false, sipi_vector: 0, nmi: false, smi: false };
+static mut EVENTS: [CoreEvents; MAX_CORES] = [NO_EVENTS; MAX_CORES];
+
+pub const CORE_EVENT_INIT: u32 = 1;
+pub const CORE_EVENT_SIPI: u32 = 2;
+
+pub fn get_apic() -> &'static mut Apic { unsafe { &mut *(&raw mut APICS[CURRENT_CORE]) } }
+
+fn apic_of(core: usize) -> &'static mut Apic { unsafe { &mut *(&raw mut APICS[core]) } }
 
 #[no_mangle]
-pub fn get_apic_addr() -> u32 { &raw mut *get_apic() as u32 }
+pub fn get_apic_addr() -> u32 { unsafe { &raw mut APICS[0] as u32 } }
+
+/// number of cores of the machine; the APIC ids are 0..count
+#[no_mangle]
+pub unsafe fn apic_set_core_count(count: u32) {
+    CORE_COUNT = (count as usize).clamp(1, MAX_CORES);
+    CURRENT_CORE = 0;
+    for i in 0..MAX_CORES {
+        APICS[i] = APIC_INIT;
+        APICS[i].apic_id = (i as u32) << 24;
+        EVENTS[i] = NO_EVENTS;
+    }
+}
+
+#[no_mangle]
+pub unsafe fn apic_set_current_core(core: u32) { CURRENT_CORE = core as usize; }
+
+#[no_mangle]
+pub unsafe fn apic_get_current_core() -> u32 { CURRENT_CORE as u32 }
+
+/// a core received INIT: its local APIC returns to the power-up state (the id stays)
+#[no_mangle]
+pub unsafe fn apic_init_core(core: u32) {
+    let core = core as usize;
+    let id = APICS[core].apic_id;
+    APICS[core] = APIC_INIT;
+    APICS[core].apic_id = id;
+}
+
+/// bit 0: INIT, bit 1: start-up IPI (vector in bits 8..16); the events are cleared
+#[no_mangle]
+pub unsafe fn apic_take_core_events(core: u32) -> u32 {
+    let e = &mut EVENTS[core as usize];
+    let mut r = 0;
+    if e.init { r |= CORE_EVENT_INIT; e.init = false }
+    if e.sipi { r |= CORE_EVENT_SIPI | (e.sipi_vector as u32) << 8; e.sipi = false }
+    r
+}
+
+#[no_mangle]
+pub unsafe fn apic_peek_core_events(core: u32) -> bool {
+    let e = &EVENTS[core as usize];
+    e.init || e.sipi
+}
+
+#[no_mangle]
+pub unsafe fn apic_core_nmi_pending(core: u32) -> bool { EVENTS[core as usize].nmi }
+
+#[no_mangle]
+pub unsafe fn apic_clear_core_nmi(core: u32) { EVENTS[core as usize].nmi = false }
+
+/// whether `core` would take an interrupt now (without acknowledging it)
+#[no_mangle]
+pub unsafe fn apic_core_interrupt_pending(core: u32) -> bool {
+    let apic = apic_of(core as usize);
+    let Some(irr) = register_get_highest_bit(&apic.irr) else { return false };
+    if let Some(isr) = register_get_highest_bit(&apic.isr) {
+        if isr >= irr { return false }
+    }
+    irr & 0xF0 > apic.tpr as u8 & 0xF0
+}
 
 pub fn read32(addr: u32) -> u32 {
     if unsafe { !*acpi_enabled } {
         return 0;
     }
-    read32_internal(&mut get_apic(), addr)
+    read32_internal(get_apic(), addr)
 }
 
 fn read32_internal(apic: &mut Apic, addr: u32) -> u32 {
@@ -279,7 +363,7 @@ pub fn write32(addr: u32, value: u32) {
     if unsafe { !*acpi_enabled } {
         return;
     }
-    write32_internal(&mut get_apic(), addr, value)
+    write32_internal(get_apic(), addr, value)
 }
 
 fn write32_internal(apic: &mut Apic, addr: u32, value: u32) {
@@ -373,17 +457,16 @@ fn write32_internal(apic: &mut Apic, addr: u32, value: u32) {
             }
             else if destination_shorthand == 1 {
                 // self
-                deliver(apic, vector, IOAPIC_DELIVERY_FIXED, is_level);
-            }
-            else if destination_shorthand == 2 {
-                // all including self
-                deliver(apic, vector, delivery_mode, is_level);
-            }
-            else if destination_shorthand == 3 {
-                // all but self
+                deliver_to(unsafe { CURRENT_CORE }, vector, delivery_mode, is_level, value);
             }
             else {
-                dbg_assert!(false);
+                // all including self (2) / all but self (3)
+                for core in 0..unsafe { CORE_COUNT } {
+                    if destination_shorthand == 3 && core == unsafe { CURRENT_CORE } {
+                        continue;
+                    }
+                    deliver_to(core, vector, delivery_mode, is_level, value);
+                }
             }
         },
 
@@ -464,7 +547,13 @@ fn write32_internal(apic: &mut Apic, addr: u32, value: u32) {
 }
 
 #[no_mangle]
-pub fn apic_timer(now: f64) -> f64 { timer(&mut get_apic(), now) }
+pub fn apic_timer(now: f64) -> f64 {
+    let mut next = 100.0f64;
+    for core in 0..unsafe { CORE_COUNT } {
+        next = next.min(timer(apic_of(core), now));
+    }
+    next
+}
 
 fn timer(apic: &mut Apic, now: f64) -> f64 {
     if apic.timer_initial_count == 0 || apic.timer_current_count == 0 {
@@ -532,16 +621,75 @@ fn timer(apic: &mut Apic, now: f64) -> f64 {
     apic.timer_last_tick + time_per_interrupt - now
 }
 
+/// delivers to the cores an interrupt with this destination is meant for (physical or logical
+/// destination; lowest priority goes to the matching core with the lowest task priority)
 pub fn route(
-    apic: &mut Apic,
+    _apic: &mut Apic,
     vector: u8,
     mode: u8,
     is_level: bool,
-    _destination: u8,
-    _destination_mode: u8,
+    destination: u8,
+    destination_mode: u8,
 ) {
-    // TODO
-    deliver(apic, vector, mode, is_level);
+    let count = unsafe { CORE_COUNT };
+    if count == 1 {
+        deliver_to(0, vector, mode, is_level, 0);
+        return;
+    }
+    let mut targets = [false; MAX_CORES];
+    for core in 0..count {
+        let apic = apic_of(core);
+        targets[core] = if destination_mode == 0 {
+            destination == 0xFF || destination == (apic.apic_id >> 24) as u8
+        }
+        else if destination == 0xFF {
+            true
+        }
+        else if apic.destination_format >> 28 == 0xF {
+            // flat model
+            destination & (apic.local_destination >> 24) as u8 != 0
+        }
+        else {
+            // cluster model: cluster in the high nibble, members in the low one
+            let id = (apic.local_destination >> 24) as u8;
+            destination >> 4 == id >> 4 && destination & id & 0xF != 0
+        };
+    }
+    if mode == 1 {
+        let mut best: Option<usize> = None;
+        for core in 0..count {
+            if targets[core] && best.map_or(true, |b| apic_of(core).tpr < apic_of(b).tpr) {
+                best = Some(core);
+            }
+        }
+        if let Some(core) = best {
+            deliver_to(core, vector, 0, is_level, 0);
+        }
+        return;
+    }
+    for core in 0..count {
+        if targets[core] {
+            deliver_to(core, vector, mode, is_level, 0);
+        }
+    }
+}
+
+/// `icr` is the ICR value (for INIT, a level de-assert does nothing); 0 when it does not come from the ICR
+fn deliver_to(core: usize, vector: u8, mode: u8, is_level: bool, icr: u32) {
+    match mode {
+        2 => unsafe { EVENTS[core].smi = true },
+        4 => unsafe { EVENTS[core].nmi = true },
+        5 => {
+            if !(is_level && icr != 0 && icr & (1 << 14) == 0) {
+                unsafe { EVENTS[core].init = true }
+            }
+        },
+        6 => unsafe {
+            EVENTS[core].sipi = true;
+            EVENTS[core].sipi_vector = vector;
+        },
+        _ => deliver(apic_of(core), vector, mode, is_level),
+    }
 }
 
 fn deliver(apic: &mut Apic, vector: u8, mode: u8, is_level: bool) {
@@ -549,18 +697,13 @@ fn deliver(apic: &mut Apic, vector: u8, mode: u8, is_level: bool) {
         dbg_log!("Deliver {:02x} mode={} level={}", vector, mode, is_level);
     }
 
-    if mode == IOAPIC_DELIVERY_INIT {
-        // TODO
-        return;
-    }
-
-    if mode == IOAPIC_DELIVERY_NMI {
-        // TODO
+    if mode == IOAPIC_DELIVERY_INIT || mode == IOAPIC_DELIVERY_NMI {
         return;
     }
 
     if vector < 0x10 || vector == 0xFF {
-        dbg_assert!(false, "TODO: Invalid vector: {:x}", vector);
+        dbg_log!("Invalid vector: {:x}", vector);
+        return;
     }
 
     if register_get_bit(&apic.irr, vector) {
@@ -596,7 +739,7 @@ fn highest_isr(apic: &mut Apic) -> Option<u8> {
     highest
 }
 
-pub fn acknowledge_irq() -> Option<u8> { acknowledge_irq_internal(&mut get_apic()) }
+pub fn acknowledge_irq() -> Option<u8> { acknowledge_irq_internal(get_apic()) }
 
 fn acknowledge_irq_internal(apic: &mut Apic) -> Option<u8> {
     let highest_irr = match highest_irr(apic) {

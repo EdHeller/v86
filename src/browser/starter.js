@@ -228,6 +228,7 @@ V86.prototype.continue_init = async function(emulator, options)
     }
 
     settings.acpi = options.acpi;
+    settings.cpu_cores = options.cpu_cores;
     settings.disable_jit = options.disable_jit;
     settings.jit64_threshold = options.jit64_threshold;
     settings.jit_chaining = options.jit_chaining;

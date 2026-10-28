@@ -3637,6 +3637,10 @@ pub unsafe fn segment_prefix_op(seg: i32) {
 pub unsafe fn main_loop() -> f64 {
     profiler::stat_increment(stat::MAIN_LOOP);
 
+    if apic::CORE_COUNT > 1 {
+        return super::smp::main_loop();
+    }
+
     let start = js::microtick();
 
     if *in_hlt {
@@ -4852,7 +4856,8 @@ pub unsafe fn store_current_tsc() { *current_tsc = read_tsc(); }
 #[no_mangle]
 pub unsafe fn handle_irqs() {
     if *flags & FLAG_INTERRUPT != 0 && !interrupt_shadow && !IN_SHADOW_STEP {
-        if let Some(irq) = pic::pic_acknowledge_irq() {
+        // (the legacy PIC is wired to the first core)
+        if let Some(irq) = if apic::CURRENT_CORE == 0 { pic::pic_acknowledge_irq() } else { None } {
             pic_call_irq(irq)
         }
         else if *acpi_enabled {
@@ -4863,7 +4868,7 @@ pub unsafe fn handle_irqs() {
     }
 }
 
-unsafe fn pic_call_irq(interrupt_nr: u8) {
+pub unsafe fn pic_call_irq(interrupt_nr: u8) {
     *previous_ip = *instruction_pointer; // XXX: What if called after instruction (port IO)
     if *in_hlt {
         js::stop_idling();
@@ -5061,6 +5066,8 @@ pub unsafe fn reset_cpu() {
     update_state_flags();
 
     jit::jit_clear_cache_js();
+
+    super::smp::machine_reset();
 }
 
 #[no_mangle]
