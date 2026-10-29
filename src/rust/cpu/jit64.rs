@@ -59,9 +59,13 @@ struct Block {
     served: [u64; 64],
     /// bit per page offset: entries the decoder could not compile
     failed: [u64; 64],
+    /// bit per page offset: instructions the module contains
+    covered: [u64; 64],
     /// page offsets the discovery started from
     seeds: Vec<u16>,
     compiles: u32,
+    /// the page was compiled with the guessed function starts (every later compile guesses again)
+    heuristic: bool,
 }
 
 fn bit(map: &[u64; 64], off: usize) -> bool { map[off >> 6] >> (off & 63) & 1 != 0 }
@@ -69,6 +73,7 @@ fn bit_set(map: &mut [u64; 64], off: usize) { map[off >> 6] |= 1 << (off & 63) }
 
 /// the block starts of the module generated last (page offsets)
 static mut GEN_STARTS: Vec<u16> = Vec::new();
+static mut GEN_COVERED: Vec<u16> = Vec::new();
 
 /// Direct mapped cache in front of the block map: counts executions of branch targets and holds
 /// ready blocks
@@ -120,6 +125,8 @@ static mut EXECUTING_PAGE: u32 = u32::MAX;
 pub static mut DISABLE_MASK: u32 = 0;
 pub static mut STAT_COMPILED: u32 = 0;
 pub static mut STAT_FAILED: u32 = 0;
+pub static mut STAT_DECODED: u32 = 0;
+pub static mut STAT_BLOCKS: u32 = 0;
 /// Debug histogram of the opcodes that ended block discovery: index = opcode, 256 + byte after 0F
 pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
 
@@ -131,7 +138,7 @@ pub static mut INVAL_LOG: [(u64, u32, bool); 1024] = [(0, 0, false); 1024];
 pub static mut VISITS: Option<HashMap<u64, u32>> = None;
 pub static mut INVAL_WRITER: [u64; 1024] = [0; 1024];
 /// interpreted instructions by why they were interpreted: 0 continuation after a non-jump (no block lookup), 1 slot counting (not hot yet), 2 failed block, 3 other/pending
-pub static mut BACKOFF_CAP: u32 = 12;
+pub static mut BACKOFF_CAP: u32 = 3;
 pub static mut WATCH_PROBE_OFF: u64 = 0;
 
 /// debugging: the state of the slot of the watched page at WATCH_PROBE_OFF
@@ -154,7 +161,7 @@ pub static mut WATCH_PAGE_FULL: u64 = 0;
 pub static mut WATCH_PAGE: u64 = u64::MAX;
 pub static mut WATCH_OFF: [u32; 4096] = [0; 4096];
 pub static mut PAGE_HIST: [(u64, u32); 4096] = [(0, 0); 4096];
-pub static mut INTERP_WHY: [u32; 8] = [0; 8];
+pub static mut INTERP_WHY: [u32; 16] = [0; 16];
 /// debugging: after every compiled block run, redo it in the interpreter from the saved state and
 /// record the first differences (read through get_jit_config(5000 + i)); the interpreter's result is kept
 pub static mut VERIFY: bool = false;
@@ -267,13 +274,12 @@ static mut STEP_SAMPLE: u64 = 0;
 /// the groups and the mandatory prefix (0 none, 1 66, 2 F3, 3 F2)
 unsafe fn step_profile_record() {
     let rip = rip();
-    let bytes = match mem_read(rip, 64) {
-        Ok(v) => v,
-        Err(()) => match mem_read(rip, 32) {
-            Ok(v) => v,
-            Err(()) => return,
-        },
-    };
+    let Some(phys) = probe_fetch(rip, *cpl == 3) else { return };
+    let mut bytes = 0u64;
+    for k in 0..8u32 {
+        if (phys & 0xFFF) + k >= 0x1000 { break }
+        bytes |= (*crate::cpu::memory::mem8.offset((phys + k) as isize) as u64) << (8 * k);
+    }
     let (mut i, mut prefix, mut rex) = (0, 0u32, 0u8);
     let byte = |i: u32| if i < 8 { (bytes >> (8 * i)) as u8 } else { 0 };
     while i < 7 {
@@ -340,6 +346,7 @@ pub unsafe fn step_profile_reset() { STEP_COUNTS.clear() }
 /// interrupts were just enabled, the cpu halted or the mode changed.
 #[no_mangle]
 pub unsafe fn j64_interp1(next: i64, _unused: i32) -> i32 {
+    RMW_HIT = true;
     if STEP_PROFILE_ON {
         step_profile_record();
     }
@@ -385,6 +392,7 @@ pub unsafe fn j64_flags(kind_bits: i32, a: i64, b: i64, r: i64) {
 /// string instructions that are not compiled inline (rep prefix, compares)
 #[no_mangle]
 pub unsafe fn j64_str(code: i32, info: i32) {
+    RMW_HIT = true;
     let opcode = (code & 0xFF) as u8;
     let rep = (code >> 8 & 0xFF) as u8;
     let asz32 = code >> 16 & 1 != 0;
@@ -2474,7 +2482,7 @@ fn search(b: &mut WasmBuilder, key: &WasmLocal, keys: &[i32], lo: usize, hi: usi
     }
 }
 
-unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16]) -> Option<u32> {
+unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16], spec: &[u16]) -> Option<u32> {
     use std::collections::{BTreeMap, BTreeSet};
 
     // discover the reachable instructions
@@ -2490,6 +2498,11 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16]) ->
         let off = target.wrapping_sub(rip);
         if target >= rip && (off as usize) < code.len() { Some(off as usize) } else { None }
     };
+    // which instruction covers each byte: streams that decode the same bytes differently (the guesses
+    // of `spec` can start in the middle of an instruction) must not interleave in the output
+    let mut owner = vec![0xFFFFu16; code.len()];
+    let mut spec_left = Some(spec);
+    loop {
     while let Some(mut off) = work.pop() {
         loop {
             if decoded.contains_key(&off) || decoded.len() >= MAX_INSTRUCTIONS as usize || off >= code.len() {
@@ -2510,6 +2523,12 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16]) ->
                 Insn::Jcc { target, .. } | Insn::Jmp { target } if !is_canonical(target) => break,
                 Insn::Call { target } if !is_canonical(target) => break,
                 _ => {},
+            }
+            if owner[off..off + len].iter().any(|&o| o != 0xFFFF) {
+                break;
+            }
+            for o in owner[off..off + len].iter_mut() {
+                *o = off as u16;
             }
             decoded.insert(off, (insn, len));
             match insn {
@@ -2552,6 +2571,17 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16]) ->
             }
         }
     }
+    match spec_left.take() {
+        Some(sp) => {
+            for &e in sp {
+                if leaders.insert(e as usize) {
+                    work.push(e as usize);
+                }
+            }
+        },
+        None => break,
+    }
+    }
     if !seeds.iter().any(|&e| decoded.contains_key(&(e as usize))) {
         return None;
     }
@@ -2571,6 +2601,9 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16]) ->
     }
 
     GEN_STARTS = block_starts.iter().map(|&o| o as u16).collect();
+    GEN_COVERED = decoded.keys().map(|&o| o as u16).collect();
+    STAT_DECODED = STAT_DECODED.wrapping_add(decoded.len() as u32);
+    STAT_BLOCKS = STAT_BLOCKS.wrapping_add(block_starts.len() as u32);
     GEN_RMW = decoded.values().any(|(i, _)| is_rmw(i));
     let (live_out, live_in) = flag_liveness(&decoded, &block_starts, rip, code.len());
 
@@ -2845,9 +2878,20 @@ pub unsafe fn run() {
             if s.rip != before { 1 } else { match s.state { SLOT_COUNTING => 1, SLOT_FAILED => 2, _ => 3 } }
         };
         INTERP_WHY[why] = INTERP_WHY[why].wrapping_add(1);
+        { let c = 10 + (*cpl == 3) as usize; INTERP_WHY[c] = INTERP_WHY[c].wrapping_add(1); }
         {
-            let covered = match probe_fetch(before, *cpl == 3) { Some(p) => state().page_blocks.contains_key(&(p >> 12)), None => false };
-            INTERP_WHY[5 + covered as usize] = INTERP_WHY[5 + covered as usize].wrapping_add(1);
+            let class = match probe_fetch(before, *cpl == 3) {
+                Some(p) => match state().blocks.get(&block_key(p & !0xFFF, *cpl == 3)) {
+                    Some(b) if b.state != BlockState::Failed => {
+                        let off = (p & 0xFFF) as usize;
+                        // 7 an entry the module serves, 8 inside a compiled block, 9 not compiled (page has a module)
+                        if bit(&b.served, off) { 7 } else if bit(&b.covered, off) { 8 } else { 9 }
+                    },
+                    _ => 5,
+                },
+                None => 6,
+            };
+            INTERP_WHY[class] = INTERP_WHY[class].wrapping_add(1);
         }
         if (before >> 12) as u32 == WATCH_PAGE as u32 { WATCH_WHY[why] += 1 }
         {
@@ -2861,6 +2905,14 @@ pub unsafe fn run() {
         if e.0 != before { *e = (before, 0) }
         e.1 = e.1.wrapping_add(1);
     }
+    if HIST_ON && AFTER_EXIT {
+        step_profile_record();
+    }
+    AFTER_EXIT = false;
+    if STEP_PROFILE_ON {
+        step_profile_record();
+    }
+    page_heat(before);
     long_mode::step64();
     let after = rip();
     // a jump (or an exception): rip is a potential block start. In testing mode (threshold 0)
@@ -2870,7 +2922,72 @@ pub unsafe fn run() {
     }
 }
 
+static mut AFTER_EXIT: bool = false;
+static mut RMW_HIT: bool = false;
+
+/// interpreted instructions per virtual page (direct mapped): a page that keeps being interpreted is
+/// compiled as a whole, with its likely function starts as entries
+static mut HEAT: [(u64, i32); 1024] = [(u64::MAX, 0); 1024];
+pub static mut HEAT_LIMIT: i32 = 0;
+pub static mut HEAT_MAX: u32 = u32::MAX;
+pub static mut HEAT_COMPILES: u32 = 0;
+pub static mut HEAT_LAST: u64 = 0;
+static mut HEURISTIC_SEEDS: bool = false;
+
+#[inline(always)]
+unsafe fn page_heat(r: u64) {
+    let pg = r >> 12;
+    let e = &mut HEAT[(pg ^ pg >> 10 ^ pg >> 20) as usize & 1023];
+    if e.0 != pg {
+        *e = (pg, 0);
+    }
+    e.1 += 1;
+    if e.1 >= HEAT_LIMIT && HEAT_LIMIT > 0 {
+        e.1 = 0;
+        page_heat_compile(r);
+    }
+}
+
+#[inline(never)]
+unsafe fn page_heat_compile(r: u64) {
+    let user = *cpl == 3;
+    let Some(phys) = probe_fetch(r, user) else { return };
+    let key = block_key(phys & !0xFFF, user);
+    let off = (phys & 0xFFF) as usize;
+    let st = state();
+    let compiles = match st.blocks.get(&key) {
+        Some(b) => {
+            if bit(&b.served, off) || bit(&b.failed, off) {
+                return;
+            }
+            b.compiles
+        },
+        None => 0,
+    };
+    if compiles >= 4 {
+        // the page keeps getting new entries: wait for more heat each time
+        let pg = r >> 12;
+        let e = &mut HEAT[(pg ^ pg >> 10 ^ pg >> 20) as usize & 1023];
+        e.1 = -(HEAT_LIMIT.saturating_mul(1 << (compiles - 3).min(6)));
+        if compiles >= 4 && e.1 < 0 && false { return }
+    }
+    if HEAT_COMPILES >= HEAT_MAX {
+        return;
+    }
+    HEAT_COMPILES += 1;
+    HEAT_LAST = r;
+    HEURISTIC_SEEDS = true;
+    compile(r, user);
+    HEURISTIC_SEEDS = false;
+    let slot_i = slot_index(r);
+    let slot = &mut st.slots[slot_i];
+    if slot.rip == r {
+        refill_slot(r, key, off);
+    }
+}
+
 unsafe fn call_block(index: u16, phys_page: u32) {
+    AFTER_EXIT = true;
     FLAGS[FAULT] = 0;
     FLAGS[SMC] = 0;
     STAT_RUN += 1;
@@ -2907,18 +3024,19 @@ unsafe fn restore_regs(s: &[i32; 46]) {
 /// from the saved state, and records the first differences. Memory written by the block stays
 /// written (an instruction that modifies memory runs twice), so only register state is compared.
 unsafe fn verified_call(index: u16) {
-    if state().rmw.contains(&index) {
-        call_jit_table(index);
-        VERIFY_LOG[63] += 1;
-        return;
-    }
     let start_rip = rip();
     let before = save_regs();
     #[allow(static_mut_refs)]
     UNDO.clear();
     UNDO_ON = true;
+    RMW_HIT = false;
     call_jit_table(index);
     UNDO_ON = false;
+    if RMW_HIT {
+        // the block ran an instruction in the interpreter (or a string op): its writes cannot be undone
+        VERIFY_LOG[63] += 1;
+        return;
+    }
     // the flags of the compiled code may still be lazy in memory: materialize like the interpreter does
     let after_flags = get_eflags();
     let mut jit = save_regs();
@@ -2955,10 +3073,10 @@ unsafe fn verified_call(index: u16) {
             }
         }
     }
-    if let Some((i, a, b)) = diff {
+    if let Some((i, a, b)) = diff.filter(|_| start_rip >> 48 == 0xFFFF) {
         let k = VERIFY_LOG[1] as usize;
         VERIFY_LOG[1] += 1;
-        if k < 4 {
+        if k < 6 {
             let o = 2 + k * 8;
             VERIFY_LOG[o] = start_rip as u32; VERIFY_LOG[o + 1] = (start_rip >> 32) as u32;
             VERIFY_LOG[o + 2] = n; VERIFY_LOG[o + 3] = i as u32;
@@ -3123,14 +3241,28 @@ unsafe fn compile(r: u64, user: bool) {
     let code = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset((phys & !0xFFF) as isize), 0x1000);
     let page_rip = r & !0xFFF;
     let st = state();
-    let (mut seeds, compiles, mut failed) = match st.blocks.get(&key) {
-        Some(b) => (b.seeds.clone(), b.compiles, b.failed),
-        None => (vec![], 0, [0u64; 64]),
+    let (mut seeds, compiles, mut failed, heuristic) = match st.blocks.get(&key) {
+        Some(b) => (b.seeds.clone(), b.compiles, b.failed, b.heuristic),
+        None => (vec![], 0, [0u64; 64], false),
     };
     seeds.push(offset as u16);
+    let mut spec: Vec<u16> = vec![];
+    if HEURISTIC_SEEDS || heuristic {
+        // likely function starts: endbr64, and the first byte after int3 padding at 16 byte alignment
+        let mut n = 0;
+        for i in 0..0x1000 - 4 {
+            if n >= 256 { break }
+            let start = code[i] == 0xF3 && code[i + 1] == 0x0F && code[i + 2] == 0x1E && code[i + 3] == 0xFA
+                || i & 15 == 0 && i > 0 && code[i - 1] == 0xCC && code[i] != 0xCC;
+            if start && !seeds.contains(&(i as u16)) {
+                spec.push(i as u16);
+                n += 1;
+            }
+        }
+    }
     let out_of_range = r < RANGE_LO || r >= RANGE_HI;
     let mut old = None;
-    let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, &seeds), |index| {
+    let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, &seeds, &spec), |index| {
         // registered before the module is handed to the host, which may finish synchronously
         if (STAT_COMPILED as usize) < 64 { COMPILED_RIPS[STAT_COMPILED as usize] = r as u32 }
         STAT_COMPILED += 1;
@@ -3139,11 +3271,15 @@ unsafe fn compile(r: u64, user: bool) {
         for &o in GEN_STARTS.iter() {
             bit_set(&mut served, o as usize);
         }
+        let mut covered = [0u64; 64];
+        for &o in GEN_COVERED.iter() {
+            bit_set(&mut covered, o as usize);
+        }
         if !bit(&served, offset) {
             bit_set(&mut failed, offset);
         }
         old = st.blocks.remove(&key).map(|b| (b.state, b.index));
-        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: EPOCH, served, failed, seeds: seeds.clone(), compiles: compiles + 1 });
+        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: EPOCH, served, covered, failed, seeds: seeds.clone(), compiles: compiles + 1, heuristic: HEURISTIC_SEEDS || heuristic });
         st.by_index.insert(index, key);
         let list = st.page_blocks.entry(page).or_default();
         if !list.contains(&key) {
@@ -3173,7 +3309,7 @@ unsafe fn compile(r: u64, user: bool) {
             None => {
                 let mut failed = [0u64; 64];
                 bit_set(&mut failed, offset);
-                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: EPOCH, served: [0; 64], failed, seeds: vec![], compiles: 1 });
+                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: EPOCH, served: [0; 64], covered: [0; 64], failed, seeds: vec![], compiles: 1, heuristic: false });
                 let list = st.page_blocks.entry(page).or_default();
                 if !list.contains(&key) {
                     list.push(key);
