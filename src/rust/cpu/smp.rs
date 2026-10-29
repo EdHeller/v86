@@ -130,7 +130,7 @@ unsafe fn switch_to(to: usize) {
 /// a field of a core's block, whether or not the core is the running one
 unsafe fn field32(core: usize, off: usize) -> i32 {
     if core == apic::CURRENT_CORE {
-        (at(off) as *const i32).read_unaligned()
+        i32::from_le_bytes([*at(off), *at(off + 1), *at(off + 2), *at(off + 3)])
     }
     else {
         let at = off - BLOCK_START;

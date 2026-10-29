@@ -4,7 +4,7 @@
 ; DESC: jit64: cmov, nop, bt/bts/btr/btc, string moves, xchg and cbw/cwde/cdqe/cqo in loops (kinds the jit64_disable_mask test needs covered)
 %include "inc/long.inc"
 
-%define EXPECTED 0xB4DDCD5D21143B73
+%define EXPECTED 0x951862BA71CB4B2B
 %macro MIX 1
     xor r10, %1
     rol r10, 7
@@ -111,6 +111,24 @@ test_main:
     inc r11d
     cmp r11d, 40
     jb .sext
+
+    xor r11d, r11d
+.indirect:
+    lea rax, [rel .ind_callee]
+    call rax
+    MIX rax
+    lea rdx, [rel .ind_next]
+    jmp rdx
+    MIX r11
+.ind_next:
+    inc r11d
+    cmp r11d, 40
+    jb .indirect
+    jmp .ind_done
+.ind_callee:
+    lea rax, [r11 + 0x77]
+    ret
+.ind_done:
 
 %ifdef DUMP
     ; print r10 as 16 hex digits

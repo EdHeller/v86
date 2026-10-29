@@ -68,7 +68,7 @@ for(const name of TESTS)
         if(r(m).jit64.insns !== r(0).jit64.insns || r(m).jit64.compiled !== r(0).jit64.compiled)
             errors.push(`${name}: reserved mask bit 0x${(m >>> 0).toString(16)} changed the compiled code`);
     for(let k = 0; k < KINDS; k++)
-        if(r(1 << k).jit64.insns !== r(0).jit64.insns || r(1 << k).jit64.compiled !== r(0).jit64.compiled) effect[k] = true;
+        if(r(1 << k).jit64.insns !== r(0).jit64.insns || r(1 << k).jit64.compiled !== r(0).jit64.compiled || r(1 << k).jit64.steps !== r(0).jit64.steps) effect[k] = true;
 }
 for(let k = 0; k < KINDS; k++) if(!effect[k]) errors.push(`mask bit ${k} changed nothing in any test (kind ${k} unused by the tests, or not wired up)`);
 

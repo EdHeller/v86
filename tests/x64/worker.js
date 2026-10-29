@@ -71,7 +71,7 @@ function finish(status)
     if(process.env.JIT_STATS)
     {
         const g = i => emulator.v86.cpu.wm.exports.get_jit_config(i);
-        result.jit64 = { compiled: g(5), failed: g(6), run: g(7), invalidated: g(8), insns: g(13) >>> 0 };
+        result.jit64 = { compiled: g(5), failed: g(6), run: g(7), invalidated: g(8), insns: g(13) >>> 0, steps: g(14) >>> 0 };
     }
     console.log(JSON.stringify(result));
     process.exit(0);

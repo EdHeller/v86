@@ -27,7 +27,7 @@ use crate::page::{Page, PageBuildHasher};
 use crate::wasmgen::wasm_builder::{Label, WasmBuilder, WasmLocal, WasmLocalI64};
 
 const NONE: u8 = 255;
-const MAX_INSTRUCTIONS: u32 = 300;
+const MAX_INSTRUCTIONS: u32 = 1500;
 /// instructions executed by a looping block before it returns to the dispatcher
 const LOOP_LIMIT: i32 = 20000;
 /// read by the compiled code (smaller with several cores, see smp.rs)
@@ -47,13 +47,28 @@ enum BlockState {
     Failed,
 }
 
+/// One module per physical page (and privilege): it can be entered at every basic block start in
+/// `served`. Entries that turn up later make the page compile again with them as extra seeds.
 struct Block {
     state: BlockState,
     phys_page: u32,
     user: bool,
     index: u16,
     epoch: u32,
+    /// bit per page offset: basic block starts the module can be entered at
+    served: [u64; 64],
+    /// bit per page offset: entries the decoder could not compile
+    failed: [u64; 64],
+    /// page offsets the discovery started from
+    seeds: Vec<u16>,
+    compiles: u32,
 }
+
+fn bit(map: &[u64; 64], off: usize) -> bool { map[off >> 6] >> (off & 63) & 1 != 0 }
+fn bit_set(map: &mut [u64; 64], off: usize) { map[off >> 6] |= 1 << (off & 63) }
+
+/// the block starts of the module generated last (page offsets)
+static mut GEN_STARTS: Vec<u16> = Vec::new();
 
 /// Direct mapped cache in front of the block map: counts executions of branch targets and holds
 /// ready blocks
@@ -116,6 +131,24 @@ pub static mut INVAL_LOG: [(u64, u32, bool); 1024] = [(0, 0, false); 1024];
 pub static mut VISITS: Option<HashMap<u64, u32>> = None;
 pub static mut INVAL_WRITER: [u64; 1024] = [0; 1024];
 /// interpreted instructions by why they were interpreted: 0 continuation after a non-jump (no block lookup), 1 slot counting (not hot yet), 2 failed block, 3 other/pending
+pub static mut BACKOFF_CAP: u32 = 12;
+pub static mut WATCH_PROBE_OFF: u64 = 0;
+
+/// debugging: the state of the slot of the watched page at WATCH_PROBE_OFF
+pub unsafe fn watch_probe(what: u32) -> u32 {
+    let r = (WATCH_PAGE_FULL << 12) + WATCH_PROBE_OFF;
+    let st = state();
+    let s = &st.slots[slot_index(r)];
+    match what {
+        0 => (s.rip == r) as u32,
+        1 => s.state as u32,
+        2 => s.count,
+        3 => s.limit,
+        4 => match probe_fetch(r, *cpl == 3) { Some(p) => st.blocks.get(&block_key(p & !0xFFF, *cpl == 3)).map_or(1, |b| 2 + b.state as u32), None => 0 },
+        5 => probe_fetch(r, *cpl == 3).map_or(0, |p| st.invalidations.get(&((p >> 12) as u64)).copied().unwrap_or(0) as u32),
+        _ => 0,
+    }
+}
 pub static mut WATCH_WHY: [u32; 8] = [0; 8];
 pub static mut WATCH_PAGE_FULL: u64 = 0;
 pub static mut WATCH_PAGE: u64 = u64::MAX;
@@ -1182,17 +1215,34 @@ impl<'a> Gen<'a> {
 
     /// leave the function; rip is the start of the basic block selected by `pc`
     fn exit_dynamic_pc(&mut self, block_starts: &[usize]) {
-        // compare-chain over the block starts (only taken when the loop budget is used up)
-        for (i, &off) in block_starts.iter().enumerate() {
-            self.b.get_local(&self.pc);
-            self.b.const_i32(i as i32);
-            self.b.eq_i32();
-            self.b.if_void();
-            let target = self.start.wrapping_add(off as u64);
-            self.exit_const(target, 0);
-            self.b.block_end();
-        }
-        self.b.unreachable();
+        // (only taken when the loop budget is used up)
+        self.materialize();
+        let t = self.b.new_local();
+        let keys: Vec<i32> = (0..block_starts.len() as i32).collect();
+        search(&mut *self.b, &self.pc, &keys, 0, keys.len(), &mut |b, i| {
+            b.const_i32(block_starts[i] as i32);
+            b.set_local(&t);
+        }, false);
+        let tt = self.b.new_local_i64();
+        self.b.get_local_i64(&self.base);
+        self.b.get_local(&t);
+        self.b.extend_unsigned_i32_to_i64();
+        self.b.add_i64();
+        self.b.set_local_i64(&tt);
+        self.b.const_i32(instruction_pointer as i32);
+        self.b.get_local_i64(&tt);
+        self.b.wrap_i64_to_i32();
+        self.b.store_aligned_i32(0);
+        self.b.const_i32(rip_hi as i32);
+        self.b.get_local_i64(&tt);
+        self.b.const_i64(32);
+        self.b.shr_u_i64();
+        self.b.wrap_i64_to_i32();
+        self.b.store_aligned_i32(0);
+        self.b.free_local_i64(tt);
+        self.b.free_local(t);
+        self.push_counter_update(0);
+        self.b.return_();
     }
 
     fn set_previous_ip(&mut self) {
@@ -2374,7 +2424,7 @@ impl<'a> Gen<'a> {
     /// otherwise leave the function
     fn transfer(&mut self, target: u64) {
         let off = target.wrapping_sub(self.start);
-        if target >= self.start && off < (1 << 20) {
+        if target >= self.start && off < 4096 {
             if let Some(&idx) = self.block_index.get(&(off as usize)) {
                 if self.live_in.get(&(off as usize)).copied().unwrap_or(true) {
                     self.materialize();
@@ -2398,14 +2448,44 @@ impl<'a> Gen<'a> {
 /// Compiles the code starting at `rip` (the rest of its page) to one wasm function: all
 /// instructions that can be reached from `rip` through supported instructions and jumps inside
 /// the page become basic blocks of a small dispatch loop. Returns the number of instructions.
-unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
+/// Binary search over the sorted `keys[lo..hi]` for the value of `key`: `leaf` emits the code for the
+/// matching position; a value that is not there returns from the function (`ret_on_miss`) or traps
+fn search(b: &mut WasmBuilder, key: &WasmLocal, keys: &[i32], lo: usize, hi: usize, leaf: &mut dyn FnMut(&mut WasmBuilder, usize), ret_on_miss: bool) {
+    if hi - lo == 1 {
+        b.get_local(key);
+        b.const_i32(keys[lo]);
+        b.eq_i32();
+        b.if_void();
+        leaf(b, lo);
+        b.else_();
+        if ret_on_miss { b.return_() } else { b.unreachable() }
+        b.block_end();
+    }
+    else {
+        let mid = (lo + hi) / 2;
+        b.get_local(key);
+        b.const_i32(keys[mid]);
+        b.ltu_i32();
+        b.if_void();
+        search(b, key, keys, lo, mid, leaf, ret_on_miss);
+        b.else_();
+        search(b, key, keys, mid, hi, leaf, ret_on_miss);
+        b.block_end();
+    }
+}
+
+unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16]) -> Option<u32> {
     use std::collections::{BTreeMap, BTreeSet};
 
     // discover the reachable instructions
     let mut decoded: BTreeMap<usize, (Insn, usize)> = BTreeMap::new();
     let mut leaders: BTreeSet<usize> = BTreeSet::new();
-    leaders.insert(0);
-    let mut work = vec![0usize];
+    let mut work = vec![];
+    for &e in seeds {
+        if leaders.insert(e as usize) {
+            work.push(e as usize);
+        }
+    }
     let internal = |target: u64| -> Option<usize> {
         let off = target.wrapping_sub(rip);
         if target >= rip && (off as usize) < code.len() { Some(off as usize) } else { None }
@@ -2449,12 +2529,30 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
                     }
                     break;
                 },
-                Insn::Call { .. } | Insn::Ret { .. } | Insn::CallInd { .. } | Insn::JmpInd { .. } => break,
+                Insn::Call { target } => {
+                    // the callee and the return address are likely entries
+                    if let Some(t) = internal(target) {
+                        if leaders.insert(t) {
+                            work.push(t);
+                        }
+                    }
+                    if off + len < code.len() && leaders.insert(off + len) {
+                        work.push(off + len);
+                    }
+                    break;
+                },
+                Insn::CallInd { .. } => {
+                    if off + len < code.len() && leaders.insert(off + len) {
+                        work.push(off + len);
+                    }
+                    break;
+                },
+                Insn::Ret { .. } | Insn::JmpInd { .. } => break,
                 _ => off += len,
             }
         }
     }
-    if !decoded.contains_key(&0) {
+    if !seeds.iter().any(|&e| decoded.contains_key(&(e as usize))) {
         return None;
     }
 
@@ -2472,6 +2570,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
         block_index.insert(off, i);
     }
 
+    GEN_STARTS = block_starts.iter().map(|&o| o as u16).collect();
     GEN_RMW = decoded.values().any(|(i, _)| is_rmw(i));
     let (live_out, live_in) = flag_liveness(&decoded, &block_starts, rip, code.len());
 
@@ -2503,7 +2602,24 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8]) -> Option<u32> {
     b.load_fixed_i32(instruction_pointer as u32);
     b.extend_unsigned_i32_to_i64();
     b.or_i64();
+    b.const_i64(!0xFFFi64);
+    b.and_i64();
     b.set_local_i64(&base);
+    // the entry: the basic block that starts at the page offset of rip (the dispatcher only calls
+    // the module at offsets it serves)
+    {
+        let off = b.new_local();
+        b.load_fixed_i32(instruction_pointer as u32);
+        b.const_i32(0xFFF);
+        b.and_i32();
+        b.set_local(&off);
+        let keys: Vec<i32> = block_starts.iter().map(|&o| o as i32).collect();
+        search(b, &off, &keys, 0, keys.len(), &mut |b, i| {
+            b.const_i32(i as i32);
+            b.set_local(&pc);
+        }, true);
+        b.free_local(off);
+    }
     let loop_label = b.loop_void();
 
     let mut g = Gen {
@@ -2729,6 +2845,10 @@ pub unsafe fn run() {
             if s.rip != before { 1 } else { match s.state { SLOT_COUNTING => 1, SLOT_FAILED => 2, _ => 3 } }
         };
         INTERP_WHY[why] = INTERP_WHY[why].wrapping_add(1);
+        {
+            let covered = match probe_fetch(before, *cpl == 3) { Some(p) => state().page_blocks.contains_key(&(p >> 12)), None => false };
+            INTERP_WHY[5 + covered as usize] = INTERP_WHY[5 + covered as usize].wrapping_add(1);
+        }
         if (before >> 12) as u32 == WATCH_PAGE as u32 { WATCH_WHY[why] += 1 }
         {
             let pg = before >> 12;
@@ -2866,9 +2986,9 @@ unsafe fn try_run_block() -> bool {
         // first visit: the code may be compiled already (another mapping of the same page)
         if !st.blocks.is_empty() {
             if let Some(phys) = probe_fetch(r, user) {
-                let key = block_key(phys, user);
+                let key = block_key(phys & !0xFFF, user);
                 if st.blocks.contains_key(&key) {
-                    refill_slot(r, key);
+                    refill_slot(r, key, (phys & 0xFFF) as usize);
                 }
             }
         }
@@ -2883,8 +3003,8 @@ unsafe fn try_run_block() -> bool {
                 // mappings may have changed or blocks were invalidated: check that rip still
                 // maps to the block of this slot
                 let ok = match probe_fetch(r, user) {
-                    Some(phys) if block_key(phys, user) == slot.key => {
-                        st.blocks.get(&slot.key).map_or(false, |b| b.index == slot.index && b.state == BlockState::Ready)
+                    Some(phys) if block_key(phys & !0xFFF, user) == slot.key => {
+                        st.blocks.get(&slot.key).map_or(false, |b| b.index == slot.index && b.state == BlockState::Ready && bit(&b.served, (phys & 0xFFF) as usize))
                     },
                     _ => false,
                 };
@@ -2914,7 +3034,7 @@ unsafe fn try_run_block() -> bool {
                 if let Some(phys) = probe_fetch(r, user) {
                     #[allow(static_mut_refs)]
                     let m = VISITS.get_or_insert_with(HashMap::new);
-                    *m.entry(block_key(phys, user)).or_insert(0) += 1;
+                    *m.entry(block_key(phys & !0xFFF, user)).or_insert(0) += 1;
                 }
             }
             slot.count += 1;
@@ -2925,22 +3045,33 @@ unsafe fn try_run_block() -> bool {
             let Some(phys) = probe_fetch(r, user) else { return false };
             if slot.limit == 0 {
                 let backoff = st.invalidations.get(&((phys >> 12) as u64)).copied().unwrap_or(0) as u32;
-                if backoff != 0 {
+                if backoff != 0 && BACKOFF_CAP != 0 {
                     // a page that was invalidated before is compiled later: remember the larger limit
-                    slot.limit = THRESHOLD.saturating_mul(1 << backoff.min(12));
+                    slot.limit = THRESHOLD.saturating_mul(1 << backoff.min(BACKOFF_CAP));
                     if slot.count < slot.limit {
+                        return false;
+                    }
+                }
+            }
+            let key = block_key(phys & !0xFFF, user);
+            let off = (phys & 0xFFF) as usize;
+            // a module that exists but does not serve this entry is compiled again with it
+            if let Some(b) = st.blocks.get(&key) {
+                if !bit(&b.served, off) && !bit(&b.failed, off) && b.compiles >= 4 {
+                    let wait = THRESHOLD.saturating_mul(1 << (b.compiles - 3).min(8));
+                    if slot.count < wait {
+                        slot.limit = wait;
                         return false;
                     }
                 }
             }
             slot.count = 0;
             slot.limit = 0;
-            let key = block_key(phys, user);
-            // an evicted slot, or a new block
-            if !st.blocks.contains_key(&key) {
+            let needs = st.blocks.get(&key).map_or(true, |b| !bit(&b.served, off) && !bit(&b.failed, off));
+            if needs {
                 compile(r, user);
             }
-            refill_slot(r, key);
+            refill_slot(r, key, off);
             if THRESHOLD == 0 {
                 // testing mode: run the block right away (needs synchronous compilation)
                 let slot = &st.slots[si];
@@ -2956,11 +3087,18 @@ unsafe fn try_run_block() -> bool {
 }
 
 /// copies the state of the block with `key` (if any) to the slot of `r`
-unsafe fn refill_slot(r: u64, key: u64) {
+unsafe fn refill_slot(r: u64, key: u64, off: usize) {
     let st = state();
     let Some(b) = st.blocks.get(&key) else { return };
     let slot = &mut st.slots[slot_index(r)];
     if slot.rip != r {
+        return;
+    }
+    if bit(&b.failed, off) {
+        slot.state = SLOT_FAILED;
+        return;
+    }
+    if !bit(&b.served, off) {
         return;
     }
     slot.phys_page = b.phys_page;
@@ -2980,29 +3118,69 @@ unsafe fn probe_fetch(r: u64, user: bool) -> Option<u32> { crate::cpu::long_mem:
 unsafe fn compile(r: u64, user: bool) {
     let Some(phys) = probe_fetch(r, user) else { return };
     let page = phys >> 12;
-    let key = block_key(phys, user);
+    let key = block_key(phys & !0xFFF, user);
     let offset = (phys & 0xFFF) as usize;
-    let code = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset(phys as isize), 0x1000 - offset);
-    // the block lives in a single page, rip and physical address agree on the page offset
+    let code = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset((phys & !0xFFF) as isize), 0x1000);
+    let page_rip = r & !0xFFF;
     let st = state();
+    let (mut seeds, compiles, mut failed) = match st.blocks.get(&key) {
+        Some(b) => (b.seeds.clone(), b.compiles, b.failed),
+        None => (vec![], 0, [0u64; 64]),
+    };
+    seeds.push(offset as u16);
     let out_of_range = r < RANGE_LO || r >= RANGE_HI;
-    let registered = if out_of_range { None } else { jit::jit64_compile(phys, |builder| generate(builder, r, code), |index| {
+    let mut old = None;
+    let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, &seeds), |index| {
         // registered before the module is handed to the host, which may finish synchronously
         if (STAT_COMPILED as usize) < 64 { COMPILED_RIPS[STAT_COMPILED as usize] = r as u32 }
         STAT_COMPILED += 1;
         if GEN_RMW { st.rmw.insert(index); } else { st.rmw.remove(&index); }
-        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: EPOCH });
+        let mut served = [0u64; 64];
+        for &o in GEN_STARTS.iter() {
+            bit_set(&mut served, o as usize);
+        }
+        if !bit(&served, offset) {
+            bit_set(&mut failed, offset);
+        }
+        old = st.blocks.remove(&key).map(|b| (b.state, b.index));
+        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: EPOCH, served, failed, seeds: seeds.clone(), compiles: compiles + 1 });
         st.by_index.insert(index, key);
-        st.page_blocks.entry(page).or_default().push(key);
+        let list = st.page_blocks.entry(page).or_default();
+        if !list.contains(&key) {
+            list.push(key);
+        }
         jit::maybe_has_code_set(Page::of_u32(page));
         crate::cpu::cpu::tlb_set_has_code(Page::of_u32(page), true);
     }) };
+    if let Some((state_before, index)) = old {
+        // the module this one replaces: slots that point to it notice on their next visit
+        EPOCH = EPOCH.wrapping_add(1);
+        st.by_index.remove(&index);
+        match state_before {
+            BlockState::Pending => { st.zombies.insert(index); },
+            BlockState::Ready => jit::jit64_free_index(index),
+            BlockState::Failed => {},
+        }
+    }
     if registered.is_none() {
+        // (a module that exists keeps serving what it served)
         STAT_FAILED += 1;
-        let st = state();
-        st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: EPOCH });
-        st.page_blocks.entry(page).or_default().push(key);
-        jit::maybe_has_code_set(Page::of_u32(page));
+        match st.blocks.get_mut(&key) {
+            Some(b) => {
+                bit_set(&mut b.failed, offset);
+                b.compiles = compiles + 1;
+            },
+            None => {
+                let mut failed = [0u64; 64];
+                bit_set(&mut failed, offset);
+                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: EPOCH, served: [0; 64], failed, seeds: vec![], compiles: 1 });
+                let list = st.page_blocks.entry(page).or_default();
+                if !list.contains(&key) {
+                    list.push(key);
+                }
+                jit::maybe_has_code_set(Page::of_u32(page));
+            },
+        }
     }
 }
 
