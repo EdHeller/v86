@@ -22,6 +22,15 @@ const bin_path = process.argv[2];
 const bin = fs.readFileSync(bin_path);
 
 const exceptions = [];
+const extra_options = JSON.parse(process.argv[3] || "{}");
+// (paths in the options of a test are relative to the repository)
+for(const key of ["wasm_path", "vcpu_worker_url"])
+{
+    if(extra_options[key] && !extra_options[key].startsWith("/"))
+    {
+        extra_options[key] = url.fileURLToPath(new URL("../../" + extra_options[key], import.meta.url));
+    }
+}
 const emulator = new V86({
     autostart: false,
     memory_size: 32 * 1024 * 1024,
@@ -31,7 +40,7 @@ const emulator = new V86({
     jit64_disable_mask: +process.env.JIT64_MASK || 0,
     log_level: 0,
     wasm_path: process.env.X64_TEST_WASM || undefined,
-    ...JSON.parse(process.argv[3] || "{}"),
+    ...extra_options,
 });
 
 let done = false;
