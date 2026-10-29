@@ -501,10 +501,58 @@ unsafe fn exec() -> OrPageFault<()> {
         }
     };
 
-    let _ = p.lock;
     let osz = p.opsize();
     if super::jit64::HIST_ON && opcode != 0x0F { let c = &mut super::jit64::EXECUTED[opcode as usize]; *c = c.wrapping_add(1) }
 
+    if crate::cpu::memory::ATOMIC_RMW && (p.lock || opcode == 0x86 || opcode == 0x87) {
+        return exec_locked(p, opcode, osz);
+    }
+    exec_op(p, opcode, osz)
+}
+
+/// What a retry of a LOCKed instruction has to restore
+struct Snapshot {
+    reg32: [i32; 8],
+    ext: [i32; 8],
+    hi: [i32; 16],
+    words: [i32; 8],
+}
+
+unsafe fn snapshot() -> Snapshot {
+    let mut s = Snapshot { reg32: [0; 8], ext: [0; 8], hi: [0; 16], words: [0; 8] };
+    for i in 0..8 { s.reg32[i] = *reg32.add(i); s.ext[i] = *reg_ext.add(i); }
+    for i in 0..16 { s.hi[i] = *reg_hi.add(i); }
+    s.words = [*instruction_pointer, *rip_hi, *flags, *flags_changed, *last_result, *last_op1, *last_op_size, *previous_ip];
+    s
+}
+
+unsafe fn restore(s: &Snapshot) {
+    for i in 0..8 { *reg32.add(i) = s.reg32[i]; *reg_ext.add(i) = s.ext[i]; }
+    for i in 0..16 { *reg_hi.add(i) = s.hi[i]; }
+    *instruction_pointer = s.words[0]; *rip_hi = s.words[1]; *flags = s.words[2]; *flags_changed = s.words[3];
+    *last_result = s.words[4]; *last_op1 = s.words[5]; *last_op_size = s.words[6]; *previous_ip = s.words[7];
+}
+
+/// A LOCKed (or xchg with memory) instruction of a machine with several cores: the write of its read-modify-write is a compare-exchange
+/// against what the read saw; after a conflict with another core it runs again
+unsafe fn exec_locked(p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
+    use super::long_mem::{RMW_FAILED, RMW_HAVE, RMW_ON};
+    let saved = snapshot();
+    loop {
+        RMW_ON = true;
+        RMW_HAVE = false;
+        RMW_FAILED = false;
+        let r = exec_op(p, opcode, osz);
+        RMW_ON = false;
+        RMW_HAVE = false;
+        if !RMW_FAILED {
+            return r;
+        }
+        restore(&saved);
+    }
+}
+
+unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
     match opcode {
         // ALU: 00-3F, op in bits 5:3, form in bits 2:0
         0x00..=0x3F if opcode & 7 < 6 => {

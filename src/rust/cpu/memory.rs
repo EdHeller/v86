@@ -387,3 +387,71 @@ pub unsafe fn is_memory_zeroed(addr: u32, length: u32) -> bool {
     }
     return true;
 }
+
+
+/// Several cores share the guest RAM (a parallel machine, docs/parallel.md): read-modify-write instructions
+/// that must be atomic commit through compare-exchange
+pub static mut ATOMIC_RMW: bool = false;
+
+/// Compare-exchange of the `bits` bit value at the physical address `phys` (in RAM, not in a memory mapped range). Returns None when it
+/// cannot be done atomically (crosses a 32 bit boundary, mapped range): the caller then does it the plain way
+pub unsafe fn atomic_cas(phys: u32, bits: u32, expected: u64, new: u64) -> Option<bool> {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::SeqCst};
+    if in_mapped_range(phys) {
+        return None;
+    }
+    if bits == 64 {
+        if phys & 7 != 0 {
+            return None;
+        }
+        let p = mem8.offset(phys as isize) as *const AtomicU64;
+        return Some((*p).compare_exchange(expected, new, SeqCst, SeqCst).is_ok());
+    }
+    let shift = (phys & 3) * 8;
+    if shift + bits > 32 {
+        return None;
+    }
+    let mask = if bits == 32 { 0xFFFF_FFFFu32 } else { (1u32 << bits) - 1 };
+    let p = mem8.offset((phys & !3) as isize) as *const AtomicU32;
+    loop {
+        let cur = (*p).load(SeqCst);
+        if (cur >> shift) & mask != expected as u32 & mask {
+            return Some(false);
+        }
+        let next = (cur & !(mask << shift)) | ((new as u32 & mask) << shift);
+        match (*p).compare_exchange(cur, next, SeqCst, SeqCst) {
+            Ok(_) => return Some(true),
+            // (another part of the word changed: look again)
+            Err(_) => continue,
+        }
+    }
+}
+
+/// Atomic read-modify-write of 8, 16 or 32 bits at `phys`: `f` maps the old value to the new one (it may run more than once). False when
+/// not possible atomically
+pub unsafe fn atomic_rmw(phys: u32, bits: u32, f: &dyn Fn(i32) -> i32) -> bool {
+    use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+    let shift = (phys & 3) * 8;
+    if in_mapped_range(phys) || shift + bits > 32 {
+        return false;
+    }
+    let mask = if bits == 32 { 0xFFFF_FFFFu32 } else { (1u32 << bits) - 1 };
+    let p = mem8.offset((phys & !3) as isize) as *const AtomicU32;
+    // (instructions such as xchg, xadd and cmpxchg change registers inside `f`: a retry starts from the registers of the first attempt)
+    let mut saved = [0i32; 8];
+    for i in 0..8 {
+        saved[i] = *crate::cpu::global_pointers::reg32.add(i);
+    }
+    loop {
+        let cur = (*p).load(SeqCst);
+        let old = ((cur >> shift) & mask) as i32;
+        let new = f(old) as u32 & mask;
+        let next = (cur & !(mask << shift)) | (new << shift);
+        if (*p).compare_exchange(cur, next, SeqCst, SeqCst).is_ok() {
+            return true;
+        }
+        for i in 0..8 {
+            *crate::cpu::global_pointers::reg32.add(i) = saved[i];
+        }
+    }
+}

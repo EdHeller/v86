@@ -10,6 +10,7 @@ export const MAX_CORES = 8;
 export const PENDING = 0;
 export const STOP = 8;
 export const WAKE = 9;
+export const DEBUG = 10; // + core: the eip of the core, written by its worker after each slice (debugging)
 export const SLOT_BASE = 16;
 export const SLOT_WORDS = 16;
 export const CONTROL_WORDS = SLOT_BASE + MAX_CORES * SLOT_WORDS;

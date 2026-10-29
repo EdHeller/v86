@@ -84,6 +84,7 @@ async function start(data, post)
                 if(events) exports["worker_events"](events);
             }
             const status = exports["worker_run"](20000);
+            Atomics.store(ctl, C.DEBUG + core, exports["smp_debug_field"](core, 556));
             if(status !== 0)
             {
                 // halted or waiting for the start-up IPI: sleep until the machine has something (or a little, if what it has cannot be taken yet)

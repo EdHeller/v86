@@ -46,6 +46,7 @@ pub mod host {
 pub unsafe fn worker_init(core: u32, cores: u32, memory_ptr: u32, memory_size_: u32, tsc_low: u32, tsc_high: u32) {
     WORKER = true;
     STARTED = false;
+    memory::ATOMIC_RMW = true;
     apic::CORE_COUNT = cores as usize;
     apic::CURRENT_CORE = core as usize;
     memory::mem8 = memory_ptr as *mut u8;
@@ -154,7 +155,10 @@ pub unsafe fn machine_pending_mask() -> u32 {
 
 /// the machine leaves the cores other than the first to workers
 #[no_mangle]
-pub unsafe fn machine_set_parallel(on: u32) { MACHINE = on != 0 }
+pub unsafe fn machine_set_parallel(on: u32) {
+    MACHINE = on != 0;
+    memory::ATOMIC_RMW = on != 0;
+}
 
 #[no_mangle]
 pub unsafe fn machine_ioapic_read32(addr: u32) -> u32 { crate::cpu::ioapic::read32(addr) }

@@ -479,7 +479,10 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         match b {
             0x66 => p.osz16 = true,
             0x67 => p.asz32 = true,
-            0xF0 => {},
+            0xF0 => {
+                // (a LOCKed instruction of a machine with several cores is atomic: the interpreter does it)
+                if unsafe { crate::cpu::memory::ATOMIC_RMW } { return None }
+            },
             0x64 => p.seg = FS,
             0x65 => p.seg = GS,
             0x26 | 0x2E | 0x36 | 0x3E => {},
@@ -598,6 +601,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         0x86 | 0x87 => {
             let bits = if opcode == 0x86 { 8 } else { osz };
             let m = modrm(&mut c, &p)?;
+            if unsafe { crate::cpu::memory::ATOMIC_RMW } && matches!(m.rm, Opd::Mem(_)) { return None }
             Insn::Xchg { bits, a: m.rm, b: Opd::Reg(m.reg, p.has_rex) }
         },
         0x98 | 0x99 => Insn::Sext { opcode, bits: osz },

@@ -328,12 +328,30 @@ unsafe fn write_phys(phys: u32, bits: u32, v: u64) {
     }
 }
 
+/// A LOCKed read-modify-write instruction of a parallel machine (long mode): the first read of the instruction is remembered and the write
+/// that follows commits with a compare-exchange against it; when another core changed the location in between, `RMW_FAILED` is set and the
+/// instruction is run again (long_mode.rs, `exec`)
+pub static mut RMW_ON: bool = false;
+pub static mut RMW_HAVE: bool = false;
+pub static mut RMW_FAILED: bool = false;
+static mut RMW_PHYS: u32 = 0;
+static mut RMW_BITS: u32 = 0;
+static mut RMW_VALUE: u64 = 0;
+
 pub unsafe fn mem_read(addr: u64, bits: u32) -> OrPageFault<u64> {
     let bytes = bits as u64 / 8;
     check_canonical(addr, bytes)?;
     let user = *cpl == 3;
     if (addr & 0xFFF) + bytes <= 0x1000 {
-        return Ok(read_phys(translate(addr, false, user, false)?, bits));
+        let phys = translate(addr, false, user, false)?;
+        let v = read_phys(phys, bits);
+        if RMW_ON && !RMW_HAVE && !memory::in_mapped_range(phys) {
+            RMW_HAVE = true;
+            RMW_PHYS = phys;
+            RMW_BITS = bits;
+            RMW_VALUE = v;
+        }
+        return Ok(v);
     }
     let first = translate(addr, false, user, false)?;
     let second = translate((addr & !0xFFF) + 0x1000, false, user, false)?;
@@ -357,7 +375,18 @@ pub unsafe fn mem_write(addr: u64, bits: u32, v: u64) -> OrPageFault<()> {
     check_canonical(addr, bytes)?;
     let user = *cpl == 3;
     if (addr & 0xFFF) + bytes <= 0x1000 {
-        write_phys(translate(addr, true, user, false)?, bits, v);
+        let phys = translate(addr, true, user, false)?;
+        if RMW_ON && RMW_HAVE && RMW_PHYS == phys && RMW_BITS == bits {
+            RMW_HAVE = false;
+            jit::jit_dirty_page(Page::page_of(phys));
+            if let Some(ok) = memory::atomic_cas(phys, bits, RMW_VALUE, v) {
+                if !ok {
+                    RMW_FAILED = true;
+                }
+                return Ok(());
+            }
+        }
+        write_phys(phys, bits, v);
         return Ok(());
     }
     // translate both pages before writing anything

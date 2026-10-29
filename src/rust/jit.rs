@@ -549,6 +549,11 @@ fn jit_find_basic_blocks(
             continue;
         }
 
+        if needs_atomic_interpretation(phys_addr) {
+            // (empty basic block: the interpreter runs the instruction)
+            continue;
+        }
+
         let mut current_address = phys_addr;
         let mut current_block = BasicBlock {
             addr: current_address,
@@ -562,6 +567,10 @@ fn jit_find_basic_blocks(
         };
         loop {
             let addr_before_instruction = current_address;
+            if current_block.number_of_instructions > 0 && needs_atomic_interpretation(current_address) {
+                // the block ends before the instruction, the interpreter runs it
+                break;
+            }
             let mut cpu = &mut CpuContext {
                 eip: current_address,
                 ..cpu
@@ -2249,6 +2258,25 @@ fn free_wasm_table_index(ctx: &mut JitState, wasm_table_index: WasmTableIndex) {
 }
 
 pub fn jit_disabled() -> bool { unsafe { JIT_DISABLED } }
+
+/// A LOCKed instruction (or xchg with memory) of a machine whose cores share the guest RAM has to be atomic: compiled code does the
+/// read-modify-write with plain loads and stores, the interpreter with a compare-exchange
+fn needs_atomic_interpretation(phys_addr: u32) -> bool {
+    if unsafe { !memory::ATOMIC_RMW } {
+        return false;
+    }
+    let mut a = phys_addr;
+    for _ in 0..6 {
+        match memory::read8(a) & 0xFF {
+            0xF0 => return true,
+            // operand/address size, segment and rep prefixes
+            0x66 | 0x67 | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0xF2 | 0xF3 => a += 1,
+            0x86 | 0x87 => return memory::read8(a + 1) & 0xC0 != 0xC0,
+            _ => return false,
+        }
+    }
+    false
+}
 
 /// Compiles a module for cpu::jit64: `f` generates the code into the builder. Returns the wasm
 /// table index; the module becomes callable when `jit64::finalize_finished` is called.

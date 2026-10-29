@@ -4354,6 +4354,14 @@ pub unsafe fn safe_write128(addr: i32, value: reg128) -> OrPageFault<()> {
 pub unsafe fn safe_read_write8(addr: i32, instruction: &dyn Fn(i32) -> i32) {
     let (phys_addr, can_skip_dirty_page) =
         return_on_pagefault!(translate_address_write_and_can_skip_dirty(addr));
+    if memory::ATOMIC_RMW && !memory::in_mapped_range(phys_addr) {
+        if !can_skip_dirty_page {
+            jit::jit_dirty_page(Page::page_of(phys_addr));
+        }
+        if memory::atomic_rmw(phys_addr, 8, instruction) {
+            return;
+        }
+    }
     let x = memory::read8(phys_addr);
     let value = instruction(x);
     dbg_assert!(value >= 0 && value < 0x100);
@@ -4381,6 +4389,14 @@ pub unsafe fn safe_read_write16(addr: i32, instruction: &dyn Fn(i32) -> i32) {
         virt_boundary_write16(phys_addr, phys_addr_high, instruction(x));
     }
     else {
+        if memory::ATOMIC_RMW && !memory::in_mapped_range(phys_addr) {
+            if !can_skip_dirty_page {
+                jit::jit_dirty_page(Page::page_of(phys_addr));
+            }
+            if memory::atomic_rmw(phys_addr, 16, instruction) {
+                return;
+            }
+        }
         let x = memory::read16(phys_addr);
         let value = instruction(x);
         dbg_assert!(value >= 0 && value < 0x10000);
@@ -4410,6 +4426,14 @@ pub unsafe fn safe_read_write32(addr: i32, instruction: &dyn Fn(i32) -> i32) {
         virt_boundary_write32(phys_addr, phys_addr_high, instruction(x));
     }
     else {
+        if memory::ATOMIC_RMW && !memory::in_mapped_range(phys_addr) {
+            if !can_skip_dirty_page {
+                jit::jit_dirty_page(Page::page_of(phys_addr));
+            }
+            if memory::atomic_rmw(phys_addr, 32, instruction) {
+                return;
+            }
+        }
         let x = memory::read32s(phys_addr);
         let value = instruction(x);
         if memory::in_mapped_range(phys_addr) {

@@ -1,6 +1,8 @@
 use crate::cpu::cpu::*;
 use crate::cpu::global_pointers::*;
 use crate::cpu::memory;
+use crate::jit;
+use crate::page::Page;
 use crate::cpu::misc_instr::{getaf, getcf, getzf};
 
 fn int_log2(x: i32) -> i32 { 31 - x.leading_zeros() as i32 }
@@ -1023,24 +1025,60 @@ pub unsafe fn bt_mem(virt_addr: i32, mut bit_offset: i32) {
 }
 pub unsafe fn btc_mem(virt_addr: i32, mut bit_offset: i32) {
     let phys_addr = return_on_pagefault!(translate_address_write(virt_addr + (bit_offset >> 3)));
-    let bit_base = memory::read8(phys_addr);
     bit_offset &= 7;
+    if memory::ATOMIC_RMW && !memory::in_mapped_range(phys_addr) {
+        // (cores share the RAM: LOCKed bit instructions have to be atomic)
+        jit::jit_dirty_page(Page::page_of(phys_addr));
+        let done = memory::atomic_rmw(phys_addr, 8, &|bit_base| {
+            *flags = *flags & !1 | bit_base >> bit_offset & 1;
+            *flags_changed &= !1;
+            bit_base ^ 1 << bit_offset
+        });
+        if done {
+            return;
+        }
+    }
+    let bit_base = memory::read8(phys_addr);
     *flags = *flags & !1 | bit_base >> bit_offset & 1;
     *flags_changed &= !1;
     memory::write8(phys_addr, bit_base ^ 1 << bit_offset);
 }
 pub unsafe fn btr_mem(virt_addr: i32, mut bit_offset: i32) {
     let phys_addr = return_on_pagefault!(translate_address_write(virt_addr + (bit_offset >> 3)));
-    let bit_base = memory::read8(phys_addr);
     bit_offset &= 7;
+    if memory::ATOMIC_RMW && !memory::in_mapped_range(phys_addr) {
+        // (cores share the RAM: LOCKed bit instructions have to be atomic)
+        jit::jit_dirty_page(Page::page_of(phys_addr));
+        let done = memory::atomic_rmw(phys_addr, 8, &|bit_base| {
+            *flags = *flags & !1 | bit_base >> bit_offset & 1;
+            *flags_changed &= !1;
+            bit_base & !(1 << bit_offset)
+        });
+        if done {
+            return;
+        }
+    }
+    let bit_base = memory::read8(phys_addr);
     *flags = *flags & !1 | bit_base >> bit_offset & 1;
     *flags_changed &= !1;
     memory::write8(phys_addr, bit_base & !(1 << bit_offset));
 }
 pub unsafe fn bts_mem(virt_addr: i32, mut bit_offset: i32) {
     let phys_addr = return_on_pagefault!(translate_address_write(virt_addr + (bit_offset >> 3)));
-    let bit_base = memory::read8(phys_addr);
     bit_offset &= 7;
+    if memory::ATOMIC_RMW && !memory::in_mapped_range(phys_addr) {
+        // (cores share the RAM: LOCKed bit instructions have to be atomic)
+        jit::jit_dirty_page(Page::page_of(phys_addr));
+        let done = memory::atomic_rmw(phys_addr, 8, &|bit_base| {
+            *flags = *flags & !1 | bit_base >> bit_offset & 1;
+            *flags_changed &= !1;
+            bit_base | 1 << bit_offset
+        });
+        if done {
+            return;
+        }
+    }
+    let bit_base = memory::read8(phys_addr);
     *flags = *flags & !1 | bit_base >> bit_offset & 1;
     *flags_changed &= !1;
     memory::write8(phys_addr, bit_base | 1 << bit_offset);

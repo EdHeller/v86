@@ -95,5 +95,19 @@ emulator.add_listener("emulator-loaded", function()
     cpu.mem8.set(bin, LOAD_ADDR);
     // reset vector f000:fff0 -> jmp 0000:7c00
     cpu.mem8.set([0xEA, 0x00, 0x7C, 0x00, 0x00], 0xFFFF0);
-    emulator.run();
+    if(cpu.parallel)
+    {
+        // the other cores are in workers that take a moment to start
+        const wait = setInterval(() => {
+            if(cpu.parallel.ready >= cpu.parallel.cores - 1 || cpu.parallel.failed)
+            {
+                clearInterval(wait);
+                emulator.run();
+            }
+        }, 10);
+    }
+    else
+    {
+        emulator.run();
+    }
 });
