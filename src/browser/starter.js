@@ -7,6 +7,7 @@ import { Bus } from "../bus.js";
 import { BOOT_ORDER_FD_FIRST, BOOT_ORDER_HD_FIRST, BOOT_ORDER_CD_FIRST } from "../rtc.js";
 import { EEXIST, ENOENT } from "../../lib/9p.js";
 
+import { instantiate_v86 } from "../parallel/relocate.js";
 import { SpeakerAdapter } from "./speaker.js";
 import { NetworkAdapter } from "./network.js";
 import { FetchNetworkAdapter } from "./fetch_network.js";
@@ -142,7 +143,7 @@ export function V86(options)
                     {
                         try
                         {
-                            const { instance } = await WebAssembly.instantiate(bytes, env);
+                            const { instance } = await instantiate_v86(bytes, env);
                             this.wasm_source = bytes;
                             resolve(instance.exports);
                         }

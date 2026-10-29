@@ -1,100 +1,123 @@
 #![allow(non_upper_case_globals)]
 
+// The CPU state lives in a block of the module's memory. In the normal build it is at fixed addresses (what the
+// JavaScript side and the compiled code assume). In the `parallel` build (docs/parallel.md) the block is a static,
+// STATE_BLOCK: tools/parallel_wasm.mjs lists every reference to it, and the loader (src/parallel/relocate.js) gives each
+// instance of the module its own copy, in a low slot of the shared memory (slot 0, the machine's, is the fixed address).
+#[cfg(feature = "parallel")]
+#[repr(C, align(4096))]
+pub struct StateBlock(pub [u8; 4096]);
+#[cfg(feature = "parallel")]
+pub static mut STATE_BLOCK: StateBlock = StateBlock([0; 4096]);
+
+#[cfg(feature = "parallel")]
+macro_rules! sp {
+    ($t:ty, $off:expr) => {
+        unsafe { (&raw mut STATE_BLOCK as *mut u8).wrapping_add($off) as *mut $t }
+    };
+}
+#[cfg(not(feature = "parallel"))]
+macro_rules! sp {
+    ($t:ty, $off:expr) => {
+        $off as *mut $t
+    };
+}
+
 use crate::cpu::cpu::reg128;
 use crate::softfloat::F80;
 use crate::state_flags::CachedStateFlags;
 
-pub const reg8: *mut u8 = 64 as *mut u8;
-pub const reg16: *mut u16 = 64 as *mut u16;
-pub const reg32: *mut i32 = 64 as *mut i32;
+pub const reg8: *mut u8 = sp!(u8, 64);
+pub const reg16: *mut u16 = sp!(u16, 64);
+pub const reg32: *mut i32 = sp!(i32, 64);
 
-pub const last_op_size: *mut i32 = 96 as *mut i32;
-pub const flags_changed: *mut i32 = 100 as *mut i32;
-pub const last_op1: *mut i32 = 104 as *mut i32;
-pub const state_flags: *mut CachedStateFlags = 108 as *mut CachedStateFlags;
-pub const last_result: *mut i32 = 112 as *mut i32;
-pub const flags: *mut i32 = 120 as *mut i32;
+pub const last_op_size: *mut i32 = sp!(i32, 96);
+pub const flags_changed: *mut i32 = sp!(i32, 100);
+pub const last_op1: *mut i32 = sp!(i32, 104);
+pub const state_flags: *mut CachedStateFlags = sp!(CachedStateFlags, 108);
+pub const last_result: *mut i32 = sp!(i32, 112);
+pub const flags: *mut i32 = sp!(i32, 120);
 
-pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
+pub const segment_access_bytes: *mut u8 = sp!(u8, 512); // TODO: reorder below segment_limits
 
-pub const apic_enabled: *mut bool = 548 as *mut bool;
-pub const acpi_enabled: *mut bool = 552 as *mut bool;
+pub const apic_enabled: *mut bool = sp!(bool, 548);
+pub const acpi_enabled: *mut bool = sp!(bool, 552);
 
-pub const instruction_pointer: *mut i32 = 556 as *mut i32;
-pub const previous_ip: *mut i32 = 560 as *mut i32;
-pub const idtr_size: *mut i32 = 564 as *mut i32;
-pub const idtr_offset: *mut i32 = 568 as *mut i32;
-pub const gdtr_size: *mut i32 = 572 as *mut i32;
-pub const gdtr_offset: *mut i32 = 576 as *mut i32;
-pub const cr: *mut i32 = 580 as *mut i32;
-pub const cpl: *mut u8 = 612 as *mut u8;
-pub const in_hlt: *mut bool = 616 as *mut bool;
-pub const last_virt_eip: *mut i32 = 620 as *mut i32;
-pub const eip_phys: *mut i32 = 624 as *mut i32;
+pub const instruction_pointer: *mut i32 = sp!(i32, 556);
+pub const previous_ip: *mut i32 = sp!(i32, 560);
+pub const idtr_size: *mut i32 = sp!(i32, 564);
+pub const idtr_offset: *mut i32 = sp!(i32, 568);
+pub const gdtr_size: *mut i32 = sp!(i32, 572);
+pub const gdtr_offset: *mut i32 = sp!(i32, 576);
+pub const cr: *mut i32 = sp!(i32, 580);
+pub const cpl: *mut u8 = sp!(u8, 612);
+pub const in_hlt: *mut bool = sp!(bool, 616);
+pub const last_virt_eip: *mut i32 = sp!(i32, 620);
+pub const eip_phys: *mut i32 = sp!(i32, 624);
 
-pub const sysenter_cs: *mut i32 = 636 as *mut i32;
-pub const sysenter_esp: *mut i32 = 640 as *mut i32;
-pub const sysenter_eip: *mut i32 = 644 as *mut i32;
-pub const prefixes: *mut u8 = 648 as *mut u8;
-pub const instruction_counter: *mut u32 = 664 as *mut u32;
-pub const sreg: *mut u16 = 668 as *mut u16;
-pub const dreg: *mut i32 = 684 as *mut i32;
+pub const sysenter_cs: *mut i32 = sp!(i32, 636);
+pub const sysenter_esp: *mut i32 = sp!(i32, 640);
+pub const sysenter_eip: *mut i32 = sp!(i32, 644);
+pub const prefixes: *mut u8 = sp!(u8, 648);
+pub const instruction_counter: *mut u32 = sp!(u32, 664);
+pub const sreg: *mut u16 = sp!(u16, 668);
+pub const dreg: *mut i32 = sp!(i32, 684);
 
 // filled in by svga_fill_pixel_buffer, read by javacsript for optimised putImageData calls
-pub const svga_dirty_bitmap_min_offset: *mut u32 = 716 as *mut u32;
-pub const svga_dirty_bitmap_max_offset: *mut u32 = 720 as *mut u32;
+pub const svga_dirty_bitmap_min_offset: *mut u32 = sp!(u32, 716);
+pub const svga_dirty_bitmap_max_offset: *mut u32 = sp!(u32, 720);
 
-pub const segment_is_null: *mut bool = 724 as *mut bool;
-pub const segment_offsets: *mut i32 = 736 as *mut i32;
-pub const segment_limits: *mut u32 = 768 as *mut u32;
+pub const segment_is_null: *mut bool = sp!(bool, 724);
+pub const segment_offsets: *mut i32 = sp!(i32, 736);
+pub const segment_limits: *mut u32 = sp!(u32, 768);
 
-pub const protected_mode: *mut bool = 800 as *mut bool;
-pub const is_32: *mut bool = 804 as *mut bool;
-pub const stack_size_32: *mut bool = 808 as *mut bool;
-pub const memory_size: *mut u32 = 812 as *mut u32;
-pub const fpu_stack_empty: *mut u8 = 816 as *mut u8;
-pub const mxcsr: *mut i32 = 824 as *mut i32;
+pub const protected_mode: *mut bool = sp!(bool, 800);
+pub const is_32: *mut bool = sp!(bool, 804);
+pub const stack_size_32: *mut bool = sp!(bool, 808);
+pub const memory_size: *mut u32 = sp!(u32, 812);
+pub const fpu_stack_empty: *mut u8 = sp!(u8, 816);
+pub const mxcsr: *mut i32 = sp!(i32, 824);
 
-pub const reg_xmm: *mut reg128 = 1536 as *mut reg128; // 16 entries, xmm8-15 are only used in 64-bit mode
-pub const current_tsc: *mut u64 = 960 as *mut u64;
+pub const reg_xmm: *mut reg128 = sp!(reg128, 1536); // 16 entries, xmm8-15 are only used in 64-bit mode
+pub const current_tsc: *mut u64 = sp!(u64, 960);
 
-pub const reg_pdpte: *mut u64 = 968 as *mut u64; // 4 64-bit entries
+pub const reg_pdpte: *mut u64 = sp!(u64, 968); // 4 64-bit entries
 
-pub const fpu_stack_ptr: *mut u8 = 1032 as *mut u8;
-pub const fpu_control_word: *mut u16 = 1036 as *mut u16;
-pub const fpu_status_word: *mut u16 = 1040 as *mut u16;
-pub const fpu_opcode: *mut i32 = 1044 as *mut i32;
-pub const fpu_ip: *mut i32 = 1048 as *mut i32;
-pub const fpu_ip_selector: *mut i32 = 1052 as *mut i32;
-pub const fpu_dp: *mut i32 = 1056 as *mut i32;
-pub const fpu_dp_selector: *mut i32 = 1060 as *mut i32;
-pub const tss_size_32: *mut bool = 1128 as *mut bool;
+pub const fpu_stack_ptr: *mut u8 = sp!(u8, 1032);
+pub const fpu_control_word: *mut u16 = sp!(u16, 1036);
+pub const fpu_status_word: *mut u16 = sp!(u16, 1040);
+pub const fpu_opcode: *mut i32 = sp!(i32, 1044);
+pub const fpu_ip: *mut i32 = sp!(i32, 1048);
+pub const fpu_ip_selector: *mut i32 = sp!(i32, 1052);
+pub const fpu_dp: *mut i32 = sp!(i32, 1056);
+pub const fpu_dp_selector: *mut i32 = sp!(i32, 1060);
+pub const tss_size_32: *mut bool = sp!(bool, 1128);
 
-pub const sse_scratch_register: *mut reg128 = 1136 as *mut reg128;
+pub const sse_scratch_register: *mut reg128 = sp!(reg128, 1136);
 
-pub const fpu_st: *mut F80 = 1152 as *mut F80;
-pub const efer: *mut u64 = 1280 as *mut u64;
-pub const pat: *mut u64 = 1288 as *mut u64;
+pub const fpu_st: *mut F80 = sp!(F80, 1152);
+pub const efer: *mut u64 = sp!(u64, 1280);
+pub const pat: *mut u64 = sp!(u64, 1288);
 
 // Long mode state (see cpu/long_mode.rs). The low 32 bits of rax..rdi live in `reg32`.
-pub const reg_hi: *mut i32 = 1344 as *mut i32; // upper 32 bits of r0..r15 (16 entries)
-pub const reg_ext: *mut i32 = 1408 as *mut i32; // lower 32 bits of r8..r15 (8 entries)
-pub const rip_hi: *mut i32 = 1440 as *mut i32; // upper 32 bits of rip, always 0 for now
-pub const is_64: *mut bool = 1444 as *mut bool; // executing a 64-bit code segment (EFER.LMA && CS.L)
-pub const msr_star: *mut u64 = 1448 as *mut u64;
-pub const msr_lstar: *mut u64 = 1456 as *mut u64;
-pub const msr_cstar: *mut u64 = 1464 as *mut u64;
-pub const msr_sfmask: *mut u64 = 1472 as *mut u64;
-pub const fs_base: *mut u64 = 1480 as *mut u64; // 64-bit fs/gs base, used by 64-bit code
-pub const gs_base: *mut u64 = 1488 as *mut u64;
-pub const kernel_gs_base: *mut u64 = 1496 as *mut u64;
-pub const cr2_hi: *mut i32 = 1504 as *mut i32; // upper half of cr2
-pub const cr8_tpr: *mut i32 = 1508 as *mut i32; // cr8 (task priority), 4 bits
-pub const gdtr_hi: *mut i32 = 1512 as *mut i32; // upper halves of the 64-bit descriptor table bases
-pub const idtr_hi: *mut i32 = 1516 as *mut i32;
-pub const tr_base_hi: *mut i32 = 1520 as *mut i32;
-pub const sse_exception_pending: *mut i32 = 1524 as *mut i32; // set by sse instructions called from the jit
-pub const xcr0: *mut u64 = 1528 as *mut u64; // enabled xsave state components (saved with the state)
+pub const reg_hi: *mut i32 = sp!(i32, 1344); // upper 32 bits of r0..r15 (16 entries)
+pub const reg_ext: *mut i32 = sp!(i32, 1408); // lower 32 bits of r8..r15 (8 entries)
+pub const rip_hi: *mut i32 = sp!(i32, 1440); // upper 32 bits of rip, always 0 for now
+pub const is_64: *mut bool = sp!(bool, 1444); // executing a 64-bit code segment (EFER.LMA && CS.L)
+pub const msr_star: *mut u64 = sp!(u64, 1448);
+pub const msr_lstar: *mut u64 = sp!(u64, 1456);
+pub const msr_cstar: *mut u64 = sp!(u64, 1464);
+pub const msr_sfmask: *mut u64 = sp!(u64, 1472);
+pub const fs_base: *mut u64 = sp!(u64, 1480); // 64-bit fs/gs base, used by 64-bit code
+pub const gs_base: *mut u64 = sp!(u64, 1488);
+pub const kernel_gs_base: *mut u64 = sp!(u64, 1496);
+pub const cr2_hi: *mut i32 = sp!(i32, 1504); // upper half of cr2
+pub const cr8_tpr: *mut i32 = sp!(i32, 1508); // cr8 (task priority), 4 bits
+pub const gdtr_hi: *mut i32 = sp!(i32, 1512); // upper halves of the 64-bit descriptor table bases
+pub const idtr_hi: *mut i32 = sp!(i32, 1516);
+pub const tr_base_hi: *mut i32 = sp!(i32, 1520);
+pub const sse_exception_pending: *mut i32 = sp!(i32, 1524); // set by sse instructions called from the jit
+pub const xcr0: *mut u64 = sp!(u64, 1528); // enabled xsave state components (saved with the state)
 
 pub fn get_reg32_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);

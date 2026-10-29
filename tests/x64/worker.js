@@ -30,6 +30,7 @@ const emulator = new V86({
     sync_jit: process.env.JIT64 !== undefined,
     jit64_disable_mask: +process.env.JIT64_MASK || 0,
     log_level: 0,
+    wasm_path: process.env.X64_TEST_WASM || undefined,
     ...JSON.parse(process.argv[3] || "{}"),
 });
 

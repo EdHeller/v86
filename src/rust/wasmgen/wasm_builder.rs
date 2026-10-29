@@ -509,6 +509,7 @@ impl WasmBuilder {
     }
 
     pub fn write_memory_import(&mut self) {
+        let start = self.output.len();
         self.output.push(1);
         self.output.push('e' as u8);
         self.output.push(1);
@@ -516,13 +517,21 @@ impl WasmBuilder {
 
         self.output.push(op::EXT_MEMORY);
 
-        self.output.push(0); // memory flag, 0 for no maximum memory limit present
-        write_leb_u32(&mut self.output, 64); // initial memory length of 64 pages, takes 1 bytes in leb128
+        if cfg!(feature = "parallel") {
+            // the parallel build's memory is shared (and so has a maximum): the imports have to say so
+            self.output.push(3);
+            write_leb_u32(&mut self.output, 64);
+            write_leb_u32(&mut self.output, 65536);
+        }
+        else {
+            self.output.push(0); // memory flag, 0 for no maximum memory limit present
+            write_leb_u32(&mut self.output, 64); // initial memory length of 64 pages, takes 1 bytes in leb128
+        }
 
         let new_import_count = self.import_count + 1;
         self.set_import_count(new_import_count);
 
-        let new_table_size = self.import_table_size + 7;
+        let new_table_size = self.import_table_size + (self.output.len() - start);
         self.set_import_table_size(new_table_size);
     }
 

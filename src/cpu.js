@@ -1804,7 +1804,12 @@ CPU.prototype.codegen_finalize = function(wasm_table_index, start, state_flags, 
 
     dbg_assert(wasm_table_index >= 0 && wasm_table_index < WASM_TABLE_SIZE);
 
-    const code = new Uint8Array(this.wasm_memory.buffer, ptr, len);
+    let code = new Uint8Array(this.wasm_memory.buffer, ptr, len);
+    if(typeof SharedArrayBuffer !== "undefined" && this.wasm_memory.buffer instanceof SharedArrayBuffer)
+    {
+        // (a shared memory: WebAssembly does not compile views of it, and other cores may overwrite the bytes)
+        code = code.slice();
+    }
 
     if(DEBUG)
     {
