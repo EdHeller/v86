@@ -73,6 +73,16 @@ const options = {
     cdrom: { url: iso },
     autostart: true,
 };
+// ?workers=1 (with ?cores=N): the cores other than the first run in Web Workers, each in its own instance of v86-parallel.wasm. Needs a
+// cross-origin isolated page (python3 serve.py); otherwise the cores take turns on one thread.
+const want_workers = param("workers") !== null && options.cpu_cores > 1;
+const use_workers = want_workers && self.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined";
+if(use_workers)
+{
+    options.wasm_path = "../build/v86-parallel.wasm";
+    options.cpu_workers = true;
+    options.vcpu_worker_url = "../build/vcpu-worker.js";
+}
 // v86's serial terminal (xterm.js) when the library could be loaded, a plain log otherwise
 if(window.Terminal) options.serial_container_xtermjs = document.getElementById("terminal");
 const emulator = window.emulator = new V86(options);
@@ -106,7 +116,7 @@ function log(text)
     lines.push(s.toFixed(1).padStart(7) + " s  " + text + "   [" + (n / 1e6).toFixed(0) + " M instr, avg " + (n / 1e6 / s).toFixed(1) + " MIPS]");
     document.getElementById("log").textContent = lines.join("\n");
 }
-log("page loaded: " + tag + (options.cpu_cores > 1 ? ", " + options.cpu_cores + " cores" : "") + " kernel + initramfs + ISO requested");
+log("page loaded: " + tag + (options.cpu_cores > 1 ? ", " + options.cpu_cores + " cores" + (use_workers ? " in Web Workers" : want_workers ? " (workers need a cross-origin isolated page, run python3 serve.py: the cores take turns)" : " taking turns") : "") + " kernel + initramfs + ISO requested");
 
 document.getElementById("login").onclick = () => emulator.keyboard_send_text("root\n");
 // 40000 iterations of i=$((i+1)) in busybox ash, run over the serial console so that the result is logged here

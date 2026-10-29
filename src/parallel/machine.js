@@ -39,7 +39,7 @@ export class ParallelMachine
                 tsc_low: this.exports["get_tsc_offset"](0), tsc_high: this.exports["get_tsc_offset"](1),
                 time_origin, table_size,
             };
-            this.workers[core] = await spawn(this.worker_url, data, message => {
+            this.workers[core] = spawn(this.worker_url, data, message => {
                 if(message.ready) this.ready++;
                 if(message.failed !== undefined) this.failed = message;
             });
@@ -116,11 +116,11 @@ export class ParallelMachine
 }
 
 /** a worker running `url` (a module worker in the browser, a worker_threads worker in node) */
-async function spawn(url, data, on_message)
+function spawn(url, data, on_message)
 {
     if(typeof process !== "undefined" && process.versions && process.versions.node)
     {
-        const { Worker } = await import("node:worker_threads");
+        const { Worker } = process["getBuiltinModule"] ? process["getBuiltinModule"]("node:worker_threads") : require("worker_threads");
         const worker = new Worker(url, { workerData: data });
         worker.on("message", on_message);
         worker.on("error", e => on_message({ failed: -1, message: String(e && e.stack || e) }));

@@ -2276,7 +2276,7 @@ pub unsafe fn do_page_walk(
                 | if for_writing { PAGE_TABLE_DIRTY_MASK } else { 0 };
 
             if side_effects && page_dir_entry != new_page_dir_entry {
-                memory::write8(page_dir_addr, new_page_dir_entry);
+                memory::set_entry_bits(page_dir_addr, (new_page_dir_entry ^ page_dir_entry) as u8);
             }
 
             high = if pae {
@@ -2346,13 +2346,13 @@ pub unsafe fn do_page_walk(
             // Note: dirty bit is only set on the page table entry
             let new_page_dir_entry = page_dir_entry | PAGE_TABLE_ACCESSED_MASK;
             if side_effects && new_page_dir_entry != page_dir_entry {
-                memory::write8(page_dir_addr, new_page_dir_entry);
+                memory::set_entry_bits(page_dir_addr, (new_page_dir_entry ^ page_dir_entry) as u8);
             }
             let new_page_table_entry = page_table_entry
                 | PAGE_TABLE_ACCESSED_MASK
                 | if for_writing { PAGE_TABLE_DIRTY_MASK } else { 0 };
             if side_effects && page_table_entry != new_page_table_entry {
-                memory::write8(page_table_addr, new_page_table_entry);
+                memory::set_entry_bits(page_table_addr, (new_page_table_entry ^ page_table_entry) as u8);
             }
 
             high = page_table_entry as u32 & 0xFFFFF000;

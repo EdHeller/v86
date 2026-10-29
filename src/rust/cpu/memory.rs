@@ -455,3 +455,16 @@ pub unsafe fn atomic_rmw(phys: u32, bits: u32, f: &dyn Fn(i32) -> i32) -> bool {
         }
     }
 }
+
+/// Sets bits (the accessed and dirty bits) in the low byte of a page table entry. Another core may change the entry at the same time: with
+/// several cores the update is an atomic OR, like the hardware's
+pub unsafe fn set_entry_bits(phys: u32, bits: u8) {
+    use std::sync::atomic::{AtomicU8, Ordering::SeqCst};
+    if ATOMIC_RMW && !in_mapped_range(phys) {
+        jit::jit_dirty_page(Page::page_of(phys));
+        (*(mem8.offset(phys as isize) as *const AtomicU8)).fetch_or(bits, SeqCst);
+    }
+    else {
+        write8(phys, (read8(phys) | bits as i32) & 0xFF);
+    }
+}

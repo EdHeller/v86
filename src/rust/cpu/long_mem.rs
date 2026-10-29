@@ -152,7 +152,7 @@ unsafe fn walk(
         for (i, &(entry_addr, entry)) in entries[..count].iter().enumerate() {
             let new = entry | 0x20 | if dirty_leaf && i == count - 1 { 0x40 } else { 0 };
             if new != entry {
-                memory::write8(entry_addr, new as i32);
+                memory::set_entry_bits(entry_addr, (new ^ entry) as u8);
             }
         }
     }

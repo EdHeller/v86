@@ -90,7 +90,7 @@ CORE_FILES=cjs.js const.js io.js main.js lib.js buffer.js ide.js pci.js floppy.j
 	   acpi.js iso9660.js \
 	   state.js ne2k.js sb16.js virtio.js virtio_console.js virtio_net.js virtio_balloon.js \
 	   bus.js log.js cpu.js \
-	   elf.js kernel.js
+	   elf.js kernel.js parallel/relocate.js parallel/control.js parallel/machine.js
 LIB_FILES=9p.js filesystem.js marshall.js
 BROWSER_FILES=screen.js keyboard.js mouse.js speaker.js serial.js \
 	      network.js starter.js worker_bus.js dummy_screen.js ansi_screen.js \
@@ -218,6 +218,10 @@ src/rust/gen/analyzer.rs: $(ANALYZER_DEPENDENCIES)
 	./gen/generate_analyzer.js --output-dir build/ --table analyzer
 src/rust/gen/analyzer0f.rs: $(ANALYZER_DEPENDENCIES)
 	./gen/generate_analyzer.js --output-dir build/ --table analyzer0f
+
+build/vcpu-worker.js: src/parallel/control.js src/parallel/relocate.js src/parallel/vcpu_worker.js tools/build_vcpu_worker.mjs
+	mkdir -p build/
+	./tools/build_vcpu_worker.mjs build/vcpu-worker.js
 
 build/v86-parallel.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml tools/parallel_wasm.mjs
 	mkdir -p build/
