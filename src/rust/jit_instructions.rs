@@ -4434,7 +4434,14 @@ pub fn instr32_0F8D_jit(_ctx: &mut JitContext, _imm: u32) {}
 pub fn instr32_0F8E_jit(_ctx: &mut JitContext, _imm: u32) {}
 pub fn instr32_0F8F_jit(_ctx: &mut JitContext, _imm: u32) {}
 
-pub fn instr_90_jit(_ctx: &mut JitContext) {}
+pub fn instr_90_jit(ctx: &mut JitContext) {
+    if ctx.cpu.prefixes & PREFIX_F3 != 0 {
+        // pause: with several cores the function returns here so that the other cores run
+        codegen::gen_set_eip_to_after_current_instruction(ctx);
+        ctx.builder.call_fn0_ret("jit_pause");
+        ctx.builder.br_if(ctx.exit_with_fault_label);
+    }
+}
 
 fn gen_xchg_reg16(ctx: &mut JitContext, r: u32) {
     codegen::gen_get_reg16(ctx, r);

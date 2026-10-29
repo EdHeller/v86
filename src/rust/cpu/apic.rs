@@ -144,6 +144,10 @@ pub unsafe fn apic_debug_state(core: u32, what: u32) -> u32 {
     }
 }
 
+pub static mut YIELD_ON_IPI: bool = true;
+#[no_mangle]
+pub unsafe fn smp_set_yield_on_ipi(on: u32) { YIELD_ON_IPI = on != 0 }
+
 pub const CORE_EVENT_INIT: u32 = 1;
 pub const CORE_EVENT_SIPI: u32 = 2;
 
@@ -468,7 +472,7 @@ fn write32_internal(apic: &mut Apic, addr: u32, value: u32) {
             unsafe {
                 IPI_LOG[IPI_COUNT as usize & 255] = (CURRENT_CORE as u32, apic.icr1, value);
                 IPI_COUNT += 1;
-                if CORE_COUNT > 1 {
+                if CORE_COUNT > 1 && YIELD_ON_IPI {
                     // let the receiver run soon
                     crate::cpu::smp::YIELD = true;
                 }

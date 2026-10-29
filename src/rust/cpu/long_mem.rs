@@ -434,9 +434,45 @@ unsafe fn fetch_byte() -> OrPageFault<u8> {
 
 #[inline(always)]
 pub unsafe fn fetch8() -> OrPageFault<u64> { Ok(fetch_byte()? as u64) }
-pub unsafe fn fetch16() -> OrPageFault<u64> { Ok(fetch8()? | fetch8()? << 8) }
-pub unsafe fn fetch32() -> OrPageFault<u64> { Ok(fetch16()? | fetch16()? << 16) }
-pub unsafe fn fetch64() -> OrPageFault<u64> { Ok(fetch32()? | fetch32()? << 32) }
+
+/// `n` instruction bytes at once when they are in the page the fetch cache points to (the common case:
+/// immediates and displacements); None when the slow path has to do it (other page, page end, unvalidated)
+#[inline(always)]
+unsafe fn fetch_in_page(n: u32) -> Option<*const u8> {
+    let lo = *instruction_pointer as u32;
+    let r = (*rip_hi as u32 as u64) << 32 | lo as u64;
+    let off = lo & 0xFFF;
+    if r >> 12 == FETCH_VPN
+        && (*cpl == 3) == FETCH_USER
+        && off + n <= 0x1000
+        && lo as u64 + n as u64 <= 0xFFFF_FFFF
+    {
+        *instruction_pointer = (lo + n) as i32;
+        Some(memory::mem8.offset((FETCH_PHYS | off) as isize) as *const u8)
+    }
+    else {
+        None
+    }
+}
+
+pub unsafe fn fetch16() -> OrPageFault<u64> {
+    if let Some(p) = fetch_in_page(2) {
+        return Ok((p as *const u16).read_unaligned() as u64);
+    }
+    Ok(fetch8()? | fetch8()? << 8)
+}
+pub unsafe fn fetch32() -> OrPageFault<u64> {
+    if let Some(p) = fetch_in_page(4) {
+        return Ok((p as *const u32).read_unaligned() as u64);
+    }
+    Ok(fetch16()? | fetch16()? << 16)
+}
+pub unsafe fn fetch64() -> OrPageFault<u64> {
+    if let Some(p) = fetch_in_page(8) {
+        return Ok((p as *const u64).read_unaligned());
+    }
+    Ok(fetch32()? | fetch32()? << 32)
+}
 
 // ---------------------------------------------------------------------------------------------
 // window into the shared tlb for 32-bit instruction implementations

@@ -25,18 +25,24 @@ not supported yet (only the first core's state is saved).
   returns the time until the next device timer.
 - **CPUID.** Leaf 1: initial APIC id of the running core, logical processor count, HTT bit; leaf 4: cores in the package.
 
-## Pitfall found on the way
+## Pitfalls found on the way
 
-The APIC register writes used to call `handle_irqs()` from the memory-mapped write itself. In compiled code that delivers the interrupt in the
-middle of an instruction: the compiled function then goes on with an `eip` whose page is the handler's, and runs the wrong code (found with
-`tests/x64/smp/03_broadcast_ipis.asm`, and in Linux as a crash in `native_send_call_func_ipi` once all cores were up and the kernel
-used shorthand IPIs). The write now only sets `IRQ_CHECK`; the loops that call `cycle_internal` act on it between instructions. Lowering the
-instruction limit of compiled functions (`JIT_LOOP_LIMIT`, the compiled code reads it at run time) to get shorter slices stopped SeaBIOS from
-booting with 2 cores (cause not found), so slices end at `SLICE` instructions or at the first compiled-function exit.
+**APIC writes and `handle_irqs`.** The APIC register writes used to call `handle_irqs()` from the memory-mapped write itself. In compiled
+code that delivers the interrupt in the middle of an instruction: the compiled function then goes on with an `eip` whose page is the handler's, and
+runs the wrong code (found with `tests/x64/smp/03_broadcast_ipis.asm`, and in Linux as a crash in `native_send_call_func_ipi` once all
+cores were up and the kernel used shorthand IPIs). The write now only sets `IRQ_CHECK`; the loops that call `cycle_internal` act on it between
+instructions.
+
+**Spin locks and slice boundaries.** SeaBIOS hands its SMP lock over with `release; pause; lock bts; jc retry`. A core switch always landed
+at the same point of that loop (after the re-acquire: compiled code only returns at loop heads), so the other core never saw the lock free and
+both spun for ever (with a short `JIT_LOOP_LIMIT`; with the default the phase happened to be lucky). PAUSE now ends the slice at the pause
+(interpreter: block boundary + `YIELD`; compiled 32-bit code: `jit_pause` leaves the function; jit64: `j64_interp1` leaves the block), so
+the switch lands where the lock is free. With that, compiled functions return after 5000 instructions on a multi-core machine, which also
+makes IPIs arrive much sooner (Alpine 4 cores: login after 73 s instead of 106 s).
 
 ## Limits
 
-- No parallelism, and a spinning core burns its slice (PAUSE does not yield yet).
+- No parallelism. A core that spins without PAUSE still burns its slice.
 - A core that gets INIT loses all state (the x87/SSE state would survive on hardware).
 - NMI and SMI to other cores are recorded but not delivered.
 - x2APIC is not implemented.

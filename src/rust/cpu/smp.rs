@@ -49,6 +49,10 @@ pub unsafe fn count() -> usize { apic::CORE_COUNT }
 #[no_mangle]
 pub unsafe fn smp_init(count: u32) {
     apic::apic_set_core_count(count);
+    if apic::CORE_COUNT > 1 {
+        // compiled code returns to the scheduler often enough for the slices to stay short
+        smp_set_loop_limit(5_000);
+    }
     machine_reset();
 }
 
@@ -133,12 +137,22 @@ unsafe fn field8(core: usize, off: usize) -> u8 {
     if core == apic::CURRENT_CORE { *(off as *const u8) } else { SAVED[core][off - BLOCK_START] }
 }
 
+pub static mut EV_LOG: [[u32; 4]; 64] = [[0; 4]; 64];
+pub static mut EV_COUNT: u32 = 0;
+#[no_mangle]
+pub unsafe fn smp_ev_log(i: u32, j: u32) -> u32 { if i == 0xFFFF { EV_COUNT } else { EV_LOG[i as usize & 63][j as usize] } }
+unsafe fn log_ev(kind: u32, core: usize, a: u32) {
+    EV_LOG[EV_COUNT as usize & 63] = [kind, core as u32, a, *instruction_counter];
+    EV_COUNT += 1;
+}
+
 unsafe fn take_events(core: usize) {
     let events = apic::apic_take_core_events(core as u32);
     if events == 0 {
         return;
     }
     if events & apic::CORE_EVENT_INIT != 0 {
+        log_ev(1, core, RUNNING[core] as u32);
         dbg_log!("core {}: INIT", core);
         apic::apic_init_core(core as u32);
         // everything takes its reset value (the x87/SSE state would survive on hardware)
@@ -156,6 +170,7 @@ unsafe fn take_events(core: usize) {
     }
     if events & apic::CORE_EVENT_SIPI != 0 && !RUNNING[core] {
         let vector = (events >> 8 & 0xFF) as i32;
+        log_ev(2, core, vector as u32);
         dbg_log!("core {}: start-up IPI, vector {:x}", core, vector);
         switch_to(core);
         *sreg.offset(CS as isize) = (vector << 8) as u16;
@@ -243,3 +258,10 @@ pub unsafe fn main_loop() -> f64 {
 /// debugging: a 32-bit field of a core's block (`core` need not be the running one)
 #[no_mangle]
 pub unsafe fn smp_debug_field(core: u32, off: u32) -> i32 { field32(core as usize, off as usize) }
+
+/// instructions a compiled function may run before it returns (default 100003)
+#[no_mangle]
+pub unsafe fn smp_set_loop_limit(n: u32) {
+    JIT_LOOP_LIMIT = n as i32;
+    jit64::JIT64_LOOP_LIMIT = n as i32;
+}

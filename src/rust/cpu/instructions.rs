@@ -994,7 +994,13 @@ pub unsafe fn instr32_8F_0_mem(modrm_byte: i32) {
 }
 pub unsafe fn instr32_8F_0_reg(r: i32) { write_reg32(r, return_on_pagefault!(pop32s())); }
 
-pub unsafe fn instr_90() {}
+pub unsafe fn instr_90() {
+    if *prefixes & crate::prefix::PREFIX_F3 != 0 && crate::cpu::apic::CORE_COUNT > 1 {
+        // pause: with several cores the others may be the ones to wait for, run them now (and end the block here)
+        crate::cpu::smp::YIELD = true;
+        after_block_boundary();
+    }
+}
 pub unsafe fn instr16_91() { xchg16r(CX); }
 pub unsafe fn instr32_91() { xchg32r(ECX); }
 pub unsafe fn instr16_92() { xchg16r(DX); }

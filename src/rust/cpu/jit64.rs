@@ -227,7 +227,8 @@ pub unsafe fn j64_interp1(next: i64, _unused: i32) -> i32 {
     let counter = *instruction_counter;
     long_mode::step64();
     *instruction_counter = counter;
-    let stay = rip() == next as u64 && !interrupt_shadow && !*in_hlt && *is_64 && *flags & FLAG_TRAP == 0;
+    let stay = rip() == next as u64 && !interrupt_shadow && !*in_hlt && *is_64 && *flags & FLAG_TRAP == 0
+        && !super::smp::YIELD;
     !stay as i32
 }
 

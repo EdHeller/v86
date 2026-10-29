@@ -2521,6 +2521,19 @@ pub unsafe fn trigger_gp_jit(code: i32, eip_offset_in_page: i32) {
     }
 }
 
+/// PAUSE in compiled code: with several cores the compiled function returns so that the other cores run
+#[no_mangle]
+pub unsafe fn jit_pause() -> bool {
+    if apic::CORE_COUNT > 1 {
+        super::smp::YIELD = true;
+        jit_exit_reason = JitExitReason::SelfModifyingCodeBail;
+        true
+    }
+    else {
+        false
+    }
+}
+
 #[no_mangle]
 pub unsafe fn exit_jit() {
     #[allow(static_mut_refs)]
