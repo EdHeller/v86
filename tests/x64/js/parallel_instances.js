@@ -22,6 +22,8 @@ const stubs = () => ({
     io_port_write8() {}, io_port_write16() {}, io_port_write32() {},
     get_rand_int() { return 4; }, microtick() { return performance.now(); }, jit_clear_func() {}, codegen_finalize() {},
     stop_idling() {}, run_hardware_timers() { return 100; }, cpu_event_halt() {}, console_log_from_wasm() {},
+    apic_read32() { return 0; }, apic_write32() {}, ioapic_read32() { return 0; }, ioapic_write32() {}, apic_ack() { return -1; }, core_pending() { return 0; },
+    cpu_exception_hook() { return false; }, dbg_trace_from_wasm() {}, log_from_wasm() {},
     __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 1024 + 5000 }),
 });
 
