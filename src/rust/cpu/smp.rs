@@ -205,6 +205,8 @@ unsafe fn runnable(core: usize) -> bool {
 
 /// one round of slices; returns the time until the machine has to run again (0 when a core is busy)
 unsafe fn round() -> f64 {
+    // (cores in workers: retire the code another instance's write made stale)
+    super::parallel::parallel_drain();
     // (in a parallel machine the other cores run in workers)
     let n = if super::parallel::MACHINE { 1 } else { count() };
     let now = js::microtick();

@@ -7,11 +7,17 @@ import * as C from "./control.js";
 
 async function start(data, post)
 {
-    const { bytes, memory, control, core, cores, memory_ptr, memory_size, tsc_low, tsc_high, time_origin, table_size } = data;
+    const { bytes, memory, control, core, cores, memory_ptr, memory_size, tsc_low, tsc_high, time_origin, table_size, shared_ptr } = data;
     const ctl = new Int32Array(control);
+    function WebAsyncTableHolder() { this.table = new WebAssembly.Table({ element: "anyfunc", initial: table_size }); }
     const slot = C.SLOT_BASE + core * C.SLOT_WORDS;
     const time_delta = (typeof performance.timeOrigin === "number" ? performance.timeOrigin : Date.now() - performance.now()) - time_origin;
     let exports = null;
+    // compiled code: modules are compiled right here (a worker may block) and installed between slices, when the JIT state is not in use
+    const WASM_TABLE_OFFSET = 1024;
+    let jit_imports = null;
+    const table = new WebAsyncTableHolder();
+    const finished = [];
 
     /** ask the machine thread; returns the first result word */
     const request = (kind, a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0) =>
@@ -37,8 +43,12 @@ async function start(data, post)
         "stop_idling": () => {},
         "cpu_event_halt": () => {},
         "run_hardware_timers": () => 100,
-        "jit_clear_func": () => {},
-        "codegen_finalize": () => {},
+        "jit_clear_func": index => { table.table.set(index + WASM_TABLE_OFFSET, null); },
+        "codegen_finalize": (index, start, state_flags, ptr, len) => {
+            const code = new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0).slice();
+            const instance = new WebAssembly.Instance(new WebAssembly.Module(code), { "e": jit_imports });
+            finished.push([index, start, state_flags, instance.exports["f"]]);
+        },
         "cpu_exception_hook": () => false,
         "dbg_trace_from_wasm": () => {},
         "log_from_wasm": () => {},
@@ -65,13 +75,23 @@ async function start(data, post)
         "ioapic_write32": (addr, value) => { request(C.REQ_IOAPIC_WRITE, addr, value); },
         "apic_ack": core => request(C.REQ_APIC_ACK, core),
         "core_pending": core => Atomics.load(ctl, C.PENDING + core),
-        "__indirect_function_table": new WebAssembly.Table({ element: "anyfunc", initial: table_size }),
+        "__indirect_function_table": table.table,
     };
 
     const { instance } = await instantiate_relocated(new Uint8Array(bytes), { env }, memory, core);
     exports = instance.exports;
     exports["rust_init"]();
     exports["worker_init"](core, cores, memory_ptr, memory_size, tsc_low, tsc_high);
+    exports["parallel_set_shared"](shared_ptr, core);
+    // what compiled modules import: the memory, the function table and the exports of the instance
+    jit_imports = Object.create(null);
+    jit_imports["m"] = memory;
+    jit_imports["t"] = table.table;
+    for(const name of Object.keys(exports))
+    {
+        if(name.startsWith("_") || name.startsWith("zstd") || name.endsWith("_js")) continue;
+        jit_imports[name] = exports[name];
+    }
     post({ ready: core });
 
     try
@@ -84,6 +104,12 @@ async function start(data, post)
                 if(events) exports["worker_events"](events);
             }
             const status = exports["worker_run"](20000);
+            while(finished.length)
+            {
+                const [index, start, state_flags, f] = finished.shift();
+                table.table.set(index + WASM_TABLE_OFFSET, f);
+                exports["codegen_finalize_finished"](index, start, state_flags);
+            }
             Atomics.store(ctl, C.DEBUG + core, exports["smp_debug_field"](core, 556));
             if(status !== 0)
             {

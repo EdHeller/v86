@@ -41,6 +41,118 @@ pub mod host {
     pub unsafe fn core_pending(_core: u32) -> u32 { 0 }
 }
 
+// shared code coherence --------------------------------------------------------------------------------------------
+//
+// Every instance compiles the code it runs. A write by one core to a page another instance compiled has to retire that code. The
+// instances share, in the guest memory's shared space:
+// - OWNERS: a byte per physical page, bit k set while instance k has compiled code of the page;
+// - a ring of events (publish: "this page has code now" so that the TLB entries of the others mark it, invalidate: "a write hit a page
+//   you may have compiled"). Every instance reads every event, at the start of each slice (`drain`).
+
+pub static mut SHARED: *mut u8 = std::ptr::null_mut();
+/// bit of this instance in OWNERS (core number)
+static mut ME: u32 = 0;
+/// this instance's read position in the ring
+static mut TAIL: u64 = 0;
+/// `drain` is running: retiring code because of another core's write must not be announced again
+pub static mut DRAINING: bool = false;
+const RING_ENTRIES: u64 = 4096;
+const HEAD_OFFSET: usize = 0;
+const RING_OFFSET: usize = 64;
+const OWNERS_OFFSET: usize = RING_OFFSET + RING_ENTRIES as usize * 8;
+const KIND_PUBLISH: u64 = 0;
+const KIND_INVALIDATE: u64 = 1;
+
+/// bytes of the shared space for `memory_size` bytes of guest memory
+pub fn shared_size(bytes: u32) -> u32 { (OWNERS_OFFSET as u32) + (bytes >> 12) + 4096 }
+
+pub fn active() -> bool { unsafe { !SHARED.is_null() } }
+
+unsafe fn owner_byte(page: u32) -> &'static std::sync::atomic::AtomicU8 {
+    &*(SHARED.add(OWNERS_OFFSET + page as usize) as *const std::sync::atomic::AtomicU8)
+}
+
+unsafe fn post(kind: u64, page: u32) {
+    use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+    let head = &*(SHARED.add(HEAD_OFFSET) as *const AtomicU64);
+    let index = head.fetch_add(1, SeqCst);
+    let slot = &*(SHARED.add(RING_OFFSET + (index % RING_ENTRIES) as usize * 8) as *const AtomicU64);
+    // (the sequence number is in the high half: a reader can tell a written entry from an old one)
+    slot.store((index + 1) << 32 | (page as u64) << 1 | kind, SeqCst);
+}
+
+/// this instance has code of `page`
+pub unsafe fn set_owner(page: u32) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let before = owner_byte(page).fetch_or(1 << ME, SeqCst);
+    if before == 0 {
+        // the first code of the page: the others' TLB entries for it have to mark it
+        post(KIND_PUBLISH, page);
+    }
+}
+
+/// this instance has no more code of `page`
+pub unsafe fn clear_owner(page: u32) { owner_byte(page).fetch_and(!(1u8 << ME), std::sync::atomic::Ordering::SeqCst); }
+
+pub unsafe fn any_owner(page: u32) -> bool { owner_byte(page).load(std::sync::atomic::Ordering::SeqCst) != 0 }
+
+pub unsafe fn other_owner(page: u32) -> bool { owner_byte(page).load(std::sync::atomic::Ordering::SeqCst) & !(1u8 << ME) != 0 }
+
+/// a write hit `page`: the other instances that have code of it retire it (when they next `drain`)
+pub unsafe fn announce_write(page: u32) {
+    if !DRAINING && other_owner(page) {
+        post(KIND_INVALIDATE, page);
+    }
+}
+
+/// Acts on the events of the other instances: marks the TLB entries of published pages, retires code of written pages. Called between
+/// slices (the JIT state must not be in use)
+#[no_mangle]
+pub unsafe fn parallel_drain() {
+    use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+    if SHARED.is_null() {
+        return;
+    }
+    let head = (&*(SHARED.add(HEAD_OFFSET) as *const AtomicU64)).load(SeqCst);
+    if TAIL == head {
+        return;
+    }
+    DRAINING = true;
+    if head - TAIL > RING_ENTRIES {
+        // lapped: events were lost, so retire all code
+        crate::jit::jit_clear_cache_js();
+        TAIL = head;
+    }
+    while TAIL < head {
+        let slot = &*(SHARED.add(RING_OFFSET + (TAIL % RING_ENTRIES) as usize * 8) as *const AtomicU64);
+        let value = slot.load(SeqCst);
+        if value >> 32 != TAIL + 1 {
+            // (not written yet: it will be next time)
+            break;
+        }
+        let page = (value as u32) >> 1;
+        if value & 1 == KIND_PUBLISH {
+            crate::cpu::cpu::tlb_set_has_code(crate::page::Page::of_u32(page), true);
+        }
+        else {
+            crate::jit::jit_dirty_page(crate::page::Page::of_u32(page));
+        }
+        TAIL += 1;
+    }
+    DRAINING = false;
+}
+
+/// the shared space of a parallel machine: set by the machine, and by every worker when it starts
+#[no_mangle]
+pub unsafe fn parallel_set_shared(ptr: u32, me: u32) {
+    SHARED = ptr as *mut u8;
+    ME = me;
+    TAIL = (&*(SHARED.add(HEAD_OFFSET) as *const std::sync::atomic::AtomicU64)).load(std::sync::atomic::Ordering::SeqCst);
+}
+
+#[no_mangle]
+pub fn parallel_shared_size(bytes: u32) -> u32 { shared_size(bytes) }
+
 /// Makes this instance core `core` of a machine with `cores` cores whose RAM is `memory_size` bytes at `memory_ptr`
 #[no_mangle]
 pub unsafe fn worker_init(core: u32, cores: u32, memory_ptr: u32, memory_size_: u32, tsc_low: u32, tsc_high: u32) {
@@ -52,9 +164,6 @@ pub unsafe fn worker_init(core: u32, cores: u32, memory_ptr: u32, memory_size_: 
     memory::mem8 = memory_ptr as *mut u8;
     *memory_size = memory_size_;
     *acpi_enabled = true;
-    // no compiled code in the workers (yet)
-    crate::jit::set_jit_config(0, 1);
-    crate::jit::set_jit_config(4, u32::MAX);
     reset_cpu();
     tsc_offset = tsc_low as u64 | (tsc_high as u64) << 32;
 }
@@ -96,6 +205,7 @@ pub unsafe fn worker_run(budget: u32) -> u32 {
             return 1;
         }
     }
+    parallel_drain();
     let start = *instruction_counter;
     while (*instruction_counter).wrapping_sub(start) < budget && !*in_hlt {
         cycle_internal();

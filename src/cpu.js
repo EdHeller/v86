@@ -1056,6 +1056,11 @@ CPU.prototype.init = function(settings, device_bus)
     {
         this.parallel = new ParallelMachine(this, { bytes: settings.wasm_source, worker_url: settings.vcpu_worker_url, cores });
         this.wm.exports["machine_set_parallel"](1);
+        // the space the instances share for code coherence (owners of code pages, the ring of events)
+        const shared_bytes = this.wm.exports["parallel_shared_size"](this.memory_size[0]);
+        const shared_pages = Math.ceil(shared_bytes / 65536);
+        this.parallel.shared_ptr = this.wasm_memory.grow(shared_pages) * 65536;
+        this.wm.exports["parallel_set_shared"](this.parallel.shared_ptr, 0);
         this.parallel.start().catch(e => { console.error("parallel start failed", e); });
     }
 

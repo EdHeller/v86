@@ -2319,14 +2319,24 @@ pub fn jit64_free_index_ctx(ctx: &mut JitState, index: u16) {
 static mut MAYBE_HAS_CODE: [u64; 1 << 14] = [0; 1 << 14];
 
 pub fn maybe_has_code_set(page: Page) {
+    if crate::cpu::parallel::active() {
+        // (cores in other instances share the guest memory: see cpu/parallel.rs)
+        return unsafe { crate::cpu::parallel::set_owner(page.to_u32()) };
+    }
     let i = page.to_u32() as usize;
     unsafe { MAYBE_HAS_CODE[i >> 6] |= 1 << (i & 63) };
 }
 fn maybe_has_code_clear(page: Page) {
+    if crate::cpu::parallel::active() {
+        return unsafe { crate::cpu::parallel::clear_owner(page.to_u32()) };
+    }
     let i = page.to_u32() as usize;
     unsafe { MAYBE_HAS_CODE[i >> 6] &= !(1 << (i & 63)) };
 }
 fn maybe_has_code(page: Page) -> bool {
+    if crate::cpu::parallel::active() {
+        return unsafe { crate::cpu::parallel::any_owner(page.to_u32()) };
+    }
     let i = page.to_u32() as usize;
     unsafe { MAYBE_HAS_CODE[i >> 6] >> (i & 63) & 1 != 0 }
 }
@@ -2335,6 +2345,10 @@ fn maybe_has_code(page: Page) -> bool {
 fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
     if !maybe_has_code(page) {
         return;
+    }
+    if crate::cpu::parallel::active() {
+        // the other instances that compiled the page retire their code too
+        unsafe { crate::cpu::parallel::announce_write(page.to_u32()) };
     }
     let mut did_have_code = unsafe { crate::cpu::jit64::dirty_page(ctx, page) };
 
@@ -2430,9 +2444,10 @@ fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
 
     maybe_has_code_clear(page);
 
-    dbg_assert!(!jit_page_has_code_ctx(ctx, page));
+    dbg_assert!(crate::cpu::parallel::active() || !jit_page_has_code_ctx(ctx, page));
 
-    if did_have_code {
+    // (another instance may still have code of the page: the TLB entries keep the mark)
+    if did_have_code && !maybe_has_code(page) {
         cpu::tlb_set_has_code(page, false);
     }
 
