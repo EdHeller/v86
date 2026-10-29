@@ -218,11 +218,93 @@ pub unsafe fn j64_write(addr: i64, v: i64, bits: i32) {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// step profile: which instructions compiled code leaves to the interpreter (off by default)
+
+static mut STEP_PROFILE_ON: bool = false;
+static mut STEP_COUNTS: Vec<(u32, u32)> = Vec::new();
+static mut STEP_SAMPLE: u64 = 0;
+
+/// the key of an instruction: opcode map (0 one byte, 1 0F, 2 0F38, 3 0F3A), opcode, ModRM.reg of
+/// the groups and the mandatory prefix (0 none, 1 66, 2 F3, 3 F2)
+unsafe fn step_profile_record() {
+    let rip = rip();
+    let bytes = match mem_read(rip, 64) {
+        Ok(v) => v,
+        Err(()) => match mem_read(rip, 32) {
+            Ok(v) => v,
+            Err(()) => return,
+        },
+    };
+    let (mut i, mut prefix, mut rex) = (0, 0u32, 0u8);
+    let byte = |i: u32| if i < 8 { (bytes >> (8 * i)) as u8 } else { 0 };
+    while i < 7 {
+        match byte(i) {
+            0x66 => prefix = prefix.max(1),
+            0xF3 => prefix = 2,
+            0xF2 => prefix = 3,
+            0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 | 0x67 | 0xF0 => {},
+            0x40..=0x4F => rex = byte(i),
+            _ => break,
+        }
+        i += 1;
+    }
+    let (mut map, mut op) = (0u32, byte(i) as u32);
+    if op == 0x0F {
+        i += 1;
+        op = byte(i) as u32;
+        map = 1;
+        if op == 0x38 || op == 0x3A {
+            map = if op == 0x38 { 2 } else { 3 };
+            i += 1;
+            op = byte(i) as u32;
+        }
+    }
+    let _ = rex;
+    let reg = if matches!((map, op), (0, 0x80..=0x83) | (0, 0xC0 | 0xC1 | 0xD0..=0xD3 | 0xF6 | 0xF7 | 0xFE | 0xFF) | (1, 0xBA | 0xAE | 0x01 | 0x00 | 0xC7 | 0x18 | 0x71..=0x73))
+    {
+        (byte(i + 1) >> 3 & 7) as u32
+    }
+    else {
+        0
+    };
+    let key = map << 24 | prefix << 20 | reg << 16 | op;
+    STEP_SAMPLE = rip;
+    #[allow(static_mut_refs)]
+    {
+        for e in STEP_COUNTS.iter_mut() {
+            if e.0 == key {
+                e.1 += 1;
+                return;
+            }
+        }
+        STEP_COUNTS.push((key, 1));
+    }
+}
+
+#[no_mangle]
+pub unsafe fn step_profile_enable(on: i32) { STEP_PROFILE_ON = on != 0 }
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn step_profile_len() -> i32 { STEP_COUNTS.len() as i32 }
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn step_profile_key(i: i32) -> i32 { STEP_COUNTS.get(i as usize).map_or(0, |e| e.0 as i32) }
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn step_profile_count(i: i32) -> i32 { STEP_COUNTS.get(i as usize).map_or(0, |e| e.1 as i32) }
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn step_profile_reset() { STEP_COUNTS.clear() }
+
 /// Runs the one instruction at rip in the interpreter (an Insn::Interp of a block) and tells
 /// whether the block has to be left: 1 when rip is not `next` (exception, jump, mode switch), when
 /// interrupts were just enabled, the cpu halted or the mode changed.
 #[no_mangle]
 pub unsafe fn j64_interp1(next: i64, _unused: i32) -> i32 {
+    if STEP_PROFILE_ON {
+        step_profile_record();
+    }
     // the block counts this instruction itself
     let counter = *instruction_counter;
     long_mode::step64();
