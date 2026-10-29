@@ -116,6 +116,11 @@ pub static mut INVAL_LOG: [(u64, u32, bool); 1024] = [(0, 0, false); 1024];
 pub static mut VISITS: Option<HashMap<u64, u32>> = None;
 pub static mut INVAL_WRITER: [u64; 1024] = [0; 1024];
 /// interpreted instructions by why they were interpreted: 0 continuation after a non-jump (no block lookup), 1 slot counting (not hot yet), 2 failed block, 3 other/pending
+pub static mut WATCH_WHY: [u32; 8] = [0; 8];
+pub static mut WATCH_PAGE_FULL: u64 = 0;
+pub static mut WATCH_PAGE: u64 = u64::MAX;
+pub static mut WATCH_OFF: [u32; 4096] = [0; 4096];
+pub static mut PAGE_HIST: [(u64, u32); 4096] = [(0, 0); 4096];
 pub static mut INTERP_WHY: [u32; 8] = [0; 8];
 /// debugging: after every compiled block run, redo it in the interpreter from the saved state and
 /// record the first differences (read through get_jit_config(5000 + i)); the interpreter's result is kept
@@ -2724,6 +2729,14 @@ pub unsafe fn run() {
             if s.rip != before { 1 } else { match s.state { SLOT_COUNTING => 1, SLOT_FAILED => 2, _ => 3 } }
         };
         INTERP_WHY[why] = INTERP_WHY[why].wrapping_add(1);
+        if (before >> 12) as u32 == WATCH_PAGE as u32 { WATCH_WHY[why] += 1 }
+        {
+            let pg = before >> 12;
+            if pg as u32 == WATCH_PAGE as u32 { WATCH_PAGE_FULL = pg; WATCH_OFF[(before & 0xFFF) as usize] += 1 }
+            let e = &mut PAGE_HIST[(pg ^ pg >> 12 ^ pg >> 24) as usize & 4095];
+            if e.0 != pg { *e = (pg, 0) }
+            e.1 += 1;
+        }
         let e = &mut HIST_RIPS[slot_index(before) & 4095];
         if e.0 != before { *e = (before, 0) }
         e.1 = e.1.wrapping_add(1);

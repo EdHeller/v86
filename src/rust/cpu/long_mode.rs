@@ -449,7 +449,10 @@ unsafe fn shift(op: u8, a: u64, count: u32, bits: u32) -> u64 {
 // ---------------------------------------------------------------------------------------------
 // instruction execution
 
+pub static mut STAT_STEPS: u32 = 0;
+
 pub unsafe fn step64() {
+    STAT_STEPS = STAT_STEPS.wrapping_add(1);
     super::cpu::trace_instruction();
     *previous_ip = *instruction_pointer;
     *instruction_counter += 1;
