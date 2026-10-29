@@ -41,7 +41,12 @@ static mut ROUND: usize = 0;
 pub static mut YIELD: bool = false;
 pub static mut SLICES: [u32; MAX] = [0; MAX];
 
-unsafe fn block() -> &'static mut [u8] { std::slice::from_raw_parts_mut(BLOCK_START as *mut u8, LEN) }
+/// address of the byte at `off` of the CPU state block (a fixed address in the normal build, this instance's block in the parallel build)
+unsafe fn at(off: usize) -> *mut u8 { (reg8 as *mut u8).wrapping_sub(64).wrapping_add(off) }
+/// offset in the state block of one of the global_pointers
+unsafe fn off_of<T>(p: *mut T) -> usize { p as usize - at(0) as usize }
+
+unsafe fn block() -> &'static mut [u8] { std::slice::from_raw_parts_mut(at(BLOCK_START), LEN) }
 
 pub unsafe fn count() -> usize { apic::CORE_COUNT }
 
@@ -58,7 +63,7 @@ pub unsafe fn smp_init(count: u32) {
 
 /// Called at the end of reset_cpu: the running core becomes the BSP, the others wait for a start-up IPI
 pub unsafe fn machine_reset() {
-    if apic::CORE_COUNT <= 1 {
+    if apic::CORE_COUNT <= 1 || super::parallel::WORKER {
         return;
     }
     let n = apic::CORE_COUNT as u32;
@@ -80,13 +85,13 @@ unsafe fn load(bytes: &[u8; LEN]) {
     let mut shared = [0u8; 64];
     let mut n = 0;
     for &(off, size) in SHARED.iter() {
-        shared[n..n + size].copy_from_slice(std::slice::from_raw_parts(off as *const u8, size));
+        shared[n..n + size].copy_from_slice(std::slice::from_raw_parts(at(off) as *const u8, size));
         n += size;
     }
     block().copy_from_slice(bytes);
     n = 0;
     for &(off, size) in SHARED.iter() {
-        std::slice::from_raw_parts_mut(off as *mut u8, size).copy_from_slice(&shared[n..n + size]);
+        std::slice::from_raw_parts_mut(at(off), size).copy_from_slice(&shared[n..n + size]);
         n += size;
     }
 }
@@ -125,7 +130,7 @@ unsafe fn switch_to(to: usize) {
 /// a field of a core's block, whether or not the core is the running one
 unsafe fn field32(core: usize, off: usize) -> i32 {
     if core == apic::CURRENT_CORE {
-        *(off as *const i32)
+        (at(off) as *const i32).read_unaligned()
     }
     else {
         let at = off - BLOCK_START;
@@ -134,7 +139,7 @@ unsafe fn field32(core: usize, off: usize) -> i32 {
 }
 
 unsafe fn field8(core: usize, off: usize) -> u8 {
-    if core == apic::CURRENT_CORE { *(off as *const u8) } else { SAVED[core][off - BLOCK_START] }
+    if core == apic::CURRENT_CORE { *at(off) } else { SAVED[core][off - BLOCK_START] }
 }
 
 pub static mut EV_LOG: [[u32; 4]; 64] = [[0; 4]; 64];
@@ -186,13 +191,13 @@ unsafe fn runnable(core: usize) -> bool {
     if !RUNNING[core] {
         return false;
     }
-    if field8(core, in_hlt as usize) == 0 {
+    if field8(core, off_of(in_hlt)) == 0 {
         return true;
     }
     if apic::apic_core_nmi_pending(core as u32) {
         return true;
     }
-    if field32(core, flags as usize) & FLAG_INTERRUPT == 0 {
+    if field32(core, off_of(flags)) & FLAG_INTERRUPT == 0 {
         return false;
     }
     apic::apic_core_interrupt_pending(core as u32) || core == 0 && pic::pic_has_pending()
@@ -200,7 +205,8 @@ unsafe fn runnable(core: usize) -> bool {
 
 /// one round of slices; returns the time until the machine has to run again (0 when a core is busy)
 unsafe fn round() -> f64 {
-    let n = count();
+    // (in a parallel machine the other cores run in workers)
+    let n = if super::parallel::MACHINE { 1 } else { count() };
     let now = js::microtick();
     let mut next = js::run_hardware_timers(*acpi_enabled, now);
     let first = ROUND % n;

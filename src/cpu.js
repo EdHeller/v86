@@ -36,6 +36,7 @@ import { VirtioBalloon } from "./virtio_balloon.js";
 import { Virtio9p, Virtio9pHandler, Virtio9pProxy } from "../lib/9p.js";
 
 import { load_kernel } from "./kernel.js";
+import { ParallelMachine } from "./parallel/machine.js";
 
 import {
     RTC,
@@ -1049,6 +1050,15 @@ CPU.prototype.init = function(settings, device_bus)
     this.wm.exports["smp_init"](cores);
     this.reset_cpu();
 
+    // the other cores in workers (docs/parallel.md): needs the parallel build of the module (a shared memory)
+    this.parallel = null;
+    if(cores > 1 && settings.cpu_workers && typeof SharedArrayBuffer !== "undefined" && this.wasm_memory.buffer instanceof SharedArrayBuffer && settings.wasm_source)
+    {
+        this.parallel = new ParallelMachine(this, { bytes: settings.wasm_source, worker_url: settings.vcpu_worker_url, cores });
+        this.wm.exports["machine_set_parallel"](1);
+        this.parallel.start().catch(e => { console.error("parallel start failed", e); });
+    }
+
     var io = new IO(this);
     this.io = io;
 
@@ -1963,6 +1973,12 @@ CPU.prototype.dump_function_code = function(block_ptr, count)
 
 CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
 {
+    if(this.parallel)
+    {
+        // answer the workers (their ports, APIC accesses, ...)
+        this.parallel.service();
+    }
+
     const pit_time = this.devices.pit.timer(now, false);
     const rtc_time = this.devices.rtc.timer(now, false);
 
@@ -1974,7 +1990,8 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
         apic_time = this.apic_timer(now);
     }
 
-    return Math.min(pit_time, rtc_time, acpi_time, apic_time);
+    // (with workers the machine thread has to come back soon to answer them)
+    return Math.min(pit_time, rtc_time, acpi_time, apic_time, this.parallel ? 1 : Infinity);
 };
 
 CPU.prototype.debug_init = function()

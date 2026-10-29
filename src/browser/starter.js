@@ -107,6 +107,14 @@ export function V86(options)
         "jit_clear_func": (wasm_table_index) => cpu.jit_clear_func(wasm_table_index),
         "jit_clear_all_funcs": () => cpu.jit_clear_all_funcs(),
 
+        // (only the vCPU workers of a parallel machine call these, see src/parallel/vcpu_worker.js)
+        "apic_read32": function() { return 0; },
+        "apic_write32": function() {},
+        "ioapic_read32": function() { return 0; },
+        "ioapic_write32": function() {},
+        "apic_ack": function() { return -1; },
+        "core_pending": function() { return 0; },
+
         "__indirect_function_table": wasm_table,
     };
 
@@ -230,6 +238,9 @@ V86.prototype.continue_init = async function(emulator, options)
 
     settings.acpi = options.acpi;
     settings.cpu_cores = options.cpu_cores;
+    settings.cpu_workers = options.cpu_workers;
+    settings.vcpu_worker_url = options.vcpu_worker_url;
+    settings.wasm_source = this.wasm_source;
     settings.disable_jit = options.disable_jit;
     settings.jit64_threshold = options.jit64_threshold;
     settings.jit_chaining = options.jit_chaining;

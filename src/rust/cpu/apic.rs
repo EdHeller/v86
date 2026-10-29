@@ -222,6 +222,9 @@ pub fn read32(addr: u32) -> u32 {
     if unsafe { !*acpi_enabled } {
         return 0;
     }
+    if unsafe { crate::cpu::parallel::WORKER } {
+        return unsafe { crate::cpu::parallel::host::apic_read32(CURRENT_CORE as u32, addr) };
+    }
     read32_internal(get_apic(), addr)
 }
 
@@ -387,6 +390,10 @@ fn read32_internal(apic: &mut Apic, addr: u32) -> u32 {
 
 pub fn write32(addr: u32, value: u32) {
     if unsafe { !*acpi_enabled } {
+        return;
+    }
+    if unsafe { crate::cpu::parallel::WORKER } {
+        unsafe { crate::cpu::parallel::host::apic_write32(CURRENT_CORE as u32, addr, value) };
         return;
     }
     write32_internal(get_apic(), addr, value)
@@ -773,7 +780,20 @@ fn highest_isr(apic: &mut Apic) -> Option<u8> {
     highest
 }
 
-pub fn acknowledge_irq() -> Option<u8> { acknowledge_irq_internal(get_apic()) }
+pub fn acknowledge_irq() -> Option<u8> {
+    if unsafe { crate::cpu::parallel::WORKER } {
+        // (the APIC of this core is in the machine instance)
+        unsafe {
+            use crate::cpu::parallel::host;
+            if host::core_pending(CURRENT_CORE as u32) == 0 {
+                return None;
+            }
+            let vector = host::apic_ack(CURRENT_CORE as u32);
+            return if vector < 0 { None } else { Some(vector as u8) };
+        }
+    }
+    acknowledge_irq_internal(get_apic())
+}
 
 fn acknowledge_irq_internal(apic: &mut Apic) -> Option<u8> {
     let highest_irr = match highest_irr(apic) {

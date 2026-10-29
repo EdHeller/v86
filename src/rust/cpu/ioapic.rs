@@ -194,6 +194,9 @@ pub fn read32(addr: u32) -> u32 {
     if unsafe { !*acpi_enabled } {
         return 0;
     }
+    if unsafe { crate::cpu::parallel::WORKER } {
+        return unsafe { crate::cpu::parallel::host::ioapic_read32(addr) };
+    }
     read32_internal(&mut get_ioapic(), addr)
 }
 
@@ -242,6 +245,10 @@ fn read32_internal(ioapic: &mut Ioapic, addr: u32) -> u32 {
 
 pub fn write32(addr: u32, value: u32) {
     if unsafe { !*acpi_enabled } {
+        return;
+    }
+    if unsafe { crate::cpu::parallel::WORKER } {
+        unsafe { crate::cpu::parallel::host::ioapic_write32(addr, value) };
         return;
     }
     write32_internal(&mut get_ioapic(), apic::get_apic(), addr, value)

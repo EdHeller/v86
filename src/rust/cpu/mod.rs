@@ -13,6 +13,7 @@ pub mod long_mode;
 pub mod memory;
 pub mod misc_instr;
 pub mod modrm;
+pub mod parallel;
 pub mod pic;
 pub mod sse_0f38;
 pub mod sse_fp;
