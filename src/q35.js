@@ -126,6 +126,8 @@ Q35.prototype.update_ecam = function()
     this.ecam_base = base;
     // (the MCH decodes its window before any BAR: v86's own VGA keeps its frame buffer at 0xE0000000)
     this.cpu.wm.exports["set_vga_lfb_hidden"](base !== -1 && base <= 0xE0000000 && base + ECAM_SIZE > 0xE0000000);
+    // (and before device memory: a frame buffer whose BAR is still there)
+    this.cpu.wm.exports["mmio_ram_reserve"](base === -1 ? 0 : base, base === -1 ? 0 : ECAM_SIZE);
     if(base === -1) return;
     const io = this.cpu.io;
     const pci = this.pci;
