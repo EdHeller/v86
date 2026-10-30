@@ -4045,7 +4045,7 @@ static mut PENDING_AFTER: u32 = 8;
 /// noted entries of a page that make it compile again right away (0: only at the threshold)
 static mut PENDING_BATCH: usize = 0;
 /// warm entries of a page without a module that make it compile (0: only at the threshold)
-static mut PENDING_FIRST: usize = 4;
+static mut PENDING_FIRST: usize = 0;
 /// supervisor pages: their likely function starts are entries from the first compile on
 /// (kernel code is reached through function pointers that direct calls never lead to)
 static mut HEURISTIC_KERNEL: bool = false;
