@@ -3936,7 +3936,7 @@ pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
 /// supervisor pages: their likely function starts are entries from the first compile on
 /// (kernel code is reached through function pointers that direct calls never lead to)
-static mut HEURISTIC_KERNEL: bool = true;
+static mut HEURISTIC_KERNEL: bool = false;
 
 #[inline(always)]
 unsafe fn page_heat(r: u64) {
