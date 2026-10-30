@@ -328,13 +328,12 @@ PCI.prototype.pci_write8_raw = function(address, written)
     var bdf = address >> 8 & 0xFFFF;
     var addr = address & 0xFF;
 
-    var space = new Uint8Array(this.device_spaces[bdf].buffer);
-    var device = this.devices[bdf];
-
-    if(!space)
+    if(!this.device_spaces[bdf])
     {
         return;
     }
+    var space = new Uint8Array(this.device_spaces[bdf].buffer);
+    var device = this.devices[bdf];
 
     dbg_assert(!(addr >= 0x10 && addr < 0x2C || addr >= 0x30 && addr < 0x34),
                "PCI: Expected 32-bit write, got 8-bit (addr: " + h(addr) + ")");
@@ -385,13 +384,12 @@ PCI.prototype.pci_write16_raw = function(address, written)
     var bdf = address >> 8 & 0xFFFF;
     var addr = address & 0xFF;
 
-    var space = new Uint16Array(this.device_spaces[bdf].buffer);
-    var device = this.devices[bdf];
-
-    if(!space)
+    if(!this.device_spaces[bdf])
     {
         return;
     }
+    var space = new Uint16Array(this.device_spaces[bdf].buffer);
+    var device = this.devices[bdf];
 
     if(addr >= 0x10 && addr < 0x2C)
     {
