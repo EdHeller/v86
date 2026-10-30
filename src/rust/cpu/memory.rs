@@ -114,8 +114,15 @@ fn code_phys_slow(phys: u32) -> u32 {
 pub fn fetchable(phys: u32) -> bool { !in_mapped_range(phys) || phys >= unsafe { *memory_size } }
 
 pub const VGA_LFB_ADDRESS: u32 = 0xE0000000;
+/// The VGA's frame buffer at VGA_LFB_ADDRESS is not decoded (Q35's ECAM window is there)
+pub static mut VGA_LFB_HIDDEN: bool = false;
+#[no_mangle]
+pub unsafe fn set_vga_lfb_hidden(hidden: bool) {
+    VGA_LFB_HIDDEN = hidden;
+    crate::cpu::cpu::full_clear_tlb();
+}
 pub fn in_svga_lfb(addr: u32) -> bool {
-    addr >= VGA_LFB_ADDRESS && unsafe { vga_memory_size != 0 && addr <= VGA_LFB_ADDRESS + (vga_memory_size - 1) }
+    addr >= VGA_LFB_ADDRESS && unsafe { vga_memory_size != 0 && !VGA_LFB_HIDDEN && addr <= VGA_LFB_ADDRESS + (vga_memory_size - 1) }
 }
 
 

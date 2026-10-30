@@ -124,6 +124,8 @@ Q35.prototype.update_ecam = function()
     if(base === this.ecam_base) return;
     dbg_log("Q35 ECAM " + (base === -1 ? "disabled" : "at " + h(base, 8)), LOG_PCI);
     this.ecam_base = base;
+    // (the MCH decodes its window before any BAR: v86's own VGA keeps its frame buffer at 0xE0000000)
+    this.cpu.wm.exports["set_vga_lfb_hidden"](base !== -1 && base <= 0xE0000000 && base + ECAM_SIZE > 0xE0000000);
     if(base === -1) return;
     const io = this.cpu.io;
     const pci = this.pci;

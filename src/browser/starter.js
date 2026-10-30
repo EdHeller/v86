@@ -708,13 +708,16 @@ V86.prototype.continue_init = async function(emulator, options)
         }
 
         // a display adapter of v64's (graphics_adapter: "bochs_vga", "vmware_svga")
-        if(options.graphics_adapter)
+        // (Q35 with UEFI: OVMF puts the ECAM window where v86's own VGA has its
+        // frame buffer; the bochs_vga plugin's BAR moves out of the way)
+        const graphics_adapter = options.graphics_adapter || (options.machine_type === "q35" && options.firmware ? "bochs_vga" : undefined);
+        if(graphics_adapter)
         {
-            settings.graphics_adapter_plugin = await load_graphics_adapter(options.graphics_adapter, options.graphics_adapter_path);
+            settings.graphics_adapter_plugin = await load_graphics_adapter(graphics_adapter, options.graphics_adapter_path);
             // 3D only where the page loaded the WebGPU renderer (build/glbridge/libv86-webgpu.js)
             // and the browser has a WebGPU adapter; 2D otherwise
             settings.graphics_adapter_renderer = options.graphics_adapter_renderer ||
-                await this.create_adapter_renderer(options.graphics_adapter);
+                await this.create_adapter_renderer(graphics_adapter);
         }
 
         this.v86.init(settings);
