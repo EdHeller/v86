@@ -22,6 +22,8 @@ export class ParallelMachine
         this.ready = 0;
         this.failed = null;
         this.serviced = 0;
+        /** the address of the code coherence region in the shared memory (set by CPU.init) */
+        this.shared_ptr = 0;
     }
 
     async start()
