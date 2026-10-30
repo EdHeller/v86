@@ -304,6 +304,10 @@ build/v86-arm64.wasm: $(A64_RUST_FILES) build/softfloat_arm.o build/zstddeclib.o
 	cp build/arm64/wasm32-unknown-unknown/release/v86.wasm build/v86-arm64.wasm
 	BLOCK_SIZE=K ls -l build/v86-arm64.wasm
 
+a64-boot-tests: build/v86-arm64.wasm
+	node tests/a64/boot.mjs 1
+	node tests/a64/boot.mjs 2
+
 build/v86-arm64-debug.wasm: $(A64_RUST_FILES) build/softfloat_arm.o build/zstddeclib.o a64/Cargo.toml
 	mkdir -p build/
 	cd a64 && CARGO_TARGET_DIR=../build/arm64 cargo rustc $(CARGO_FLAGS_ARM64)
