@@ -39,6 +39,15 @@ Events.prototype.send = function(name, value)
     for(const fn of this.listeners.get(name) || []) fn(value);
 };
 
+/** Run `fn` soon, after the host's events (setImmediate, or a message to ourselves: setTimeout(0) waits 4 ms in browsers) */
+const yield_to_host = (() => {
+    if(typeof setImmediate === "function") return fn => { setImmediate(fn); };
+    const channel = new MessageChannel();
+    const queue = [];
+    channel.port1.onmessage = () => { queue.shift()(); };
+    return fn => { queue.push(fn); channel.port2.postMessage(0); };
+})();
+
 /**
  * @constructor
  * @param {Object} options see A64Machine.create
@@ -327,7 +336,7 @@ A64Machine.prototype.run = function()
         }
         const wait = this.run_once();
         if(wait > 1) this.timer = setTimeout(step, Math.min(wait, 16));
-        else this.timer = setImmediate ? setImmediate(step) : setTimeout(step, 0);
+        else yield_to_host(step);
     };
     step();
 };
@@ -335,7 +344,7 @@ A64Machine.prototype.run = function()
 A64Machine.prototype.stop = function()
 {
     this.stopped = true;
-    if(this.timer) { clearTimeout(this.timer); clearImmediate?.(this.timer); }
+    if(this.timer) clearTimeout(this.timer);
     this.running = false;
 };
 

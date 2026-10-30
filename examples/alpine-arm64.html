@@ -1,0 +1,80 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Alpine Linux aarch64 in v86 (ARM core)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<style>
+    body { font: 14px sans-serif; margin: 16px; background: #222; color: #ddd; }
+    #log { font: 12px monospace; white-space: pre; background: #111; padding: 8px; max-width: 60em; min-height: 6em; }
+    #terminal { margin-top: 8px; background: #000; display: inline-block; }
+    #serialpre { font: 12px monospace; white-space: pre-wrap; background: #000; height: 24em; overflow: auto; margin-top: 8px; display: none; width: 60em; }
+    a { color: #8cf; }
+</style>
+<p>Alpine Linux <b>aarch64</b> 3.24.3 on the ARM core (an AArch64 CPU for QEMU's virt board, taken from the v64 project): the kernel and
+initramfs of the official virt ISO, the ISO on a virtio-mmio disk, the serial console on the PL011.
+&nbsp; <a href="?">1 core</a> | <a href="?cores=2">2</a> | <a href="?cores=4">4</a> | <a href="?jit=0">no JIT</a></p>
+<div id="log"></div>
+<div id="terminal"></div>
+<div id="serialpre"></div>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" crossorigin="anonymous"></script>
+<script type="module">
+import { A64Machine } from "../src/arm/machine.js";
+import { iso_files } from "../src/arm/iso.js";
+
+const param = name => { const m = new RegExp("[?&]" + name + "(?:=([^&?#]*))?(?:[&?#]|$)").exec(location.search); return m ? (m[1] === undefined ? "" : decodeURIComponent(m[1])) : null; };
+const t0 = performance.now();
+const lines = [];
+const log = text => {
+    lines.push(((performance.now() - t0) / 1000).toFixed(1).padStart(7) + " s  " + text);
+    document.getElementById("log").textContent = lines.join("\n");
+};
+
+async function get(url)
+{
+    log("loading " + url);
+    const response = await fetch(url);
+    if(!response.ok) throw new Error(url + ": " + response.status);
+    return await response.arrayBuffer();
+}
+
+try
+{
+    const [wasm, image] = await Promise.all([get("../build/v86-arm64.wasm"), get("alpine-aarch64.iso")]);
+    const files = iso_files(image);
+    const take = name => { const [offset, length] = files.get(name); return image.slice(offset, offset + length); };
+    const cores = +param("cores") || 1;
+    const machine = await A64Machine.create({
+        wasm, kernel: take("BOOT/VMLINUZ_VIRT"), initrd: take("BOOT/INITRAMFS_VIRT"),
+        cmdline: "console=ttyAMA0 modules=loop,squashfs,sd-mod,virtio-blk,virtio-mmio,virtio_blk,virtio_mmio,isofs",
+        memory_size: 512 << 20, cpu_cores: cores, disks: [{ buffer: image, readonly: true }], virtio_rng: true,
+        jit_switches: param("jit") === "0" ? { a64_page: 0 } : {},
+    });
+    window.machine = machine;
+    let serial = "";
+    if(window.Terminal)
+    {
+        const term = new Terminal({ cols: 100, rows: 30 });
+        term.open(document.getElementById("terminal"));
+        machine.add_listener("serial0-output-byte", b => term.write(new Uint8Array([b])));
+        term.onData(data => machine.serial0_send(data));
+    }
+    else
+    {
+        const pre = document.getElementById("serialpre");
+        pre.style.display = "block";
+        machine.add_listener("serial0-output-byte", b => { pre.textContent += String.fromCharCode(b); pre.scrollTop = pre.scrollHeight; });
+        document.addEventListener("keypress", e => machine.serial0_send(e.key === "Enter" ? "\n" : e.key));
+    }
+    machine.add_listener("serial0-output-byte", b => {
+        serial += String.fromCharCode(b);
+        if(serial.length > 4000) serial = serial.slice(-2000);
+        if(/localhost login:/.test(serial) && !window.__login) { window.__login = true; log("login prompt reached"); }
+    });
+    log("booting (" + cores + " core" + (cores > 1 ? "s" : "") + ")");
+    machine.run();
+}
+catch(error)
+{
+    log("failed: " + error.message);
+    console.error(error);
+}
+</script>

@@ -12,6 +12,7 @@ import url from "node:url";
 
 const root = path.join(url.fileURLToPath(new URL(".", import.meta.url)), "../..");
 const { A64Machine } = await import(path.join(root, "src/arm/machine.js"));
+const { iso_files } = await import(path.join(root, "src/arm/iso.js"));
 const cores = +process.argv[2] || 1;
 const iso_path = process.env.A64_ISO || path.join(root, "build/a64/alpine-virt-aarch64.iso");
 const URL_ISO = "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-virt-3.24.3-aarch64.iso";
@@ -26,29 +27,6 @@ async function iso() {
     }
     const b = fs.readFileSync(iso_path);
     return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-}
-
-/** the files of an ISO 9660 image: path (upper case, without ;1) -> [offset, length] */
-function iso_files(image) {
-    const bytes = new Uint8Array(image), view = new DataView(image);
-    const files = new Map();
-    const walk = (lba, size, prefix) => {
-        for(let i = 0; i < size;)
-        {
-            const length = bytes[lba * 2048 + i];
-            if(!length) { i = (Math.floor(i / 2048) + 1) * 2048; continue; }
-            const at = lba * 2048 + i;
-            const extent = view.getUint32(at + 2, true), file_size = view.getUint32(at + 10, true), flags = bytes[at + 25];
-            const name = new TextDecoder().decode(bytes.subarray(at + 33, at + 33 + bytes[at + 32])).replace(/;1$/, "").replace(/\.$/, "");
-            i += length;
-            if(name === "\0" || name === "\x01") continue;
-            if(flags & 2) walk(extent, file_size, prefix + name + "/");
-            else files.set(prefix + name, [extent * 2048, file_size]);
-        }
-    };
-    const root_record = 16 * 2048 + 156;
-    walk(view.getUint32(root_record + 2, true), view.getUint32(root_record + 10, true), "");
-    return files;
 }
 
 const image = await iso();
@@ -69,9 +47,10 @@ const start = Date.now();
 machine.run();
 
 const wait_for = (re, seconds) => new Promise((resolve, reject) => {
+    const from = Date.now(), mark = serial.length;
     const t = setInterval(() => {
-        if(re.test(serial)) { clearInterval(t); resolve(); }
-        else if(Date.now() - start > seconds * 1000) { clearInterval(t); reject(new Error("timeout waiting for " + re + "\n" + serial.slice(-800))); }
+        if(re.test(serial.slice(mark))) { clearInterval(t); resolve(); }
+        else if(Date.now() - from > seconds * 1000) { clearInterval(t); reject(new Error("timeout waiting for " + re + "\n" + serial.slice(-800))); }
     }, 200);
 });
 const run = async (command, expect, seconds = 30) => {
