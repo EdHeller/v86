@@ -185,7 +185,7 @@ pub static mut RANGE_HI: u64 = u64::MAX;
 pub static mut COMPILED_RIPS: [u32; 64] = [0; 64];
 /// instructions of compiled blocks run back to back without leaving run() (experiment knob, 0 = off)
 pub static mut CHAIN_BUDGET: u32 = 0;
-pub static mut CHAIN_LIMIT_SET: u32 = 0;
+pub static mut CHAIN_LIMIT_SET: u32 = 20000;
 /// compiles of a page before further ones wait for more heat (doubling each time)
 pub static mut RECOMPILE_FREE: u32 = 4;
 
