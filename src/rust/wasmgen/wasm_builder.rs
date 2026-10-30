@@ -175,6 +175,8 @@ impl WasmBuilder {
         self.next_label = Label::ZERO;
     }
 
+    pub fn body_len(&self) -> usize { self.instruction_body.len() }
+
     pub fn finish(&mut self) -> usize {
         dbg_assert!(self.label_to_depth.is_empty());
         dbg_assert!(self.label_stack.is_empty());

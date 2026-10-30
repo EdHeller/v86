@@ -1155,6 +1155,10 @@ unsafe fn string_op(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
     let seg_base = if p.seg >= 0 { seg_base(p.seg) } else { 0 };
     let compares = matches!(opcode, 0xA6 | 0xA7 | 0xAE | 0xAF);
 
+    if p.rep != 0 && !df && !p.asz32 && matches!(opcode, 0xA4 | 0xA5 | 0xAA | 0xAB) {
+        string_fast(opcode, bits, seg_base)?;
+    }
+
     loop {
         if p.rep != 0 && get_reg(RCX, abits, true) == 0 {
             break;
@@ -1221,6 +1225,54 @@ unsafe fn string_op(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
         }
     }
     Ok(())
+}
+
+/// rep movs / stos upwards between ordinary ram pages: whole stretches inside a page at once. Whatever it
+/// does not take (page ends, other memory, pages with code, overlapping copies) is left to the loop of
+/// `string_op`, which sees the registers as they are after each stretch.
+unsafe fn string_fast(opcode: u8, bits: u32, seg_base: u64) -> OrPageFault<()> {
+    use crate::cpu::memory::{in_mapped_range, mem8, write_ignored};
+    let step = bits as u64 / 8;
+    let user = *cpl == 3;
+    let movs = opcode & 0xFE == 0xA4;
+    loop {
+        let count = r64(RCX);
+        let di = r64(RDI);
+        if count == 0 || !is_canonical(di) || !is_canonical(di.wrapping_add(count.min(0x1000) * step)) { return Ok(()) }
+        let mut n = count.min((0x1000 - (di & 0xFFF)) / step);
+        let si = r64(RSI).wrapping_add(seg_base);
+        if movs {
+            if !is_canonical(si) || !is_canonical(si.wrapping_add(count.min(0x1000) * step)) { return Ok(()) }
+            n = n.min((0x1000 - (si & 0xFFF)) / step);
+        }
+        if n == 0 { return Ok(()) }
+        // (these translations fault exactly like the element wise accesses would)
+        let sphys = if movs { translate(si, false, user, false)? } else { 0 };
+        let dphys = translate(di, true, user, false)?;
+        let dpage = dphys & !0xFFF;
+        if in_mapped_range(dpage) || write_ignored(dpage) || crate::jit::jit_page_has_code(crate::page::Page::page_of(dpage)) { return Ok(()) }
+        let bytes = (n * step) as usize;
+        if dphys as u64 + bytes as u64 > *memory_size as u64 || movs && sphys as u64 + bytes as u64 > *memory_size as u64 { return Ok(()) }
+        if movs {
+            if in_mapped_range(sphys & !0xFFF) { return Ok(()) }
+            // (a forward copy that overlaps its source is a repeating pattern, not a memmove)
+            if dphys > sphys && dphys < sphys + bytes as u32 { return Ok(()) }
+            std::ptr::copy(mem8.offset(sphys as isize), mem8.offset(dphys as isize), bytes);
+            set_reg(RSI, 64, true, r64(RSI).wrapping_add(n * step));
+        }
+        else {
+            let v = r64(RAX);
+            let dst = mem8.offset(dphys as isize);
+            match bits {
+                8 => std::ptr::write_bytes(dst, v as u8, bytes),
+                16 => for i in 0..n as usize { (dst as *mut u16).add(i).write_unaligned(v as u16) },
+                32 => for i in 0..n as usize { (dst as *mut u32).add(i).write_unaligned(v as u32) },
+                _ => for i in 0..n as usize { (dst as *mut u64).add(i).write_unaligned(v) },
+            }
+        }
+        set_reg(RDI, 64, true, di.wrapping_add(n * step));
+        set_reg(RCX, 64, true, count - n);
+    }
 }
 
 unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {

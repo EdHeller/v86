@@ -73,6 +73,8 @@ fn bit_set(map: &mut [u64; 64], off: usize) { map[off >> 6] |= 1 << (off & 63) }
 
 /// the block starts of the module generated last (page offsets)
 static mut GEN_STARTS: Vec<u16> = Vec::new();
+/// the physical page the module under construction is compiled from
+static mut GEN_PAGE: u32 = 0;
 static mut GEN_COVERED: Vec<u16> = Vec::new();
 
 /// Direct mapped cache in front of the block map: counts executions of branch targets and holds
@@ -127,6 +129,10 @@ pub static mut STAT_COMPILED: u32 = 0;
 pub static mut STAT_FAILED: u32 = 0;
 pub static mut STAT_DECODED: u32 = 0;
 pub static mut STAT_BLOCKS: u32 = 0;
+pub static mut STAT_BYTES: u32 = 0;
+pub static mut CAT_BYTES: [u32; 16] = [0; 16];
+pub static mut KIND_BYTES: [u32; 32] = [0; 32];
+pub static mut KIND_COUNT: [u32; 32] = [0; 32];
 /// Debug histogram of the opcodes that ended block discovery: index = opcode, 256 + byte after 0F
 pub static mut UNSUPPORTED: [u32; 512] = [0; 512];
 
@@ -179,6 +185,28 @@ pub static mut RANGE_HI: u64 = u64::MAX;
 pub static mut COMPILED_RIPS: [u32; 64] = [0; 64];
 /// instructions of compiled blocks run back to back without leaving run() (experiment knob, 0 = off)
 pub static mut CHAIN_BUDGET: u32 = 0;
+pub static mut CHAIN_LIMIT_SET: u32 = 0;
+/// compiles of a page before further ones wait for more heat (doubling each time)
+pub static mut RECOMPILE_FREE: u32 = 4;
+
+/// Compiled code that leaves for a block that is ready jumps there directly (a tail call) instead of
+/// returning to the dispatcher. The entries are filled by the dispatcher when it validates a slot.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ChainEntry {
+    rip: u64,
+    epoch: u32,
+    /// table index of the module, and bit 16: privilege (user)
+    meta: u32,
+}
+const CHAIN_SIZE: usize = 4096;
+static mut CHAIN: [ChainEntry; CHAIN_SIZE] = [ChainEntry { rip: u64::MAX, epoch: 0, meta: 0 }; CHAIN_SIZE];
+/// instruction counter at the start of the dispatcher's call: the chain stops after CHAIN_LIMIT instructions
+static mut CHAIN_START: u32 = 0;
+/// 0: modules do not chain
+static mut CHAIN_LIMIT: u32 = 0;
+
+fn chain_hash(r: u64) -> usize { (r ^ r >> 12 ^ r >> 24) as usize & (CHAIN_SIZE - 1) }
 /// compute pending flags inline in the generated code instead of calling j64_flags (experiment knob)
 pub static mut INLINE_FLAGS: bool = true;
 /// Debug: interpreted instruction addresses, hashed: (rip, count); read through get_jit_config(3000 + 2 * i / + 1)
@@ -1289,10 +1317,104 @@ impl<'a> Gen<'a> {
         self.exit_const_kind(target, extra, 1);
     }
 
+    /// rip (in memory) is where to continue, the flags are in memory and the counter is updated: jump
+    /// straight to the module of that address when the dispatcher has a validated slot for it and the
+    /// instruction budget of the chain is not used up
+    fn chain(&mut self) {
+        let m0 = self.b.body_len();
+        self.chain_inner();
+        unsafe { CAT_BYTES[9] = CAT_BYTES[9].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn chain_inner(&mut self) {
+        self.b.load_fixed_i32(&raw const CHAIN_LIMIT as u32);
+        self.b.if_void();
+        {
+            self.b.load_fixed_i32(instruction_counter as u32);
+            self.b.load_fixed_i32(&raw const CHAIN_START as u32);
+            self.b.sub_i32();
+            self.b.load_fixed_i32(&raw const CHAIN_LIMIT as u32);
+            self.b.ltu_i32();
+            self.b.if_void();
+            {
+                let t = self.b.new_local_i64();
+                let a = self.b.new_local();
+                self.b.load_fixed_i32(rip_hi as u32);
+                self.b.extend_unsigned_i32_to_i64();
+                self.b.const_i64(32);
+                self.b.shl_i64();
+                self.b.load_fixed_i32(instruction_pointer as u32);
+                self.b.extend_unsigned_i32_to_i64();
+                self.b.or_i64();
+                self.b.set_local_i64(&t);
+                // a = &CHAIN[hash(t)]
+                self.b.get_local_i64(&t);
+                self.b.get_local_i64(&t);
+                self.b.const_i64(12);
+                self.b.shr_u_i64();
+                self.b.xor_i64();
+                self.b.get_local_i64(&t);
+                self.b.const_i64(24);
+                self.b.shr_u_i64();
+                self.b.xor_i64();
+                self.b.wrap_i64_to_i32();
+                self.b.const_i32(CHAIN_SIZE as i32 - 1);
+                self.b.and_i32();
+                self.b.const_i32(4);
+                self.b.shl_i32();
+                self.b.const_i32(&raw const CHAIN as i32);
+                self.b.add_i32();
+                self.b.set_local(&a);
+                self.b.get_local(&a);
+                self.b.load_aligned_i64(0);
+                self.b.get_local_i64(&t);
+                self.b.eq_i64();
+                self.b.if_void();
+                {
+                    self.b.get_local(&a);
+                    self.b.load_aligned_i32(8);
+                    self.b.load_fixed_i32(&raw const EPOCH as u32);
+                    self.b.eq_i32();
+                    self.b.if_void();
+                    {
+                        // same privilege
+                        self.b.get_local(&a);
+                        self.b.load_aligned_i32(12);
+                        self.b.const_i32(16);
+                        self.b.shr_u_i32();
+                        self.b.load_fixed_u8(cpl as u32);
+                        self.b.const_i32(3);
+                        self.b.eq_i32();
+                        self.b.eq_i32();
+                        self.b.if_void();
+                        {
+                            self.b.const_i32(0);
+                            self.b.get_local(&a);
+                            self.b.load_aligned_i32(12);
+                            self.b.const_i32(0xFFFF);
+                            self.b.and_i32();
+                            self.b.const_i32(WASM_TABLE_OFFSET as i32);
+                            self.b.add_i32();
+                            self.b.return_call_indirect_fn1();
+                        }
+                        self.b.block_end();
+                    }
+                    self.b.block_end();
+                }
+                self.b.block_end();
+                self.b.free_local(a);
+                self.b.free_local_i64(t);
+            }
+            self.b.block_end();
+        }
+        self.b.block_end();
+    }
+
     fn exit_const_kind(&mut self, target: u64, extra: i32, kind: i32) {
         self.materialize();
         self.store_rip(target);
         self.push_counter_update(extra);
+        self.chain();
         self.set_exit_kind(kind);
         self.b.return_();
     }
@@ -1307,6 +1429,14 @@ impl<'a> Gen<'a> {
     /// leave the block without touching rip (an exception has redirected it already)
     fn exit_keep_rip(&mut self) {
         self.push_counter_update(self.n);
+        self.set_exit_kind(2);
+        self.b.return_();
+    }
+
+    /// like `exit_keep_rip`, for a jump that was just made (ret, indirect call and jump): chains when it can
+    fn exit_jump(&mut self) {
+        self.push_counter_update(self.n);
+        self.chain();
         self.set_exit_kind(2);
         self.b.return_();
     }
@@ -1345,6 +1475,12 @@ impl<'a> Gen<'a> {
     }
 
     fn set_previous_ip(&mut self) {
+        let m0 = self.b.body_len();
+        self.set_previous_ip_inner();
+        unsafe { CAT_BYTES[0] = CAT_BYTES[0].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn set_previous_ip_inner(&mut self) {
         self.b.const_i32(previous_ip as i32);
         let cur = self.cur;
         self.rip_val(cur);
@@ -1353,6 +1489,12 @@ impl<'a> Gen<'a> {
     }
 
     fn fault_check(&mut self) {
+        let m0 = self.b.body_len();
+        self.fault_check_inner();
+        unsafe { CAT_BYTES[1] = CAT_BYTES[1].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn fault_check_inner(&mut self) {
         self.b.load_fixed_i32(unsafe { &raw const FLAGS[FAULT] } as u32);
         self.b.if_void();
         self.exit_keep_rip();
@@ -1364,6 +1506,12 @@ impl<'a> Gen<'a> {
     fn smc_check(&mut self) { self.smc_needed = true; }
 
     fn finish_insn(&mut self) {
+        let m0 = self.b.body_len();
+        self.finish_insn_inner();
+        unsafe { CAT_BYTES[2] = CAT_BYTES[2].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn finish_insn_inner(&mut self) {
         if self.smc_needed {
             self.smc_needed = false;
             self.smc_exit();
@@ -1387,6 +1535,12 @@ impl<'a> Gen<'a> {
     fn load_lo(&mut self, n: u8) { self.b.load_fixed_i32(lo_addr(n)); }
 
     fn get_reg(&mut self, n: u8, bits: u32, rex: bool) {
+        let m0 = self.b.body_len();
+        self.get_reg_inner(n, bits, rex);
+        unsafe { CAT_BYTES[3] = CAT_BYTES[3].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn get_reg_inner(&mut self, n: u8, bits: u32, rex: bool) {
         match bits {
             64 => {
                 self.load_lo(n);
@@ -1425,6 +1579,12 @@ impl<'a> Gen<'a> {
 
     /// stores the i64 on the stack into a register
     fn set_reg(&mut self, n: u8, bits: u32, rex: bool) {
+        let m0 = self.b.body_len();
+        self.set_reg_inner(n, bits, rex);
+        unsafe { CAT_BYTES[4] = CAT_BYTES[4].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn set_reg_inner(&mut self, n: u8, bits: u32, rex: bool) {
         let t = self.b.set_new_local_i64();
         match bits {
             64 => {
@@ -1497,6 +1657,12 @@ impl<'a> Gen<'a> {
 
     /// pushes the effective address as i64
     fn ea(&mut self, ea: &Ea, with_segment: bool) {
+        let m0 = self.b.body_len();
+        self.ea_inner(ea, with_segment);
+        unsafe { CAT_BYTES[5] = CAT_BYTES[5].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn ea_inner(&mut self, ea: &Ea, with_segment: bool) {
         if ea.rip_rel {
             self.b.const_i64(ea.disp.wrapping_sub(self.start as i64));
             self.b.get_local_i64(&self.base);
@@ -1590,6 +1756,12 @@ impl<'a> Gen<'a> {
 
     /// [addr on stack] -> value
     fn read_mem(&mut self, bits: u32) {
+        let m0 = self.b.body_len();
+        self.read_mem_inner(bits);
+        unsafe { CAT_BYTES[7] = CAT_BYTES[7].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn read_mem_inner(&mut self, bits: u32) {
         if unsafe { INLINE_TLB_OFF } {
             self.b.const_i32(bits as i32);
             self.b.call_fn2_i64_i32_ret_i64("j64_read");
@@ -1619,6 +1791,12 @@ impl<'a> Gen<'a> {
 
     /// [addr, value on stack] -> (stores the value, faults are reported through the fault flag)
     fn write_mem(&mut self, bits: u32) {
+        let m0 = self.b.body_len();
+        self.write_mem_inner(bits);
+        unsafe { CAT_BYTES[8] = CAT_BYTES[8].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn write_mem_inner(&mut self, bits: u32) {
         if unsafe { INLINE_TLB_OFF } {
             self.b.const_i32(bits as i32);
             self.b.call_fn3_i64_i64_i32("j64_write");
@@ -1805,6 +1983,12 @@ impl<'a> Gen<'a> {
 
     /// stores the pending flags into memory
     fn materialize(&mut self) {
+        let m0 = self.b.body_len();
+        self.materialize_inner();
+        unsafe { CAT_BYTES[6] = CAT_BYTES[6].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    fn materialize_inner(&mut self) {
         if let Some(p) = self.pending.take() {
             if unsafe { INLINE_FLAGS } {
                 self.inline_flags(p);
@@ -2750,6 +2934,14 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
 
     b.reset();
 
+    // (a module can be entered by a chain of modules without the dispatcher: it sets up what
+    // `call_block` does)
+    for (addr, v) in [(&raw const FLAGS[FAULT] as u32, 0), (&raw const FLAGS[SMC] as u32, 0), (&raw const EXECUTING_PAGE as u32, GEN_PAGE as i32)] {
+        b.const_i32(addr as i32);
+        b.const_i32(v);
+        b.store_aligned_i32(0);
+    }
+
     // flags computed lazily by 32 bit code are materialised once on entry
     b.load_fixed_i32(flags_changed as u32);
     b.if_void();
@@ -2841,6 +3033,8 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
         g.n += 1;
         total += 1;
 
+        let body_before = g.b.body_len();
+        let kind_i = kind(&insn) as usize;
         match insn {
             Insn::Jcc { cc, target } => {
                 g.cond(cc);
@@ -2894,7 +3088,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                 g.b.const_i32(0);
                 g.b.call_fn2_i64_i32("j64_set_rip");
                 g.fault_check();
-                g.exit_keep_rip();
+                g.exit_jump();
                 g.b.free_local_i64(target);
                 ended = true;
             },
@@ -2905,7 +3099,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                 g.b.const_i32(0);
                 g.b.call_fn2_i64_i32("j64_set_rip");
                 g.fault_check();
-                g.exit_keep_rip();
+                g.exit_jump();
                 ended = true;
             },
             Insn::Ret { adj } => {
@@ -2925,7 +3119,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                 g.b.const_i32(0);
                 g.b.call_fn2_i64_i32("j64_set_rip");
                 g.fault_check();
-                g.exit_keep_rip();
+                g.exit_jump();
                 ended = true;
             },
             _ => {
@@ -2933,6 +3127,8 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                 g.finish_insn();
             },
         }
+        KIND_BYTES[kind_i] = KIND_BYTES[kind_i].wrapping_add((g.b.body_len() - body_before) as u32);
+        KIND_COUNT[kind_i] += 1;
         // a block that is left right away does not need the check
         g.smc_needed = false;
 
@@ -2978,7 +3174,8 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     b.free_local_i64(fl_a);
     b.free_local_i64(fl_b);
     b.free_local_i64(fl_r);
-    b.finish();
+    let size = b.finish();
+    STAT_BYTES = STAT_BYTES.wrapping_add(size as u32);
     Some(total)
 }
 
@@ -3125,6 +3322,18 @@ pub unsafe fn top_page(i: u32, what: u32) -> u32 {
     }
 }
 pub static mut PHYS_DUMP_BASE: u32 = 0;
+#[allow(static_mut_refs)]
+pub unsafe fn block_stats(what: u32) -> u32 {
+    let st = state();
+    match what {
+        0 => st.blocks.len() as u32,
+        1 => st.blocks.values().map(|b| b.compiles).sum(),
+        2 => st.blocks.values().filter(|b| b.compiles >= 2).count() as u32,
+        3 => st.blocks.values().filter(|b| b.compiles >= 4).count() as u32,
+        4 => st.blocks.values().map(|b| b.served.iter().map(|w| w.count_ones()).sum::<u32>()).sum(),
+        _ => 0,
+    }
+}
 pub unsafe fn phys_byte(phys: u32) -> u32 { *crate::cpu::memory::mem8.offset(phys as isize) as u32 }
 pub static mut EXIT_KIND: i32 = 0;
 pub static mut TAIL_KIND: usize = 0;
@@ -3195,6 +3404,8 @@ unsafe fn page_heat_compile(r: u64) {
 
 unsafe fn call_block(index: u16, phys_page: u32) {
     AFTER_EXIT = true;
+    CHAIN_START = *instruction_counter;
+    CHAIN_LIMIT = if VERIFY { 0 } else { CHAIN_LIMIT_SET };
     FLAGS[FAULT] = 0;
     FLAGS[SMC] = 0;
     STAT_RUN += 1;
@@ -3339,6 +3550,10 @@ unsafe fn try_run_block() -> bool {
                 }
                 slot.epoch = EPOCH;
             }
+            {
+                let e = &mut CHAIN[chain_hash(r)];
+                *e = ChainEntry { rip: r, epoch: EPOCH, meta: slot.index as u32 | (user as u32) << 16 };
+            }
             call_block(slot.index, slot.phys_page);
             true
         },
@@ -3383,8 +3598,8 @@ unsafe fn try_run_block() -> bool {
             let off = (phys & 0xFFF) as usize;
             // a module that exists but does not serve this entry is compiled again with it
             if let Some(b) = st.blocks.get(&key) {
-                if !bit(&b.served, off) && !bit(&b.failed, off) && b.compiles >= 4 {
-                    let wait = THRESHOLD.saturating_mul(1 << (b.compiles - 3).min(8));
+                if !bit(&b.served, off) && !bit(&b.failed, off) && b.compiles >= RECOMPILE_FREE {
+                    let wait = THRESHOLD.saturating_mul(1 << (b.compiles + 1 - RECOMPILE_FREE).min(8));
                     if slot.count < wait {
                         slot.limit = wait;
                         return false;
@@ -3473,6 +3688,7 @@ unsafe fn compile(r: u64, user: bool) {
         }
     }
     let out_of_range = r < RANGE_LO || r >= RANGE_HI;
+    GEN_PAGE = page;
     let mut old = None;
     let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, ext, &seeds, &spec), |index| {
         // registered before the module is handed to the host, which may finish synchronously
