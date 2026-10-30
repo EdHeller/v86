@@ -65,7 +65,7 @@ export function device_handle(cpu, owner)
     const pci = () => cpu.devices.pci;
     return {
         "name": owner.name,
-        "wasm_memory": cpu.wm,
+        "wasm_memory": cpu.wasm_memory,
         "qemu_compatible": false,
         "machine_type": "i440fx",
 

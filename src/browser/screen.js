@@ -451,6 +451,8 @@ export function ScreenAdapter(options, screen_fill_buffer)
 
     this.update_text = function()
     {
+        // (the display hub's adapters render text on request too)
+        this.screen_fill_buffer();
         for(var i = 0; i < text_mode_height; i++)
         {
             if(changed_rows[i])

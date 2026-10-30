@@ -24,6 +24,8 @@ import { Ne2k } from "./ne2k.js";
 import { IO } from "./io.js";
 import { VirtioConsole } from "./virtio_console.js";
 import { PCI } from "./pci.js";
+import { GraphicsAdapter, patch_vga_bios_ids } from "./graphics_adapter.js";
+import { DisplayHub } from "./display.js";
 import { PluginDevice, USB_PLUGINS, AUDIO_PLUGINS, registered_plugin } from "./device_plugin.js";
 import "./usb/plugin.js";
 import "./audio_devices/hd_audio/plugin.js";
@@ -531,7 +533,7 @@ CPU.prototype.get_state = function()
     state[49] = this.devices.dma;
     state[50] = this.devices.acpi;
     // 51 (formerly hpet)
-    state[52] = this.devices.vga;
+    state[52] = this.devices.graphics_adapter || this.devices.vga;
     state[53] = this.devices.ps2;
     state[54] = this.devices.uart0;
     state[55] = this.devices.fdc;
@@ -741,7 +743,7 @@ CPU.prototype.set_state = function(state)
     this.devices.dma && this.devices.dma.set_state(state[49]);
     this.devices.acpi && this.devices.acpi.set_state(state[50]);
     // 51 (formerly hpet)
-    this.devices.vga && this.devices.vga.set_state(state[52]);
+    (this.devices.graphics_adapter || this.devices.vga) && (this.devices.graphics_adapter || this.devices.vga).set_state(state[52]);
     this.devices.ps2 && this.devices.ps2.set_state(state[53]);
     this.devices.uart0 && this.devices.uart0.set_state(state[54]);
     this.devices.fdc && this.devices.fdc.set_state(state[55]);
@@ -1121,6 +1123,7 @@ CPU.prototype.init = function(settings, device_bus)
 
     this.bios.main = settings.bios;
     this.bios.vga = settings.vga_bios;
+    this.graphics_adapter_plugin = settings.graphics_adapter_plugin;
 
     this.load_bios();
 
@@ -1291,7 +1294,19 @@ CPU.prototype.init = function(settings, device_bus)
 
         this.devices.dma = new DMA(this);
 
-        this.devices.vga = new VGAScreen(this, device_bus, settings.screen, settings.vga_memory_size || 8 * 1024 * 1024);
+        if(settings.graphics_adapter_plugin)
+        {
+            // a display adapter of v64's (graphics_adapter): its device draws through the display hub
+            const hub = this.devices.display = new DisplayHub(device_bus, settings.screen);
+            this.add_device_timer(now => hub.timer(now));
+            this.devices.graphics_adapter = new GraphicsAdapter(this, settings.graphics_adapter_plugin,
+                { vram_size: settings.vga_memory_size, renderer: settings.graphics_adapter_renderer });
+            this.devices.vga = this.devices.graphics_adapter.vga();
+        }
+        else
+        {
+            this.devices.vga = new VGAScreen(this, device_bus, settings.screen, settings.vga_memory_size || 8 * 1024 * 1024);
+        }
 
         this.devices.ps2 = new PS2(this, device_bus);
         this.devices.vmware = new VMwareMouse(this, device_bus);
@@ -1861,6 +1876,12 @@ CPU.prototype.load_bios = function()
 
         // load vga bios
         var vga_bios8 = new Uint8Array(vga_bios);
+        const adapter = settings_graphics_adapter_plugin(this);
+        if(adapter)
+        {
+            vga_bios8 = vga_bios8.slice();
+            patch_vga_bios_ids(vga_bios8, adapter["pci_vendor"], adapter["pci_device"]);
+        }
 
         // older versions of seabios
         this.write_blob(vga_bios8, 0xC0000);
@@ -2066,6 +2087,16 @@ CPU.prototype.dump_function_code = function(block_ptr, count)
         this.debug_dump_code(is_32 ? 1 : 0, buffer, start);
     }
 };
+
+/**
+ * The display adapter plugin's descriptor, if graphics_adapter names one
+ * @param {CPU} cpu
+ * @return {Object|undefined}
+ */
+function settings_graphics_adapter_plugin(cpu)
+{
+    return cpu.graphics_adapter_plugin;
+}
 
 CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
 {

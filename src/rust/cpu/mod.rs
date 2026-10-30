@@ -11,6 +11,7 @@ pub mod ioapic;
 pub mod long_mem;
 pub mod long_mode;
 pub mod memory;
+pub mod mmio_ram;
 pub mod misc_instr;
 pub mod modrm;
 pub mod parallel;

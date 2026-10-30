@@ -16,6 +16,7 @@ import { KeyboardAdapter } from "./keyboard.js";
 import { MouseAdapter } from "./mouse.js";
 import { ScreenAdapter } from "./screen.js";
 import { DummyScreenAdapter } from "./dummy_screen.js";
+import { load_graphics_adapter } from "../graphics_adapter.js";
 import { ANSIScreenAdapter } from "./ansi_screen.js";
 import { SerialAdapter, VirtioConsoleAdapter, SerialAdapterXtermJS, VirtioConsoleAdapterXtermJS } from "./serial.js";
 import { InBrowserNetworkAdapter } from "./inbrowser_network.js";
@@ -324,7 +325,8 @@ V86.prototype.continue_init = async function(emulator, options)
 
     if(screen_options.container)
     {
-        this.screen_adapter = new ScreenAdapter(screen_options, () => this.v86.cpu.devices.vga && this.v86.cpu.devices.vga.screen_fill_buffer());
+        this.screen_adapter = new ScreenAdapter(screen_options, () => this.v86.cpu.devices.display ? this.v86.cpu.devices.display.request_frame(false) :
+            this.v86.cpu.devices.vga && this.v86.cpu.devices.vga.screen_fill_buffer());
     }
     else if(screen_options.ansi)
     {
@@ -691,6 +693,16 @@ V86.prototype.continue_init = async function(emulator, options)
             }
         }
 
+        // a display adapter of v64's (graphics_adapter: "bochs_vga", "vmware_svga")
+        if(options.graphics_adapter)
+        {
+            settings.graphics_adapter_plugin = await load_graphics_adapter(options.graphics_adapter, options.graphics_adapter_path);
+            // 3D only where the page loaded the WebGPU renderer (build/glbridge/libv86-webgpu.js)
+            // and the browser has a WebGPU adapter; 2D otherwise
+            settings.graphics_adapter_renderer = options.graphics_adapter_renderer ||
+                await this.create_adapter_renderer(options.graphics_adapter);
+        }
+
         this.v86.init(settings);
 
         this.modem && this.modem.initialize();
@@ -853,6 +865,38 @@ V86.prototype.get_bzimage_initrd_from_filesystem = function(filesystem)
 /**
  * Start emulation. Do nothing if emulator is running already. Can be asynchronous.
  */
+/**
+ * The 3D renderer of vmware_svga on this page (V86SVGARenderer of
+ * libv86-webgpu.js), when the page has loaded it and WebGPU has an adapter
+ * @param {string} adapter_name
+ * @return {!Promise<Object>} the device's end of the channel, or null
+ */
+V86.prototype.create_adapter_renderer = async function(adapter_name)
+{
+    const create = globalThis["V86SVGARenderer"];
+    const gpu = typeof navigator !== "undefined" && navigator["gpu"];
+    if(adapter_name !== "vmware_svga" || typeof create !== "function" || !gpu) return null;
+    let adapter = null;
+    try
+    {
+        adapter = await gpu["requestAdapter"]();
+    }
+    catch(e)
+    {
+        dbg_log("WebGPU: " + e);
+    }
+    if(!adapter) return null;
+    // the two ends of a channel on this thread
+    const handlers = [null, null];
+    const end = (self, other) => ({
+        "remote": false,
+        "post": (message, transfer) => { handlers[other] && handlers[other](message); },
+        "listen": handler => { handlers[self] = handler; },
+    });
+    this.adapter_renderer = create(end(1, 0), {});
+    return end(0, 1);
+};
+
 V86.prototype.run = async function()
 {
     this.v86.run();

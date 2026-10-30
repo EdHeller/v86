@@ -19,6 +19,7 @@ use crate::cpu::cpu::{
 use crate::cpu::global_pointers::memory_size;
 use crate::cpu::ioapic;
 use crate::cpu::vga;
+use crate::cpu::mmio_ram;
 use crate::jit;
 use crate::page::Page;
 
@@ -96,7 +97,7 @@ pub fn in_mapped_range(addr: u32) -> bool {
 
 pub const VGA_LFB_ADDRESS: u32 = 0xE0000000;
 pub fn in_svga_lfb(addr: u32) -> bool {
-    addr >= VGA_LFB_ADDRESS && addr <= unsafe { VGA_LFB_ADDRESS + (vga_memory_size - 1) }
+    addr >= VGA_LFB_ADDRESS && unsafe { vga_memory_size != 0 && addr <= VGA_LFB_ADDRESS + (vga_memory_size - 1) }
 }
 
 
@@ -163,6 +164,9 @@ pub fn read8(addr: u32) -> i32 {
         if in_svga_lfb(addr) {
             unsafe { *vga_mem8.offset((addr - VGA_LFB_ADDRESS) as isize) as i32 }
         }
+        else if let Some(host) = unsafe { mmio_ram::read_host(addr, 1) } {
+            unsafe { *host as i32 }
+        }
         else if addr >= APIC_MEM_ADDRESS && addr < APIC_MEM_ADDRESS + APIC_MEM_SIZE {
             apic::read32((addr - APIC_MEM_ADDRESS) & !3) as i32 >> 8 * (addr & 3) & 0xFF
         }
@@ -188,6 +192,9 @@ pub fn read16(addr: u32) -> i32 {
                     as i32
             }
         }
+        else if let Some(host) = unsafe { mmio_ram::read_host(addr, 2) } {
+            unsafe { ptr::read_unaligned(host as *const u16) as i32 }
+        }
         else {
             read8(addr) | read8(addr + 1) << 8
         }
@@ -207,6 +214,9 @@ pub fn read32s(addr: u32) -> i32 {
             unsafe {
                 ptr::read_unaligned(vga_mem8.offset((addr - VGA_LFB_ADDRESS) as isize) as *const i32)
             } // XXX
+        }
+        else if let Some(host) = unsafe { mmio_ram::read_host(addr, 4) } {
+            unsafe { ptr::read_unaligned(host as *const i32) }
         }
         else if addr >= APIC_MEM_ADDRESS && addr < APIC_MEM_ADDRESS + APIC_MEM_SIZE {
             apic::read32(addr - APIC_MEM_ADDRESS) as i32
@@ -231,6 +241,9 @@ pub unsafe fn read64s(addr: u32) -> i64 {
         if in_svga_lfb(addr) {
             ptr::read_unaligned(vga_mem8.offset((addr - VGA_LFB_ADDRESS) as isize) as *const i64)
         }
+        else if let Some(host) = mmio_ram::read_host(addr, 8) {
+            ptr::read_unaligned(host as *const i64)
+        }
         else {
             read32s(addr) as i64 | (read32s(addr + 4) as i64) << 32
         }
@@ -244,6 +257,9 @@ pub unsafe fn read128(addr: u32) -> reg128 {
     if in_mapped_range(addr) {
         if in_svga_lfb(addr) {
             ptr::read_unaligned(vga_mem8.offset((addr - VGA_LFB_ADDRESS) as isize) as *const reg128)
+        }
+        else if let Some(host) = mmio_ram::read_host(addr, 16) {
+            ptr::read_unaligned(host as *const reg128)
         }
         else {
             reg128 {
@@ -363,6 +379,9 @@ pub unsafe fn mmap_write8(addr: u32, value: i32) {
         vga::mark_dirty(addr);
         *vga_mem8.offset((addr - VGA_LFB_ADDRESS) as isize) = value as u8
     }
+    else if let Some(host) = mmio_ram::write_host(addr, 1) {
+        *host = value as u8
+    }
     else {
         ext::mmap_write8(addr, value)
     }
@@ -375,6 +394,9 @@ pub unsafe fn mmap_write16(addr: u32, value: i32) {
             value as u16,
         )
     }
+    else if let Some(host) = mmio_ram::write_host(addr, 2) {
+        ptr::write_unaligned(host as *mut u16, value as u16)
+    }
     else {
         ext::mmap_write16(addr, value)
     }
@@ -386,6 +408,9 @@ pub unsafe fn mmap_write32(addr: u32, value: i32) {
             vga_mem8.offset((addr - VGA_LFB_ADDRESS) as isize) as *mut i32,
             value,
         )
+    }
+    else if let Some(host) = mmio_ram::write_host(addr, 4) {
+        ptr::write_unaligned(host as *mut i32, value)
     }
     else if addr >= APIC_MEM_ADDRESS && addr < APIC_MEM_ADDRESS + APIC_MEM_SIZE {
         apic::write32(addr - APIC_MEM_ADDRESS, value as u32);
@@ -407,6 +432,9 @@ pub unsafe fn mmap_write64(addr: u32, value: u64) {
             value,
         )
     }
+    else if let Some(host) = mmio_ram::write_host(addr, 8) {
+        ptr::write_unaligned(host as *mut u64, value)
+    }
     else {
         ext::mmap_write64(addr, value as i32, (value >> 32) as i32)
     }
@@ -422,6 +450,10 @@ pub unsafe fn mmap_write128(addr: u32, v0: u64, v1: u64) {
             vga_mem8.offset((addr - VGA_LFB_ADDRESS + 8) as isize) as *mut u64,
             v1,
         )
+    }
+    else if let Some(host) = mmio_ram::write_host(addr, 16) {
+        ptr::write_unaligned(host as *mut u64, v0);
+        ptr::write_unaligned(host.add(8) as *mut u64, v1);
     }
     else {
         ext::mmap_write128(
