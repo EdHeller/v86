@@ -543,6 +543,8 @@ enum Insn {
     Cmpxchg { bits: u32, dst: Opd, src: u8, src_rex: bool },
     Xadd { bits: u32, dst: Opd, src: u8, src_rex: bool },
     Rdtsc,
+    /// cli (false) and sti (true) at CPL 0: sti ends the block, with the interrupt shadow set
+    IfFlag { set: bool },
     /// 128 bit moves between an xmm register and an xmm register or memory (the alignment is checked for the aligned forms)
     SseMov { load: bool, aligned: bool, x: u8, rm: Opd },
     /// pxor / por / pand / pandn and the xorps family: 0 xor, 1 or, 2 and, 3 andn
@@ -588,7 +590,7 @@ fn kind(i: &Insn) -> u32 {
         Insn::Str { .. } => 18,
         Insn::Neg { .. } | Insn::Not { .. } | Insn::Bswap { .. } => 19,
         Insn::Imul { .. } | Insn::MulDiv { .. } => 20,
-        Insn::Cmpxchg { .. } | Insn::Xadd { .. } | Insn::Rdtsc => 22,
+        Insn::Cmpxchg { .. } | Insn::Xadd { .. } | Insn::Rdtsc | Insn::IfFlag { .. } => 22,
         Insn::SseMov { .. } | Insn::SseLogic { .. } | Insn::SseMovd { .. } | Insn::SseMovq { .. } | Insn::SsePunpcklqdq { .. } => 23,
         Insn::CallInd { .. } | Insn::JmpInd { .. } => 21,
         Insn::Xchg { .. } => 22,
@@ -802,6 +804,10 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
             }
         },
         0x90 => {
+            // pause on one core is a nop (with several cores the interpreter ends the slice)
+            if rep == 0xF3 && !p.has_rex && unsafe { crate::cpu::apic::CORE_COUNT } <= 1 {
+                return Some((Insn::Nop, c.pos));
+            }
             if rep != 0 {
                 return None;
             }
@@ -908,6 +914,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
             Insn::Mov { bits, dst: m.rm, src: Opd::Imm(v) }
         },
         0xC9 => Insn::Leave { bits: if p.osz16 { 16 } else { 64 } },
+        0xFA | 0xFB if rep == 0 => Insn::IfFlag { set: opcode == 0xFB },
         0xE8 => {
             let d = c.i32()?;
             let target = rip.wrapping_add(c.pos as u64).wrapping_add(d as u64);
@@ -1147,6 +1154,7 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::MulDiv { op, src, .. } => (false, op < 6, has_mem(&src)),
         Insn::Cmpxchg { dst, .. } | Insn::Xadd { dst, .. } => (false, true, has_mem(&dst)),
         Insn::Rdtsc => (false, false, false),
+        Insn::IfFlag { .. } => (true, false, true),
         Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovd { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } => (false, false, has_mem(&rm)),
     };
     FlagFx { reads, writes_all, fault }
@@ -1402,6 +1410,7 @@ fn insn_regs(i: &Insn) -> (u16, u16) {
             w |= m | 1;
         },
         Insn::Rdtsc => { r |= 1 | 1 << 2; w |= 1 | 1 << 2; },
+        Insn::IfFlag { .. } => {},
         Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } => {
             if let Opd::Mem(ea) = rm { ea_regs(&ea, &mut r) }
         },
@@ -2798,6 +2807,33 @@ impl<'a> Gen<'a> {
                 }
                 self.pending = Some(Pending { kind: 0, bits, keep_cf: false });
             },
+            Insn::IfFlag { set } => {
+                // CPL 0 (IOPL is at least the CPL): otherwise the interpreter (#GP or not)
+                self.materialize();
+                self.b.load_fixed_u8(cpl as u32);
+                self.b.if_void();
+                self.retry_exit();
+                self.b.block_end();
+                self.b.const_i32(flags as i32);
+                self.b.load_fixed_i32(flags as u32);
+                if set {
+                    self.b.const_i32(FLAG_INTERRUPT);
+                    self.b.or_i32();
+                }
+                else {
+                    self.b.const_i32(!FLAG_INTERRUPT);
+                    self.b.and_i32();
+                }
+                self.b.store_aligned_i32(0);
+                if set {
+                    // the next instruction runs before an interrupt: the dispatcher sees the shadow
+                    self.b.const_i32(unsafe { &raw mut crate::cpu::cpu::interrupt_shadow } as i32);
+                    self.b.const_i32(1);
+                    self.b.store_u8(0);
+                    let (next, n) = (self.next, self.n);
+                    self.exit_const_kind(next, n, 0);
+                }
+            },
             Insn::Rdtsc => {
                 self.b.const_i32(30);
                 self.b.const_i64(0);
@@ -3317,6 +3353,13 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                     break;
                 },
                 Insn::Ret { .. } | Insn::JmpInd { .. } => break,
+                Insn::IfFlag { set: true } => {
+                    // sti leaves the module: the instruction after it is an entry
+                    if off + len < code.len() && leaders.insert(off + len) {
+                        work.push(off + len);
+                    }
+                    break;
+                },
                 Insn::Interp | Insn::Str { .. } => {
                     // the module leaves for the interpreter here (a string instruction that is not simple)
                     // and comes back at the next instruction: a block start
