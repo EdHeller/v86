@@ -296,11 +296,17 @@ pub unsafe fn j64_write(addr: i64, v: i64, bits: i32) {
 
 static mut STEP_PROFILE_ON: bool = false;
 static mut STEP_COUNTS: Vec<(u32, u32)> = Vec::new();
+static mut INTERP_COUNTS: Vec<(u32, u32)> = Vec::new();
+static mut INTERP_BYTES: Vec<u64> = Vec::new();
 static mut STEP_SAMPLE: u64 = 0;
 
 /// the key of an instruction: opcode map (0 one byte, 1 0F, 2 0F38, 3 0F3A), opcode, ModRM.reg of
 /// the groups and the mandatory prefix (0 none, 1 66, 2 F3, 3 F2)
 unsafe fn step_profile_record() {
+    step_profile_record_in(false)
+}
+
+unsafe fn step_profile_record_in(second: bool) {
     let rip = rip();
     let Some(phys) = probe_fetch(rip, *cpl == 3) else { return };
     let mut bytes = 0u64;
@@ -344,13 +350,15 @@ unsafe fn step_profile_record() {
     STEP_SAMPLE = rip;
     #[allow(static_mut_refs)]
     {
-        for e in STEP_COUNTS.iter_mut() {
+        let v = if second { &mut INTERP_COUNTS } else { &mut STEP_COUNTS };
+        for e in v.iter_mut() {
             if e.0 == key {
                 e.1 += 1;
                 return;
             }
         }
-        STEP_COUNTS.push((key, 1));
+        v.push((key, 1));
+        if second { INTERP_BYTES.push(bytes) }
     }
 }
 
@@ -359,6 +367,18 @@ pub unsafe fn step_profile_enable(on: i32) { STEP_PROFILE_ON = on != 0 }
 #[no_mangle]
 #[allow(static_mut_refs)]
 pub unsafe fn step_profile_len() -> i32 { STEP_COUNTS.len() as i32 }
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn interp_profile_len() -> i32 { INTERP_COUNTS.len() as i32 }
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn interp_profile_key(i: i32) -> i32 { INTERP_COUNTS.get(i as usize).map_or(0, |e| e.0 as i32) }
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn interp_profile_bytes(i: i32, hi: i32) -> i32 { INTERP_BYTES.get(i as usize).map_or(0, |b| if hi != 0 { (*b >> 32) as i32 } else { *b as i32 }) }
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn interp_profile_count(i: i32) -> i32 { INTERP_COUNTS.get(i as usize).map_or(0, |e| e.1 as i32) }
 #[no_mangle]
 #[allow(static_mut_refs)]
 pub unsafe fn step_profile_key(i: i32) -> i32 { STEP_COUNTS.get(i as usize).map_or(0, |e| e.0 as i32) }
@@ -499,8 +519,26 @@ enum Insn {
     Xchg { bits: u32, a: Opd, b: Opd },
     /// cbw / cwde / cdqe (0x98) and cwd / cdq / cqo (0x99)
     Sext { opcode: u8, bits: u32 },
+    /// mul (4), imul (5), div (6), idiv (7) with the accumulator (and rdx)
+    MulDiv { op: u8, bits: u32, src: Opd },
+    Cmpxchg { bits: u32, dst: Opd, src: u8, src_rex: bool },
+    Xadd { bits: u32, dst: Opd, src: u8, src_rex: bool },
+    Rdtsc,
+    /// 128 bit moves between an xmm register and an xmm register or memory (the alignment is checked for the aligned forms)
+    SseMov { load: bool, aligned: bool, x: u8, rm: Opd },
+    /// pxor / por / pand / pandn and the xorps family: 0 xor, 1 or, 2 and, 3 andn
+    SseLogic { op: u8, x: u8, rm: Opd },
+    /// movd / movq between an xmm register and a general register or memory
+    SseMovd { to_xmm: bool, bits: u32, x: u8, rm: Opd },
+    /// movq xmm <- xmm / m64 (zero extending) and movq xmm / m64 <- xmm
+    SseMovq { load: bool, x: u8, rm: Opd },
+    SsePunpcklqdq { x: u8, rm: Opd },
     /// an instruction the jit cannot compile: the interpreter runs just this one from inside the block
     Interp,
+}
+
+fn is_sse(i: &Insn) -> bool {
+    matches!(i, Insn::SseMov { .. } | Insn::SseLogic { .. } | Insn::SseMovd { .. } | Insn::SseMovq { .. } | Insn::SsePunpcklqdq { .. })
 }
 
 struct Cursor<'a> {
@@ -530,7 +568,9 @@ fn kind(i: &Insn) -> u32 {
         Insn::Bt { .. } => 17,
         Insn::Str { .. } => 18,
         Insn::Neg { .. } | Insn::Not { .. } | Insn::Bswap { .. } => 19,
-        Insn::Imul { .. } => 20,
+        Insn::Imul { .. } | Insn::MulDiv { .. } => 20,
+        Insn::Cmpxchg { .. } | Insn::Xadd { .. } | Insn::Rdtsc => 22,
+        Insn::SseMov { .. } | Insn::SseLogic { .. } | Insn::SseMovd { .. } | Insn::SseMovq { .. } | Insn::SsePunpcklqdq { .. } => 23,
         Insn::CallInd { .. } | Insn::JmpInd { .. } => 21,
         Insn::Xchg { .. } => 22,
         Insn::Sext { .. } => 23,
@@ -793,7 +833,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                 },
                 2 => Insn::Not { bits, dst: m.rm },
                 3 => Insn::Neg { bits, dst: m.rm },
-                _ => return None,
+                op => Insn::MulDiv { op, bits, src: m.rm },
             }
         },
         0xA8 => {
@@ -888,6 +928,59 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                     let m = modrm(&mut c, &p)?;
                     Insn::Imul { bits: osz, dst: m.reg, a: Opd::Reg(m.reg, true), b: m.rm }
                 },
+                0xB0 | 0xB1 | 0xC0 | 0xC1 => {
+                    let bits = if op2 & 1 == 0 { 8 } else { osz };
+                    let m = modrm(&mut c, &p)?;
+                    if op2 < 0xC0 {
+                        Insn::Cmpxchg { bits, dst: m.rm, src: m.reg, src_rex: p.has_rex }
+                    }
+                    else {
+                        Insn::Xadd { bits, dst: m.rm, src: m.reg, src_rex: p.has_rex }
+                    }
+                },
+                0x31 => Insn::Rdtsc,
+                0xAE => {
+                    // lfence / mfence / sfence (the others are xsave and the like)
+                    let m = modrm(&mut c, &p)?;
+                    if !matches!(m.rm, Opd::Reg(..)) || !(5..=7).contains(&(m.reg & 7)) {
+                        return None;
+                    }
+                    Insn::Nop
+                },
+                0x10 | 0x11 | 0x28 | 0x29 if rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseMov { load: op2 & 1 == 0, aligned: op2 >= 0x28, x: m.reg, rm: m.rm }
+                },
+                0x6F | 0x7F if p.osz16 && rep == 0 || rep == 0xF3 => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseMov { load: op2 == 0x6F, aligned: rep == 0, x: m.reg, rm: m.rm }
+                },
+                0x6E | 0x7E if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseMovd { to_xmm: op2 == 0x6E, bits: if p.w() { 64 } else { 32 }, x: m.reg, rm: m.rm }
+                },
+                0x7E if rep == 0xF3 => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseMovq { load: true, x: m.reg, rm: m.rm }
+                },
+                0xD6 if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseMovq { load: false, x: m.reg, rm: m.rm }
+                },
+                0xEF | 0xEB | 0xDB | 0xDF if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    let op = match op2 { 0xEF => 0, 0xEB => 1, 0xDB => 2, _ => 3 };
+                    Insn::SseLogic { op, x: m.reg, rm: m.rm }
+                },
+                0x54..=0x57 if rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    let op = match op2 { 0x57 => 0, 0x56 => 1, 0x54 => 2, _ => 3 };
+                    Insn::SseLogic { op, x: m.reg, rm: m.rm }
+                },
+                0x6C if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SsePunpcklqdq { x: m.reg, rm: m.rm }
+                },
                 0xC8..=0xCF => {
                     if p.osz16 {
                         return None;
@@ -936,7 +1029,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         _ => return None,
     };
 
-    if rep != 0 && !matches!(insn, Insn::Str { .. } | Insn::Nop) {
+    if rep != 0 && !matches!(insn, Insn::Str { .. } | Insn::Nop) && !is_sse(&insn) {
         return None;
     }
     let len = c.pos;
@@ -975,6 +1068,14 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         Insn::JmpInd { src } => Insn::JmpInd { src: fix(src) },
         Insn::Xchg { bits, a, b } => Insn::Xchg { bits, a: fix(a), b: fix(b) },
         Insn::Push { bits, src } => Insn::Push { bits, src: fix(src) },
+        Insn::MulDiv { op, bits, src } => Insn::MulDiv { op, bits, src: fix(src) },
+        Insn::Cmpxchg { bits, dst, src, src_rex } => Insn::Cmpxchg { bits, dst: fix(dst), src, src_rex },
+        Insn::Xadd { bits, dst, src, src_rex } => Insn::Xadd { bits, dst: fix(dst), src, src_rex },
+        Insn::SseMov { load, aligned, x, rm } => Insn::SseMov { load, aligned, x, rm: fix(rm) },
+        Insn::SseLogic { op, x, rm } => Insn::SseLogic { op, x, rm: fix(rm) },
+        Insn::SseMovd { to_xmm, bits, x, rm } => Insn::SseMovd { to_xmm, bits, x, rm: fix(rm) },
+        Insn::SseMovq { load, x, rm } => Insn::SseMovq { load, x, rm: fix(rm) },
+        Insn::SsePunpcklqdq { x, rm } => Insn::SsePunpcklqdq { x, rm: fix(rm) },
         i => i,
     };
     if unsafe { DISABLE_MASK } >> kind(&insn) & 1 != 0 {
@@ -1023,6 +1124,11 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::Xchg { a, b, .. } => (false, false, has_mem(&a) || has_mem(&b)),
         Insn::Sext { .. } => (false, false, false),
         Insn::Interp => (true, false, true),
+        // mul / imul set the flags (all of them, the interpreter does), div / idiv leave them
+        Insn::MulDiv { op, src, .. } => (false, op < 6, has_mem(&src)),
+        Insn::Cmpxchg { dst, .. } | Insn::Xadd { dst, .. } => (false, true, has_mem(&dst)),
+        Insn::Rdtsc => (false, false, false),
+        Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovd { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } => (false, false, has_mem(&rm)),
     };
     FlagFx { reads, writes_all, fault }
 }
@@ -1269,6 +1375,18 @@ fn insn_regs(i: &Insn) -> (u16, u16) {
         Insn::CallInd { src } => { opd_regs(&src, &mut r, &mut w); r |= 1 << 4; w |= 1 << 4; },
         Insn::JmpInd { src } => opd_regs(&src, &mut r, &mut w),
         Insn::Xchg { a, b, .. } => { opd_regs(&a, &mut r, &mut w); opd_regs(&b, &mut r, &mut w); },
+        Insn::MulDiv { src, .. } => { opd_regs(&src, &mut r, &mut w); r |= 1 | 1 << 2; w |= 1 | 1 << 2; },
+        Insn::Cmpxchg { dst, src, .. } | Insn::Xadd { dst, src, .. } => {
+            opd_regs(&dst, &mut r, &mut w);
+            let m = if src < 8 { 1u16 << src | if src >= 4 { 1 << (src - 4) } else { 0 } } else { 1 << src };
+            r |= m | 1;
+            w |= m | 1;
+        },
+        Insn::Rdtsc => { r |= 1 | 1 << 2; w |= 1 | 1 << 2; },
+        Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } => {
+            if let Opd::Mem(ea) = rm { ea_regs(&ea, &mut r) }
+        },
+        Insn::SseMovd { rm, .. } => opd_regs(&rm, &mut r, &mut w),
         Insn::Sext { opcode, .. } => { r |= 1 << 0; w |= 1 << 0; if opcode == 0x99 { w |= 1 << 2; r |= 1 << 2 } },
     }
     (r | w, w)
@@ -1276,6 +1394,8 @@ fn insn_regs(i: &Insn) -> (u16, u16) {
 
 // ---------------------------------------------------------------------------------------------
 // code generation
+
+fn xmm_addr(n: u8) -> u32 { reg_xmm as u32 + 16 * n as u32 }
 
 fn lo_addr(n: u8) -> u32 {
     if n < 8 { reg32 as u32 + 4 * n as u32 } else { reg_ext as u32 + 4 * (n as u32 - 8) }
@@ -1302,6 +1422,8 @@ struct Gen<'a> {
     t_fv: WasmLocalI64,
     t_fp: WasmLocalI64,
     t_fe: WasmLocal,
+    /// the address in ram of a 16 byte access
+    t_h: WasmLocal,
     cur: u64,
     next: u64,
     /// offset of a basic block (from the start of the region) -> its index
@@ -1322,6 +1444,9 @@ struct Gen<'a> {
     /// where the epilogue (rip, instruction counter, chaining) is emitted once
     /// the 16 guest registers: loaded when the module is entered, stored when it is left
     regs: Vec<WasmLocalI64>,
+    /// the tables of the jit tlb for reads and writes at the current privilege level (fixed while a module runs)
+    jr: WasmLocal,
+    jw: WasmLocal,
     /// the registers the module reads (loaded when it is entered) and writes (stored when it is left)
     reg_loaded: u16,
     reg_written: u16,
@@ -1337,6 +1462,8 @@ struct Pending {
     /// 0 add, 1 logic operation, 2 sub / cmp
     kind: u8,
     bits: u32,
+    /// inc / dec: the carry flag is not part of the result (it stays as it is in memory)
+    keep_cf: bool,
 }
 
 impl<'a> Gen<'a> {
@@ -1539,7 +1666,7 @@ impl<'a> Gen<'a> {
         self.materialize();
         let (cur, n) = (self.cur, self.n);
         self.rip_val(cur);
-        self.exit_stack_rip(n - 1, 2);
+        self.exit_stack_rip(n - 1, 3);
         self.pending = saved;
     }
 
@@ -1728,37 +1855,25 @@ impl<'a> Gen<'a> {
     /// to the address of the entry
     fn tlb_hit(&mut self, bits: u32, write: bool) {
         use crate::cpu::long_mem::*;
-        // page number and entry address
+        // page number and entry address (in the table of this kind of access at this privilege level)
         self.b.get_local_i64(&self.t_fa);
         self.b.const_i64(12);
         self.b.shr_u_i64();
         self.b.set_local_i64(&self.t_fp);
         self.b.get_local_i64(&self.t_fp);
         self.b.wrap_i64_to_i32();
-        self.b.const_i32(TLB_MASK as i32);
+        self.b.const_i32(JTLB_MASK as i32);
         self.b.and_i32();
-        self.b.const_i32(TLB_ENTRY_SHIFT as i32);
+        self.b.const_i32(4);
         self.b.shl_i32();
+        self.b.get_local(if write { &self.jw } else { &self.jr });
+        self.b.add_i32();
         self.b.set_local(&self.t_fe);
-        // the entry is for this page (entries only exist for canonical addresses)
-        let base = tlb_address();
+        // the entry is for this page (entries only exist for accesses that can be done here)
         self.b.get_local(&self.t_fe);
-        self.b.load_unaligned_i64(base);
+        self.b.load_aligned_i64(0);
         self.b.get_local_i64(&self.t_fp);
         self.b.eq_i64();
-        // the access is allowed for the current privilege level
-        self.b.get_local(&self.t_fe);
-        self.b.load_u8(base + TLB_ENTRY_FAST);
-        // mask = (supervisor bit) << (cpl == 3): the user bit is the next one
-        self.b.const_i32(if write { FAST_WRITE_SUPERVISOR } else { FAST_READ_SUPERVISOR } as i32);
-        self.b.load_fixed_u8(cpl as u32);
-        self.b.const_i32(3);
-        self.b.eq_i32();
-        self.b.shl_i32();
-        self.b.and_i32();
-        self.b.eqz_i32();
-        self.b.eqz_i32();
-        self.b.and_i32();
         if bits > 8 {
             // does not cross the page
             self.b.get_local_i64(&self.t_fa);
@@ -1775,7 +1890,7 @@ impl<'a> Gen<'a> {
     fn tlb_ram_address(&mut self) {
         use crate::cpu::long_mem::*;
         self.b.get_local(&self.t_fe);
-        self.b.load_unaligned_i32(tlb_address() + TLB_ENTRY_PHYS);
+        self.b.load_aligned_i32(JTLB_ENTRY_PHYS);
         self.b.get_local_i64(&self.t_fa);
         self.b.wrap_i64_to_i32();
         self.b.const_i32(0xFFF);
@@ -1912,7 +2027,7 @@ impl<'a> Gen<'a> {
             self.b.store_aligned_i32(0);
         }
         else {
-            self.b.const_i32(!FLAGS_ALL);
+            self.b.const_i32(!(if p.keep_cf { FLAGS_ALL & !FLAG_CARRY } else { FLAGS_ALL }));
             self.b.and_i32();
             // pf
             self.b.get_local_i64(&self.fl_r);
@@ -1940,18 +2055,20 @@ impl<'a> Gen<'a> {
             self.b.shl_i32();
             self.b.or_i32();
             if p.kind != 1 {
-                // cf
-                if p.kind == 0 {
-                    self.b.get_local_i64(&self.fl_r);
-                    self.b.get_local_i64(&self.fl_a);
+                if !p.keep_cf {
+                    // cf
+                    if p.kind == 0 {
+                        self.b.get_local_i64(&self.fl_r);
+                        self.b.get_local_i64(&self.fl_a);
+                    }
+                    else {
+                        // sub / cmp: a < b
+                        self.b.get_local_i64(&self.fl_a);
+                        self.b.get_local_i64(&self.fl_b);
+                    }
+                    self.b.ltu_i64();
+                    self.b.or_i32();
                 }
-                else {
-                    // sub / cmp: a < b
-                    self.b.get_local_i64(&self.fl_a);
-                    self.b.get_local_i64(&self.fl_b);
-                }
-                self.b.ltu_i64();
-                self.b.or_i32();
                 // af
                 self.b.get_local_i64(&self.fl_a);
                 self.b.get_local_i64(&self.fl_b);
@@ -2005,7 +2122,7 @@ impl<'a> Gen<'a> {
 
     fn materialize_inner(&mut self) {
         if let Some(p) = self.pending.take() {
-            if unsafe { INLINE_FLAGS } {
+            if unsafe { INLINE_FLAGS } || p.keep_cf {
                 self.inline_flags(p);
                 return;
             }
@@ -2037,6 +2154,9 @@ impl<'a> Gen<'a> {
         let Some(p) = self.pending else { return false };
         let bits = p.bits;
         let base = cc >> 1;
+        if p.keep_cf && matches!(base, 1 | 3) {
+            return false;
+        }
         let invert = cc & 1 != 0;
         // each case leaves the i32 for the non-inverted condition
         match (p.kind, base) {
@@ -2299,7 +2419,7 @@ impl<'a> Gen<'a> {
                 1 | 4 | 6 => 1,
                 _ => 2,
             };
-            self.pending = Some(Pending { kind, bits });
+            self.pending = Some(Pending { kind, bits, keep_cf: false });
         }
     }
 
@@ -2372,14 +2492,11 @@ impl<'a> Gen<'a> {
                 if self.cur_live_out {
                     // the carry flag is preserved: the old flags have to be in memory
                     self.materialize();
-                    self.b.const_i32(8 + dec as i32);
                     self.read_opd_saved(&dst, bits);
-                    self.b.const_i64(0);
-                    self.b.const_i32(bits as i32);
-                    self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
-                }
-                else {
-                    self.read_opd_saved(&dst, bits);
+                    self.b.set_local_i64(&self.fl_a);
+                    self.b.const_i64(1);
+                    self.b.set_local_i64(&self.fl_b);
+                    self.b.get_local_i64(&self.fl_a);
                     self.b.const_i64(1);
                     if dec {
                         self.b.sub_i64();
@@ -2388,7 +2505,21 @@ impl<'a> Gen<'a> {
                         self.b.add_i64();
                     }
                     self.mask_result(bits);
+                    self.b.set_local_i64(&self.fl_r);
+                    self.b.get_local_i64(&self.fl_r);
+                    self.write_opd_saved(&dst, bits);
+                    self.pending = Some(Pending { kind: if dec { 2 } else { 0 }, bits, keep_cf: true });
+                    return;
                 }
+                self.read_opd_saved(&dst, bits);
+                self.b.const_i64(1);
+                if dec {
+                    self.b.sub_i64();
+                }
+                else {
+                    self.b.add_i64();
+                }
+                self.mask_result(bits);
                 self.write_opd_saved(&dst, bits);
             },
             Insn::Shift { op, bits, dst, count } => {
@@ -2480,7 +2611,7 @@ impl<'a> Gen<'a> {
                     self.mask_result(bits);
                     self.b.set_local_i64(&self.fl_r);
                     self.b.get_local_i64(&self.fl_r);
-                    self.pending = Some(Pending { kind: 2, bits });
+                    self.pending = Some(Pending { kind: 2, bits, keep_cf: false });
                 }
                 self.write_opd_saved(&dst, bits);
             },
@@ -2542,6 +2673,231 @@ impl<'a> Gen<'a> {
                 self.write_opd_saved(&b, bits);
                 self.b.free_local_i64(ta);
                 self.b.free_local_i64(tb);
+            },
+            Insn::MulDiv { op, bits, src } => {
+                self.ea_to_local(&src);
+                if op >= 6 {
+                    // (div leaves the flags alone)
+                    self.materialize();
+                }
+                else {
+                    self.pending = None;
+                }
+                self.read_opd_saved(&src, bits);
+                self.b.set_local_i64(&self.t_v);
+                let wide = bits == 8 && op >= 6;
+                if op >= 6 {
+                    // the high half of the dividend goes to the helper through memory
+                    self.b.const_i32(unsafe { &raw const long_mode::JIT_AUX } as i32);
+                    if bits == 8 { self.b.const_i64(0) } else { self.get_reg(2, bits, true) }
+                    self.b.store_aligned_i64(0);
+                }
+                self.b.const_i32(26 + (op as i32 - 4));
+                self.get_reg(0, if wide { 16 } else { bits }, true);
+                self.b.get_local_i64(&self.t_v);
+                self.b.const_i32(bits as i32);
+                self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                self.b.set_local_i64(&self.t_a);
+                if op >= 6 {
+                    self.b.load_fixed_i32(unsafe { &raw const long_mode::JIT_ERR } as u32);
+                    self.b.if_void();
+                    self.retry_exit();
+                    self.b.block_end();
+                }
+                self.b.load_fixed_i64(unsafe { &raw const long_mode::JIT_AUX2 } as u32);
+                self.b.set_local_i64(&self.t_v);
+                if bits == 8 {
+                    // ax = high:low (remainder:quotient for a division)
+                    self.b.get_local_i64(&self.t_v);
+                    self.b.const_i64(8);
+                    self.b.shl_i64();
+                    self.b.get_local_i64(&self.t_a);
+                    self.b.or_i64();
+                    self.set_reg(0, 16, true);
+                }
+                else {
+                    self.b.get_local_i64(&self.t_a);
+                    self.set_reg(0, bits, true);
+                    self.b.get_local_i64(&self.t_v);
+                    self.set_reg(2, bits, true);
+                }
+            },
+            Insn::Cmpxchg { bits, dst, src, src_rex } => {
+                self.ea_to_local(&dst);
+                self.read_opd_saved(&dst, bits);
+                self.b.set_local_i64(&self.fl_b);
+                self.get_reg(0, bits, true);
+                self.b.set_local_i64(&self.fl_a);
+                self.b.get_local_i64(&self.fl_a);
+                self.b.get_local_i64(&self.fl_b);
+                self.b.sub_i64();
+                self.mask_result(bits);
+                self.b.set_local_i64(&self.fl_r);
+                self.b.get_local_i64(&self.fl_r);
+                self.b.eqz_i64();
+                self.b.if_void();
+                {
+                    self.get_reg(src, bits, src_rex);
+                    self.write_opd_saved(&dst, bits);
+                }
+                self.b.else_();
+                {
+                    self.b.get_local_i64(&self.fl_b);
+                    self.set_reg(0, bits, true);
+                }
+                self.b.block_end();
+                self.pending = Some(Pending { kind: 2, bits, keep_cf: false });
+            },
+            Insn::Xadd { bits, dst, src, src_rex } => {
+                self.ea_to_local(&dst);
+                self.read_opd_saved(&dst, bits);
+                self.b.set_local_i64(&self.fl_a);
+                self.get_reg(src, bits, src_rex);
+                self.b.set_local_i64(&self.fl_b);
+                self.b.get_local_i64(&self.fl_a);
+                self.b.get_local_i64(&self.fl_b);
+                self.b.add_i64();
+                self.mask_result(bits);
+                self.b.set_local_i64(&self.fl_r);
+                if has_mem(&dst) {
+                    self.b.get_local_i64(&self.fl_r);
+                    self.write_opd_saved(&dst, bits);
+                    self.b.get_local_i64(&self.fl_a);
+                    self.set_reg(src, bits, src_rex);
+                }
+                else {
+                    self.b.get_local_i64(&self.fl_a);
+                    self.set_reg(src, bits, src_rex);
+                    self.b.get_local_i64(&self.fl_r);
+                    self.write_opd_saved(&dst, bits);
+                }
+                self.pending = Some(Pending { kind: 0, bits, keep_cf: false });
+            },
+            Insn::Rdtsc => {
+                self.b.const_i32(30);
+                self.b.const_i64(0);
+                self.b.const_i64(0);
+                self.b.const_i32(64);
+                self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                self.b.set_local_i64(&self.t_a);
+                self.b.load_fixed_i32(unsafe { &raw const long_mode::JIT_ERR } as u32);
+                self.b.if_void();
+                self.retry_exit();
+                self.b.block_end();
+                self.b.get_local_i64(&self.t_a);
+                self.set_reg(0, 32, true);
+                self.b.get_local_i64(&self.t_a);
+                self.b.const_i64(32);
+                self.b.shr_u_i64();
+                self.set_reg(2, 32, true);
+            },
+            Insn::SseMov { load, aligned, x, rm } => {
+                let mem = unsafe { crate::cpu::memory::mem8 } as u32;
+                match rm {
+                    Opd::Reg(n2, _) => {
+                        let (d, sr) = if load { (x, n2) } else { (n2, x) };
+                        for half in [0u32, 8] {
+                            self.b.const_i32((xmm_addr(d) + half) as i32);
+                            self.b.load_fixed_i64(xmm_addr(sr) + half);
+                            self.b.store_aligned_i64(0);
+                        }
+                    },
+                    _ => {
+                        self.ea_to_local(&rm);
+                        self.mem128_host(!load, aligned);
+                        for half in [0u32, 8] {
+                            if load {
+                                self.b.const_i32((xmm_addr(x) + half) as i32);
+                                self.b.get_local(&self.t_h);
+                                self.b.load_unaligned_i64(mem + half);
+                                self.b.store_aligned_i64(0);
+                            }
+                            else {
+                                self.b.get_local(&self.t_h);
+                                self.b.load_fixed_i64(xmm_addr(x) + half);
+                                self.b.store_unaligned_i64(mem + half);
+                            }
+                        }
+                    },
+                }
+            },
+            Insn::SseLogic { op, x, rm } => {
+                self.sse_src128(&rm);
+                for (half, t) in [(0u32, true), (8, false)] {
+                    self.b.const_i32((xmm_addr(x) + half) as i32);
+                    self.b.load_fixed_i64(xmm_addr(x) + half);
+                    if op == 3 {
+                        self.b.const_i64(-1);
+                        self.b.xor_i64();
+                    }
+                    if t { self.b.get_local_i64(&self.t_v) } else { self.b.get_local_i64(&self.t_a) }
+                    match op {
+                        0 => self.b.xor_i64(),
+                        1 => self.b.or_i64(),
+                        _ => self.b.and_i64(),
+                    }
+                    self.b.store_aligned_i64(0);
+                }
+            },
+            Insn::SseMovd { to_xmm, bits, x, rm } => {
+                if to_xmm {
+                    self.ea_to_local(&rm);
+                    self.read_opd_saved(&rm, bits);
+                    self.b.set_local_i64(&self.t_v);
+                    self.b.const_i32(xmm_addr(x) as i32);
+                    self.b.get_local_i64(&self.t_v);
+                    self.b.store_aligned_i64(0);
+                    self.b.const_i32((xmm_addr(x) + 8) as i32);
+                    self.b.const_i64(0);
+                    self.b.store_aligned_i64(0);
+                }
+                else {
+                    self.ea_to_local(&rm);
+                    self.b.load_fixed_i64(xmm_addr(x));
+                    if bits == 32 {
+                        self.b.const_i64(0xFFFF_FFFF);
+                        self.b.and_i64();
+                    }
+                    self.write_opd_saved(&rm, bits);
+                }
+            },
+            Insn::SseMovq { load, x, rm } => {
+                if load {
+                    match rm {
+                        Opd::Reg(n2, _) => self.b.load_fixed_i64(xmm_addr(n2)),
+                        _ => self.read_opd(&rm, 64),
+                    }
+                    self.b.set_local_i64(&self.t_v);
+                    self.b.const_i32(xmm_addr(x) as i32);
+                    self.b.get_local_i64(&self.t_v);
+                    self.b.store_aligned_i64(0);
+                    self.b.const_i32((xmm_addr(x) + 8) as i32);
+                    self.b.const_i64(0);
+                    self.b.store_aligned_i64(0);
+                }
+                else {
+                    match rm {
+                        Opd::Reg(n2, _) => {
+                            self.b.const_i32(xmm_addr(n2) as i32);
+                            self.b.load_fixed_i64(xmm_addr(x));
+                            self.b.store_aligned_i64(0);
+                            self.b.const_i32((xmm_addr(n2) + 8) as i32);
+                            self.b.const_i64(0);
+                            self.b.store_aligned_i64(0);
+                        },
+                        _ => {
+                            self.ea_to_local(&rm);
+                            self.b.load_fixed_i64(xmm_addr(x));
+                            self.write_opd_saved(&rm, 64);
+                        },
+                    }
+                }
+            },
+            Insn::SsePunpcklqdq { x, rm } => {
+                self.sse_src128(&rm);
+                self.b.const_i32((xmm_addr(x) + 8) as i32);
+                self.b.get_local_i64(&self.t_v);
+                self.b.store_aligned_i64(0);
             },
             Insn::Sext { opcode, bits } => {
                 if opcode == 0x98 {
@@ -2626,7 +2982,7 @@ impl<'a> Gen<'a> {
                 }
                 if live {
                     // set before the write: when the write changes this code the exit stores it
-                    self.pending = Some(Pending { kind: 3, bits });
+                    self.pending = Some(Pending { kind: 3, bits, keep_cf: false });
                 }
                 if op != 0 {
                     self.b.get_local_i64(&self.t_v);
@@ -2718,6 +3074,54 @@ impl<'a> Gen<'a> {
             },
         }
         let _ = self.t_a.idx();
+    }
+
+    /// the host address in ram of the 16 bytes at t_ea into t_h (the access leaves for the interpreter when it
+    /// cannot be done here, and when an aligned one is not aligned: it raises the exception)
+    fn mem128_host(&mut self, write: bool, aligned: bool) {
+        if aligned {
+            self.b.get_local_i64(&self.t_ea);
+            self.b.wrap_i64_to_i32();
+            self.b.const_i32(15);
+            self.b.and_i32();
+            self.b.if_void();
+            self.retry_exit();
+            self.b.block_end();
+        }
+        self.b.get_local_i64(&self.t_ea);
+        self.b.set_local_i64(&self.t_fa);
+        self.tlb_hit(128, write);
+        self.b.if_i32();
+        self.tlb_ram_address();
+        self.b.else_();
+        self.retry_exit();
+        self.b.const_i32(0);
+        self.b.block_end();
+        self.b.set_local(&self.t_h);
+    }
+
+    /// the 128 bit source operand of an sse instruction (xmm register, or aligned memory): low half in
+    /// t_v, high half in t_a
+    fn sse_src128(&mut self, rm: &Opd) {
+        let mem = unsafe { crate::cpu::memory::mem8 } as u32;
+        match *rm {
+            Opd::Reg(n2, _) => {
+                self.b.load_fixed_i64(xmm_addr(n2));
+                self.b.set_local_i64(&self.t_v);
+                self.b.load_fixed_i64(xmm_addr(n2) + 8);
+                self.b.set_local_i64(&self.t_a);
+            },
+            _ => {
+                self.ea_to_local(rm);
+                self.mem128_host(false, true);
+                self.b.get_local(&self.t_h);
+                self.b.load_unaligned_i64(mem);
+                self.b.set_local_i64(&self.t_v);
+                self.b.get_local(&self.t_h);
+                self.b.load_unaligned_i64(mem + 8);
+                self.b.set_local_i64(&self.t_a);
+            },
+        }
     }
 
     /// continue at `target`: in another basic block of this function if it has been compiled,
@@ -2962,6 +3366,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     let t_fv = b.new_local_i64();
     let t_fp = b.new_local_i64();
     let t_fe = b.new_local();
+    let t_h = b.new_local();
     let fl_a = b.new_local_i64();
     let fl_b = b.new_local_i64();
     let fl_r = b.new_local_i64();
@@ -3009,6 +3414,23 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
         b.or_i64();
         b.set_local_i64(&regs[n as usize]);
     }
+    let jr = b.new_local();
+    let jw = b.new_local();
+    {
+        use crate::cpu::long_mem::*;
+        b.load_fixed_u8(cpl as u32);
+        b.const_i32(3);
+        b.eq_i32();
+        b.const_i32(14);
+        b.shl_i32();
+        b.const_i32(jtlb_address() as i32);
+        b.add_i32();
+        b.set_local(&jr);
+        b.get_local(&jr);
+        b.const_i32(2 * JTLB_TABLE_BYTES as i32);
+        b.add_i32();
+        b.set_local(&jw);
+    }
     let x_rip = b.new_local_i64();
     let x_extra = b.new_local();
     let x_mode = b.new_local();
@@ -3016,9 +3438,34 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     let loop_label = b.loop_void();
 
     let mut g = Gen {
-        b, start: rip, base, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, cur: rip, next: rip, block_index,
-        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false, regs, reg_loaded, reg_written, exit_label, x_rip, x_extra, x_mode,
+        b, start: rip, base, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, t_h, cur: rip, next: rip, block_index,
+        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false, regs, jr, jw, reg_loaded, reg_written, exit_label, x_rip, x_extra, x_mode,
     };
+
+    if decoded.values().any(|(i, _)| is_sse(i)) {
+        // sse instructions raise #NM / #UD in some states of cr0 / cr4 (which compiled code cannot change):
+        // the interpreter runs the instruction at the entry then
+        g.b.load_fixed_i32(cr as u32);
+        g.b.const_i32(CR0_EM | CR0_TS);
+        g.b.and_i32();
+        g.b.load_fixed_i32(cr as u32 + 16);
+        g.b.const_i32(CR4_OSFXSR);
+        g.b.and_i32();
+        g.b.eqz_i32();
+        g.b.or_i32();
+        g.b.if_void();
+        {
+            g.b.load_fixed_i32(rip_hi as u32);
+            g.b.extend_unsigned_i32_to_i64();
+            g.b.const_i64(32);
+            g.b.shl_i64();
+            g.b.load_fixed_i32(instruction_pointer as u32);
+            g.b.extend_unsigned_i32_to_i64();
+            g.b.or_i64();
+            g.exit_stack_rip(0, 3);
+        }
+        g.b.block_end();
+    }
 
     // budget: return to the dispatcher now and then so that interrupts can be handled
     g.b.get_local(&g.n_local);
@@ -3180,7 +3627,10 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     g.b.block_end(); // loop
     g.b.block_end(); // exit
     g.epilogue();
-    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, fl_a, fl_b, fl_r, x_rip, x_extra, x_mode, regs, .. } = g;
+    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, t_h, fl_a, fl_b, fl_r, x_rip, x_extra, x_mode, regs, jr, jw, .. } = g;
+    b.free_local(t_h);
+    b.free_local(jr);
+    b.free_local(jw);
     for r in regs { b.free_local_i64(r) }
     b.free_local_i64(x_rip);
     b.free_local(x_extra);
@@ -3206,8 +3656,21 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
 // ---------------------------------------------------------------------------------------------
 // block cache and dispatcher
 
+struct TimeGuard { timed: bool, t0: f64 }
+impl Drop for TimeGuard {
+    fn drop(&mut self) {
+        if self.timed {
+            unsafe { TIME_INTERP += (crate::cpu::cpu::js_microtick() - self.t0) * 256.0 }
+        }
+    }
+}
+
 /// the module left an instruction to the interpreter: run it, then look for a module for what follows
+pub static mut EXIT_COUNT: [u32; 8] = [0; 8];
+
 unsafe fn interp_one() {
+    EXIT_COUNT[EXIT_KIND as usize & 7] += 1;
+    if STEP_PROFILE_ON { step_profile_record_in(EXIT_KIND == 2) }
     long_mode::step64();
     CHECK = true;
 }
@@ -3219,7 +3682,7 @@ pub unsafe fn run() {
     if CHECK {
         CHECK = false;
         if try_run_block() {
-            if EXIT_KIND == 2 {
+            if EXIT_KIND >= 2 {
                 interp_one();
                 return;
             }
@@ -3239,7 +3702,7 @@ pub unsafe fn run() {
                 if !try_run_block() {
                     break;
                 }
-                if EXIT_KIND == 2 {
+                if EXIT_KIND >= 2 {
                     interp_one();
                     return;
                 }
@@ -3261,6 +3724,10 @@ pub unsafe fn run() {
     // interpret on: the straight-line code up to the next jump (a potential block start) and the
     // instructions that need the caller's attention
     let start = *instruction_counter;
+    SAMPLE_N = SAMPLE_N.wrapping_add(1);
+    let timed = SAMPLE_N & 255 == 0;
+    let t0 = if timed { crate::cpu::cpu::js_microtick() } else { 0.0 };
+    let _guard = TimeGuard { timed, t0 };
     let mut before = before;
     loop {
         long_mode::step64();
@@ -3376,6 +3843,10 @@ pub unsafe fn phys_byte(phys: u32) -> u32 { *crate::cpu::memory::mem8.offset(phy
 pub static mut EXIT_KIND: i32 = 0;
 pub static mut TAIL_KIND: usize = 0;
 pub static mut TAIL_COUNT: [u32; 8] = [0; 8];
+pub static mut SAMPLE_N: u32 = 0;
+pub static mut TIME_MODULES: f64 = 0.0;
+pub static mut TIME_INTERP: f64 = 0.0;
+pub static mut TIME_RUN: f64 = 0.0;
 static mut AFTER_EXIT: bool = false;
 static mut RMW_HIT: bool = false;
 
@@ -3455,7 +3926,15 @@ unsafe fn call_block(index: u16, phys_page: u32) {
         FLAGS[FAULT] = 0;
         return;
     }
-    call_jit_table(index);
+    SAMPLE_N = SAMPLE_N.wrapping_add(1);
+    if SAMPLE_N & 255 == 0 {
+        let t0 = crate::cpu::cpu::js_microtick();
+        call_jit_table(index);
+        TIME_MODULES += (crate::cpu::cpu::js_microtick() - t0) * 256.0;
+    }
+    else {
+        call_jit_table(index);
+    }
     STAT_JIT_INSNS = STAT_JIT_INSNS.wrapping_add((*instruction_counter).wrapping_sub(counter_before) as u32);
     EXECUTING_PAGE = u32::MAX;
     FLAGS[FAULT] = 0;

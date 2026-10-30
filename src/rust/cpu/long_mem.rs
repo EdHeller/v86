@@ -188,6 +188,44 @@ pub const TLB_MASK: u32 = TLB_SIZE as u32 - 1;
 const INVALID: u64 = u64::MAX;
 static mut TLB: [Entry; TLB_SIZE] = [Entry { vpn: INVALID, phys: 0, perm: 0, fast: 0 }; TLB_SIZE];
 
+/// The tlb that compiled code looks at: one direct mapped table per kind of access (read / write
+/// at supervisor / user level, in this order), so an access needs one compare. An entry exists only
+/// when the access can be done inline: plain ram, permitted for the kind, and for writes a page that
+/// has no compiled code and is dirty. Entries are made from the entries of `TLB` (`FAST_*`), and go with them.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct JEntry {
+    vpn: u64,
+    phys: u32,
+    pad: u32,
+}
+pub const JTLB_SIZE: usize = 1024;
+pub const JTLB_MASK: u32 = JTLB_SIZE as u32 - 1;
+pub const JTLB_TABLE_BYTES: u32 = (JTLB_SIZE * 16) as u32;
+pub const JTLB_ENTRY_PHYS: u32 = 8;
+static mut JTLB: [JEntry; 4 * JTLB_SIZE] = [JEntry { vpn: INVALID, phys: 0, pad: 0 }; 4 * JTLB_SIZE];
+pub fn jtlb_address() -> u32 { (&raw const JTLB) as u32 }
+
+/// brings the entries of the page in line with its `FAST_*` bits
+unsafe fn jtlb_update(vpn: u64, phys_page: u32, fast: u8) {
+    for class in 0..4usize {
+        let e = &raw mut JTLB[class * JTLB_SIZE + (vpn as usize & (JTLB_SIZE - 1))];
+        if fast >> class & 1 != 0 {
+            *e = JEntry { vpn, phys: phys_page, pad: 0 };
+        }
+        else if (*e).vpn == vpn {
+            (*e).vpn = INVALID;
+        }
+    }
+}
+
+unsafe fn jtlb_flush() {
+    #[allow(static_mut_refs)]
+    for e in JTLB.iter_mut() {
+        e.vpn = INVALID;
+    }
+}
+
 /// Debug counters for the accesses that generated code could not do inline: crossing a page, no
 /// entry for the page, entry without the needed fast bit (and the bits of the last such entry)
 pub static mut SLOW_STATS: [u32; 8] = [0; 8];
@@ -237,6 +275,13 @@ pub unsafe fn code_page_added(physical_page: u32) {
             e.fast &= !(FAST_WRITE_SUPERVISOR | FAST_WRITE_USER);
         }
     }
+    // (the write tables)
+    #[allow(static_mut_refs)]
+    for e in JTLB[2 * JTLB_SIZE..].iter_mut() {
+        if e.vpn != INVALID && e.phys >> 12 == physical_page {
+            e.vpn = INVALID;
+        }
+    }
 }
 static mut FETCH_VPN: u64 = INVALID;
 static mut FETCH_PHYS: u32 = 0;
@@ -247,6 +292,7 @@ pub unsafe fn flush() {
     for e in TLB.iter_mut() {
         e.vpn = INVALID;
     }
+    jtlb_flush();
     FETCH_VPN = INVALID;
     super::jit64::tlb_flushed();
 }
@@ -256,6 +302,12 @@ pub unsafe fn invlpg64(addr: u64) {
     let e = &raw mut TLB[(vpn as usize) & (TLB_SIZE - 1)];
     if (*e).vpn == vpn {
         (*e).vpn = INVALID;
+    }
+    for class in 0..4usize {
+        let j = &raw mut JTLB[class * JTLB_SIZE + (vpn as usize & (JTLB_SIZE - 1))];
+        if (*j).vpn == vpn {
+            (*j).vpn = INVALID;
+        }
     }
     FETCH_VPN = INVALID;
     super::jit64::tlb_flushed();
@@ -271,11 +323,21 @@ pub unsafe fn translate(addr: u64, write: bool, user: bool, fetch: bool) -> OrPa
         if write && (*e).fast & (FAST_WRITE_SUPERVISOR | FAST_WRITE_USER) == 0 {
             // the page may have lost its compiled code since the entry was filled
             (*e).fast = fast_flags((*e).phys, (*e).perm);
+            jtlb_update(vpn, (*e).phys, (*e).fast);
+        }
+        else if !fetch {
+            // (compiled code that left because the jit tlb had no entry gets one now)
+            let class = (write as usize) << 1 | user as usize;
+            let j = &raw mut JTLB[class * JTLB_SIZE + (vpn as usize & (JTLB_SIZE - 1))];
+            if (*j).vpn != vpn && (*e).fast >> class & 1 != 0 {
+                *j = JEntry { vpn, phys: (*e).phys, pad: 0 };
+            }
         }
         return Ok((*e).phys | (addr & 0xFFF) as u32);
     }
     let (phys, perm) = walk(addr, write, user, fetch, true, true)?;
     *e = Entry { vpn, phys: phys & !0xFFF, perm, fast: fast_flags(phys, perm) };
+    jtlb_update(vpn, phys & !0xFFF, (*e).fast);
     Ok(phys)
 }
 

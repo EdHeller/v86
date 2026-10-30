@@ -57,6 +57,8 @@ pub mod js {
 /// reserved for rustc's indirect functions
 pub const WASM_TABLE_OFFSET: u32 = 1024;
 
+pub unsafe fn js_microtick() -> f64 { js::microtick() }
+
 pub unsafe fn call_jit_table(index: u16) {
     wasm::call_indirect1(index as i32 + WASM_TABLE_OFFSET as i32, 0);
 }

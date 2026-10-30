@@ -2404,11 +2404,80 @@ unsafe fn sse_three_byte(p: &Prefixes, esc: u8) -> OrPageFault<()> {
 // entry points for jit64
 
 /// op 0..7: alu, 8 inc, 9 dec, 16..23: shift / rotate by `b`
+/// extra inputs / outputs of the operations of `jit_alu` that do not fit its signature (mul, div, rdtsc)
+pub static mut JIT_AUX: u64 = 0;
+pub static mut JIT_AUX2: u64 = 0;
+pub static mut JIT_ERR: u32 = 0;
+
 pub unsafe fn jit_alu(op: u8, a: u64, b: u64, bits: u32) -> u64 {
     match op {
         0..=7 => alu(op, a, b, bits),
         8 | 9 => incdec(op == 9, a, bits),
         24 => imul(a, b, bits),
+        // mul / imul with the accumulator: the high half in JIT_AUX2
+        26 | 27 => {
+            let signed = op == 27;
+            let (lo, hi, overflow) = if signed {
+                let wide = sign_extend(a, bits) as i64 as i128 * sign_extend(b, bits) as i64 as i128;
+                let lo = wide as u64 & mask(bits);
+                let hi = (wide >> bits) as u64 & mask(bits);
+                (lo, hi, sign_extend(lo, bits) as i64 as i128 != wide)
+            }
+            else {
+                let wide = a as u128 * b as u128;
+                let lo = wide as u64 & mask(bits);
+                let hi = (wide >> bits) as u64 & mask(bits);
+                (lo, hi, hi != 0)
+            };
+            JIT_AUX2 = hi;
+            set_flags(overflow, false, overflow, lo, bits);
+            lo
+        },
+        // div / idiv: the dividend is JIT_AUX:a (a alone for 8 bits); quotient returned, remainder in JIT_AUX2,
+        // JIT_ERR set when the instruction would raise #DE
+        28 | 29 => {
+            JIT_ERR = 0;
+            let signed = op == 29;
+            if b == 0 {
+                JIT_ERR = 1;
+                return 0;
+            }
+            let dividend: u128 = if bits == 8 { a as u128 } else { (JIT_AUX as u128) << bits | a as u128 };
+            if signed {
+                let width = bits * 2;
+                let dv = ((dividend << (128 - width)) as i128) >> (128 - width);
+                let ds = sign_extend(b, bits) as i64 as i128;
+                let q = dv / ds;
+                let r = dv % ds;
+                let lo = -(1i128 << (bits - 1));
+                let hi = (1i128 << (bits - 1)) - 1;
+                if q < lo || q > hi {
+                    JIT_ERR = 1;
+                    return 0;
+                }
+                JIT_AUX2 = r as u64 & mask(bits);
+                q as u64 & mask(bits)
+            }
+            else {
+                let q = dividend / b as u128;
+                let r = dividend % b as u128;
+                if q > mask(bits) as u128 {
+                    JIT_ERR = 1;
+                    return 0;
+                }
+                JIT_AUX2 = r as u64;
+                q as u64
+            }
+        },
+        // rdtsc
+        30 => {
+            JIT_ERR = 0;
+            if *cpl != 0 && *cr.offset(4) & CR4_TSD != 0 {
+                JIT_ERR = 1;
+                return 0;
+            }
+            read_tsc()
+        },
         _ => shift(op - 16, a, b as u32, bits),
     }
 }
