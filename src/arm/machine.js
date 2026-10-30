@@ -16,7 +16,7 @@ import { PL011 } from "./virt/pl011.js";
 import { PL031 } from "./virt/pl031.js";
 import { load_linux } from "./virt/loader.js";
 import {
-    A64_PROFILES, VIRT_MMIO, VIRT_MMIO_COUNT, VIRT_MMIO_SIZE, VIRT_PCIE_ECAM_HIGH, VIRT_PCIE_ECAM_SIZE, VIRT_RAM_BASE, virt_machine,
+    A64_PROFILES, ARM32_PROFILE, VIRT_MMIO, VIRT_MMIO_COUNT, VIRT_MMIO_SIZE, VIRT_PCIE_ECAM_HIGH, VIRT_PCIE_ECAM_SIZE, VIRT_RAM_BASE, virt_machine,
 } from "./virt/platform.js";
 import { VirtioMmioBlk, VirtioMmioRng } from "./virtio_mmio.js";
 import { ParallelMachine } from "./parallel/machine.js";
@@ -217,14 +217,17 @@ A64Machine.prototype.init = function(options)
     this.cores = cores;
     // the page tier (the JIT for AArch64) is on unless the option jit_switches turns it off ({ a64_page: 0 })
     this.jit_switches = Object.assign({ "a64_page": 1 }, options.jit_switches);
+    // cpu_type "arm32": AArch32 throughout (a 32-bit kernel: a zImage, or a raw binary)
+    this.cpu_type = options.cpu_type === "arm32" ? "arm32" : "arm64";
     const profile = options.a64_profile || "v2";
     if(!Object.prototype.hasOwnProperty.call(A64_PROFILES, profile))
     {
         throw new Error("a64_profile: " + Object.keys(A64_PROFILES).join(", ") + ", got " + JSON.stringify(profile));
     }
     set_jit_switches(exports, this.wasm_memory, this.jit_switches);
-    exports["a64_set_granules"](A64_PROFILES[profile][1]);
-    exports["a64_set_features"](A64_PROFILES[profile][2]);
+    const entry = this.cpu_type === "arm32" ? ARM32_PROFILE : A64_PROFILES[profile];
+    exports["a64_set_granules"](entry[1]);
+    exports["a64_set_features"](entry[2]);
     exports["a64_gic_set_version"]?.(3);
     if(!exports["a64_set_cores"](cores)) throw new Error("the GIC's frames overlap a device");
     // guest RAM at 0x4000_0000, one allocation in the 32-bit memory
@@ -278,7 +281,15 @@ A64Machine.prototype.init = function(options)
 
 A64Machine.prototype.boot = function(entry, x0)
 {
-    this.wm.exports["a64_boot"](entry >>> 0, Math.floor(entry / 0x100000000), x0 >>> 0, Math.floor(x0 / 0x100000000));
+    if(this.cpu_type === "arm32")
+    {
+        // (a 32-bit kernel: SVC mode, r0 0, r1 ~0 (a device tree, not a board), r2 the device tree)
+        this.wm.exports["a32_boot"](entry >>> 0, x0 >>> 0);
+    }
+    else
+    {
+        this.wm.exports["a64_boot"](entry >>> 0, Math.floor(entry / 0x100000000), x0 >>> 0, Math.floor(x0 / 0x100000000));
+    }
     this.boot_entry = entry;
     this.boot_x0 = x0;
     this.booted = true;
