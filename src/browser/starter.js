@@ -720,6 +720,28 @@ V86.prototype.continue_init = async function(emulator, options)
                 await this.create_adapter_renderer(graphics_adapter);
         }
 
+        // a TPM 2.0 (tpm: { wasm }: libtpms in WebAssembly, bios/libtpms.wasm), v64's plugin
+        if(options.tpm)
+        {
+            const registry = () => globalThis["V86TpmDevices"];
+            if(!registry() || !registry()["tpm"])
+            {
+                try
+                {
+                    await import("../tpm/plugin.js");
+                }
+                catch(e)
+                {
+                    await import(options.tpm.plugin_path || "build/v86-tpm.js");
+                }
+            }
+            settings.tpm_plugin = registry()["tpm"];
+            const wasm = options.tpm.wasm;
+            const bytes = wasm instanceof ArrayBuffer ? wasm : wasm && wasm.buffer ? wasm.buffer :
+                await (await fetch(wasm && wasm.url || "bios/libtpms.wasm")).arrayBuffer();
+            settings.tpm_prepared = await settings.tpm_plugin["prepare"]({ "wasm": bytes });
+        }
+
         this.v86.init(settings);
 
         this.modem && this.modem.initialize();

@@ -13,6 +13,8 @@ const IO_POOL_END = 0xA000;
 /** @const */
 export const AUDIO_PLUGINS = { registry: "V86AudioDevices", option: "audio_device", dir: "audio_devices", tag: "audio_device" };
 /** @const */
+export const TPM_PLUGINS = { registry: "V86TpmDevices", option: "tpm", dir: "tpm", tag: "tpm" };
+/** @const */
 export const USB_PLUGINS = { registry: "V86UsbControllers", option: "usb", dir: "usb", tag: "usb", entry: "./usb/plugin.js" };
 
 /** A free window of I/O ports, aligned to its size */

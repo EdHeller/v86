@@ -24,11 +24,12 @@ import { Ne2k } from "./ne2k.js";
 import { IO } from "./io.js";
 import { VirtioConsole } from "./virtio_console.js";
 import { PCI } from "./pci.js";
+import { SyncBuffer } from "./buffer.js";
 import { GraphicsAdapter, patch_vga_bios_ids } from "./graphics_adapter.js";
 import { DisplayHub } from "./display.js";
-import { build_acpi_tables, ACPI_RSDP_FILE, ACPI_TABLES_FILE, ACPI_LOADER_FILE } from "./acpi_tables.js";
+import { build_acpi_tables, ACPI_RSDP_FILE, ACPI_TABLES_FILE, ACPI_LOADER_FILE, TPM_LOG_FILE } from "./acpi_tables.js";
 import { create_platform } from "./platform.js";
-import { PluginDevice, USB_PLUGINS, AUDIO_PLUGINS, registered_plugin } from "./device_plugin.js";
+import { PluginDevice, USB_PLUGINS, AUDIO_PLUGINS, TPM_PLUGINS, registered_plugin } from "./device_plugin.js";
 import "./usb/plugin.js";
 import "./audio_devices/hd_audio/plugin.js";
 import { PS2 } from "./ps2.js";
@@ -616,6 +617,7 @@ CPU.prototype.get_state = function()
     state[98] = this.devices.virtio_blk;
     state[99] = this.devices.virtio_snd;
     state[100] = this.devices.virtio_input;
+    state[101] = this.devices.tpm;
 
     return state;
 };
@@ -744,6 +746,7 @@ CPU.prototype.set_state = function(state)
     this.devices.virtio_blk && state[98] && this.devices.virtio_blk.set_state(state[98]);
     this.devices.virtio_snd && state[99] && this.devices.virtio_snd.set_state(state[99]);
     this.devices.virtio_input && state[100] && this.devices.virtio_input.set_state(state[100]);
+    this.devices.tpm && state[101] && this.devices.tpm.set_state(state[101]);
     if(!(this.long_mode_state[46] & 1)) this.long_mode_state[46] = 1; // xcr0 of states saved before it was part of the state
 
     this.set_tsc(state[43][0], state[43][1]);
@@ -1029,6 +1032,10 @@ CPU.prototype.reboot_internal = function()
     {
         this.devices.virtio_input.reset();
     }
+    if(this.devices.tpm)
+    {
+        this.devices.tpm.reset();
+    }
     if(this.devices.ps2)
     {
         this.devices.ps2.reset();
@@ -1144,13 +1151,17 @@ CPU.prototype.init = function(settings, device_bus)
     // Q35 (SeaBIOS builds v86's PC tables itself); both firmwares put the PM block at 0x600
     if(settings.acpi && (this.firmware || this.machine_type === "q35"))
     {
-        const platform = create_platform({ cores: settings.cpu_cores || 1, memory_size: this.memory_size[0], tpm: false,
+        const platform = create_platform({ cores: settings.cpu_cores || 1, memory_size: this.memory_size[0], tpm: !!settings.tpm_plugin,
             machine: this.machine_type, uefi: !!this.firmware });
         const acpi = build_acpi_tables(platform, 0x600);
         this.option_roms.push(
             { name: ACPI_RSDP_FILE, data: acpi.rsdp },
             { name: ACPI_TABLES_FILE, data: acpi.tables },
             { name: ACPI_LOADER_FILE, data: acpi.loader });
+        if(acpi.tpm_log)
+        {
+            this.option_roms.push({ name: TPM_LOG_FILE, data: acpi.tpm_log });
+        }
     }
 
     this.load_bios();
@@ -1438,6 +1449,16 @@ CPU.prototype.init = function(settings, device_bus)
         if(settings.virtio_rng)
         {
             this.devices.virtio_rng = new VirtioRng(this);
+        }
+
+        if(settings.tpm_plugin)
+        {
+            // a TPM 2.0 (tpm option, v64's plugin): its CRB at 0xFED40000, no PCI function;
+            // its permanent state in memory for the session
+            this.devices.tpm = new PluginDevice(this, TPM_PLUGINS, settings.tpm_plugin, -1, {}, {
+                "prepared": settings.tpm_prepared,
+                "state": new SyncBuffer(new ArrayBuffer(512 * 1024)),
+            });
         }
 
         if(settings.virtio_snd)
