@@ -35,8 +35,12 @@ const take = name => {
     const [offset, length] = files.get(name);
     return image.slice(offset, offset + length);
 };
+// A64_PARALLEL=1: the cores other than the first run in vCPU workers (build/v86-arm64-parallel.wasm)
+const parallel = !!+process.env.A64_PARALLEL;
+const core = fs.readFileSync(path.join(root, parallel ? "build/v86-arm64-parallel.wasm" : "build/v86-arm64.wasm"));
 const machine = await A64Machine.create({
-    wasm: fs.readFileSync(path.join(root, "build/v86-arm64.wasm")),
+    wasm: parallel ? new Uint8Array(core.buffer, core.byteOffset, core.byteLength) : core,
+    parallel: parallel ? { worker_url: new URL("../../src/arm/parallel/vcpu_worker_entry.js", import.meta.url) } : undefined,
     kernel: take("BOOT/VMLINUZ_VIRT"), initrd: take("BOOT/INITRAMFS_VIRT"),
     cmdline: "console=ttyAMA0 modules=loop,squashfs,sd-mod,virtio-blk,virtio-mmio,virtio_blk,virtio_mmio,isofs",
     memory_size: 512 << 20, cpu_cores: cores, disks: [{ buffer: image, readonly: true }], virtio_rng: true,
@@ -76,7 +80,7 @@ try
     await run("grep -o -m1 'aes' /proc/cpuinfo", "aes\r?\n");
     await run("apk --version", "apk-tools");
     await run("echo $((6*7))", "\\n42\r?\n");
-    console.log("ok: %d core(s), %s retired instructions", cores, machine.retired_instructions());
+    console.log("ok: %d core(s)%s, %s retired instructions", cores, parallel ? " in workers" : "", machine.retired_instructions());
     process.exit(0);
 }
 catch(error)

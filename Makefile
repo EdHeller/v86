@@ -304,9 +304,19 @@ build/v86-arm64.wasm: $(A64_RUST_FILES) build/softfloat_arm.o build/zstddeclib.o
 	cp build/arm64/wasm32-unknown-unknown/release/v86.wasm build/v86-arm64.wasm
 	BLOCK_SIZE=K ls -l build/v86-arm64.wasm
 
-a64-boot-tests: build/v86-arm64.wasm
+# The ARM core with its cores in vCPU workers: atomics, the memory imported (shared), relocations kept
+CARGO_FLAGS_ARM64_PARALLEL=$(CARGO_FLAGS_ARM64) -C target-feature=+atomics \
+		-C link-args="--import-memory --export-memory --emit-relocs --no-check-features --max-memory=4294967296 --global-base=32768 --export=__heap_base --export=__data_end"
+
+build/v86-arm64-parallel.wasm: $(A64_RUST_FILES) build/softfloat_arm.o build/zstddeclib.o a64/Cargo.toml tools/parallel_wasm_a64.mjs
+	mkdir -p build/
+	cd a64 && CARGO_TARGET_DIR=../build/arm64-parallel cargo rustc --release --features parallel $(CARGO_FLAGS_ARM64_PARALLEL)
+	./tools/parallel_wasm_a64.mjs build/arm64-parallel/wasm32-unknown-unknown/release/v86.wasm build/v86-arm64-parallel.wasm
+
+a64-boot-tests: build/v86-arm64.wasm build/v86-arm64-parallel.wasm
 	node tests/a64/boot.mjs 1
 	node tests/a64/boot.mjs 2
+	A64_PARALLEL=1 node tests/a64/boot.mjs 2
 
 build/v86-arm64-debug.wasm: $(A64_RUST_FILES) build/softfloat_arm.o build/zstddeclib.o a64/Cargo.toml
 	mkdir -p build/

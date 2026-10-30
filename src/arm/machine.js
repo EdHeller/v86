@@ -19,10 +19,14 @@ import {
     A64_PROFILES, VIRT_MMIO, VIRT_MMIO_COUNT, VIRT_MMIO_SIZE, VIRT_PCIE_ECAM_HIGH, VIRT_PCIE_ECAM_SIZE, VIRT_RAM_BASE, virt_machine,
 } from "./virt/platform.js";
 import { VirtioMmioBlk, VirtioMmioRng } from "./virtio_mmio.js";
+import { ParallelMachine } from "./parallel/machine.js";
+import { instantiate_v86 } from "./parallel/relocate.js";
+import { COMMAND_RELOAD, COMMAND_RESET } from "./parallel/control.js";
+import { CORE_STATE_RANGES } from "./state_layout.js";
 
 /** Function table: slots of generated page functions (the core's jitrt::table), at this offset */
-const WASM_TABLE_OFFSET = 1024;
-const WASM_TABLE_SIZE = 12000;
+export const WASM_TABLE_OFFSET = 1024;
+export const WASM_TABLE_SIZE = 12000;
 
 /** the little the devices need of a bus: named events */
 function Events()
@@ -87,6 +91,25 @@ A64Machine.create = async function(options)
     const machine = new A64Machine(options);
     await machine.load_core(options.wasm);
     machine.init(options);
+    // cores in workers: options.parallel = { worker_url } with options.wasm the parallel build's bytes
+    if(options.parallel && machine.cores > 1)
+    {
+        await machine.start_parallel({ bytes: options.wasm instanceof Uint8Array ? options.wasm : new Uint8Array(options.wasm), worker_url: options.parallel.worker_url });
+    }
+    return machine;
+};
+
+/** The machine object of a vCPU worker: only what publishes the page functions the worker's core compiles */
+A64Machine.for_worker = function(exports, table, clock)
+{
+    const machine = Object.create(A64Machine.prototype);
+    machine.wm = { exports, wasm_table: table };
+    machine.wasm_memory = exports.memory;
+    machine.execution_epoch = 0;
+    machine.options = {};
+    machine.clock = clock;
+    machine.state_base = exports["state_base"]() >>> 0;
+    machine.create_jit_imports();
     return machine;
 };
 
@@ -103,11 +126,15 @@ A64Machine.prototype.load_core = async function(wasm)
         "extended_store": () => {},
         "jit_publish": (client, id, slot, pointer, length) => this.jit_publish(client, id, slot, pointer, length),
         "jit_clear_func": index => { table.set(index + WASM_TABLE_OFFSET, null); },
+        // (the parallel build: wake a vCPU waiting on a word of the shared memory)
+        "parallel_notify": address => { Atomics.notify(new Int32Array(this.wasm_memory.buffer), address >>> 2); },
         "__indirect_function_table": table,
     };
-    const module = wasm instanceof WebAssembly.Module ? wasm : await WebAssembly.compile(wasm);
-    const instance = await WebAssembly.instantiate(module, { "env": env });
+    // (the parallel build imports a shared memory: instantiate_v86 makes it, and relocates this instance to base 0)
+    const instance = wasm instanceof WebAssembly.Module ? await WebAssembly.instantiate(wasm, { "env": env }) :
+        (await instantiate_v86(wasm, { "env": env })).instance;
     this.wm = { exports: instance.exports, wasm_table: table };
+    this.state_base = instance.exports["state_base"]() >>> 0;
     if(!instance.exports["isa_aarch64"]) throw new Error("the core is not the ARM core (build/v86-arm64.wasm)");
     this.wasm_memory = instance.exports.memory;
     instance.exports["rust_init"]();
@@ -177,18 +204,25 @@ A64Machine.prototype.jit_publish = function(client, id, slot, pointer, length)
     });
 };
 
+/** (env.jit_clear_func) a slot of a retired function */
+A64Machine.prototype.jit_clear_func = function(index)
+{
+    this.wm.wasm_table.set(index + WASM_TABLE_OFFSET, null);
+};
+
 A64Machine.prototype.init = function(options)
 {
     const exports = this.wm.exports;
     const { cores, memory_size } = virt_machine({ cpu_cores: options.cpu_cores, memory_size: options.memory_size });
     this.cores = cores;
+    // the page tier (the JIT for AArch64) is on unless the option jit_switches turns it off ({ a64_page: 0 })
+    this.jit_switches = Object.assign({ "a64_page": 1 }, options.jit_switches);
     const profile = options.a64_profile || "v2";
     if(!Object.prototype.hasOwnProperty.call(A64_PROFILES, profile))
     {
         throw new Error("a64_profile: " + Object.keys(A64_PROFILES).join(", ") + ", got " + JSON.stringify(profile));
     }
-    // the page tier (the JIT for AArch64) is on unless the option jit_switches turns it off ({ a64_page: 0 })
-    set_jit_switches(exports, this.wasm_memory, Object.assign({ "a64_page": 1 }, options.jit_switches));
+    set_jit_switches(exports, this.wasm_memory, this.jit_switches);
     exports["a64_set_granules"](A64_PROFILES[profile][1]);
     exports["a64_set_features"](A64_PROFILES[profile][2]);
     exports["a64_gic_set_version"]?.(3);
@@ -310,13 +344,84 @@ A64Machine.prototype.reset = function()
 };
 
 /** One turn: the cores' slices and the devices' timers; milliseconds until the machine needs to run again */
+/**
+ * Cores 1 and up run in vCPU workers (the parallel build, build/v86-arm64-parallel.wasm); this thread runs core 0 and
+ * the devices, serves the workers' device accesses and stops them at safe points
+ * @param {{bytes: Uint8Array, worker_url: (string|URL)}} options the parallel core's bytes, the worker's entry
+ */
+A64Machine.prototype.start_parallel = async function(options)
+{
+    this.core_state_ranges = CORE_STATE_RANGES;
+    this.parallel = new ParallelMachine(this, { bytes: options.bytes, settings: { "jit_switches": this.jit_switches || {} }, worker_url: options.worker_url });
+    await this.parallel.start();
+};
+
+/** A worker kicked core 0 (I/O, parking, an IPI): run the machine's loop now */
+A64Machine.prototype.stop_idling = function()
+{
+    if(!this.running || this.stopped) return;
+    if(this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if(this.step) yield_to_host(this.step);
+};
+
+/** One turn of a machine with cores in workers: the workers' device accesses, core 0's slice, the workers' stops */
+A64Machine.prototype.run_parallel = function()
+{
+    const machine = this.parallel, exports = this.wm.exports;
+    if(machine.check_failure())
+    {
+        this.bus.send("emulator-error", machine.failure);
+        this.stopped = true;
+        return 100;
+    }
+    machine.service();
+    if(machine.pending_reset)
+    {
+        machine.request_stop();
+        if(!machine.all_parked()) return 0;
+        machine.pending_reset = null;
+        this.reboot_workers();
+        return 0;
+    }
+    if(machine.stopping()) machine.resume();
+    exports["parallel_idle"](false);
+    const t = this.run_machine_core();
+    machine.service();
+    if(t > 0) exports["parallel_idle"](true);
+    return t;
+};
+
+A64Machine.prototype.reboot_workers = function()
+{
+    this.parallel.schedule(COMMAND_RESET);
+    for(const device of Object.values(this.devices)) device.reset?.();
+    for(const device of this.virtio) device.reset();
+    const { entry, x0 } = load_linux(this, this.boot_files);
+    this.boot(entry, x0);
+};
+
 A64Machine.prototype.run_once = function()
+{
+    if(this.parallel) return this.run_parallel();
+    return this.run_machine_core();
+};
+
+/** One slice of the cores this instance runs: milliseconds until it needs to run again */
+A64Machine.prototype.run_machine_core = function()
 {
     const exports = this.wm.exports;
     if(!this.booted) return 100;
     const devices = this.devices["pl031"].timer();
     const next = Math.min(exports["a64_run_slice"](this.clock.now()), devices);
-    if(exports["a64_take_reset_request"]()) this.reset();
+    if(exports["a64_take_reset_request"]())
+    {
+        if(this.parallel)
+        {
+            this.parallel.pending_reset = { reason: "restart" };
+            this.parallel.request_stop();
+        }
+        else this.reset();
+    }
     return next;
 };
 
@@ -325,7 +430,7 @@ A64Machine.prototype.run = function()
     if(this.running) return;
     this.running = true;
     this.stopped = false;
-    const step = () => {
+    const step = this.step = () => {
         this.timer = null;
         if(this.stopped) { this.running = false; return; }
         if(this.wm.exports["a64_powered_off"]?.())
@@ -344,6 +449,7 @@ A64Machine.prototype.run = function()
 A64Machine.prototype.stop = function()
 {
     this.stopped = true;
+    this.parallel?.destroy?.();
     if(this.timer) clearTimeout(this.timer);
     this.running = false;
 };
