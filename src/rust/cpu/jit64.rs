@@ -3754,6 +3754,7 @@ pub unsafe fn run() {
     let t0 = if timed { crate::cpu::cpu::js_microtick() } else { 0.0 };
     let _guard = TimeGuard { timed, t0 };
     let mut before = before;
+    let served = served_bits(before);
     loop {
         long_mode::step64();
         let after = rip();
@@ -3762,11 +3763,61 @@ pub unsafe fn run() {
             return;
         }
         before = after;
+        // straight-line code reached an entry the page's module serves: run it from here
+        if served && SERVED.bits[(after as usize & 0xFFF) >> 6] >> (after & 63) & 1 != 0 {
+            enter_served(after);
+            CHECK = true;
+            return;
+        }
         if interrupt_shadow || *in_hlt || super::cpu::IRQ_CHECK || super::smp::YIELD || *flags & FLAG_TRAP != 0 || !*is_64
             || (*instruction_counter).wrapping_sub(start) >= 24
         {
             return;
         }
+    }
+}
+
+/// The entries the module of the page at `vpn` serves, while the mapping and the module are the ones
+/// of `epoch` (the interpreter's straight-line runs enter compiled code at them)
+struct ServedCache { vpn: u64, user: bool, epoch: u32, valid: bool, key: u64, bits: [u64; 64] }
+static mut SERVED: ServedCache = ServedCache { vpn: u64::MAX, user: false, epoch: 0, valid: false, key: 0, bits: [0; 64] };
+
+/// Whether SERVED describes the page of `r` (looked up again when the page, the privilege or the epoch changed)
+unsafe fn served_bits(r: u64) -> bool {
+    let user = *cpl == 3;
+    let vpn = r >> 12;
+    if SERVED.vpn == vpn && SERVED.user == user && SERVED.epoch == epoch(user) {
+        return SERVED.valid;
+    }
+    SERVED.vpn = vpn;
+    SERVED.user = user;
+    SERVED.epoch = epoch(user);
+    SERVED.valid = false;
+    if THRESHOLD == u32::MAX || jit::jit_disabled() {
+        return false;
+    }
+    let Some(phys) = probe_fetch(r, user) else { return false };
+    let key = block_key(phys & !0xFFF, user);
+    match state().blocks.get(&key) {
+        Some(b) if b.state == BlockState::Ready => {
+            SERVED.bits = b.served;
+            SERVED.key = key;
+            SERVED.valid = true;
+        },
+        _ => {},
+    }
+    SERVED.valid
+}
+
+/// makes the slot of `r` point to its module (SERVED says that it serves `r`)
+unsafe fn enter_served(r: u64) {
+    let st = state();
+    let si = slot_index(r);
+    if st.slots[si].rip != r {
+        st.slots[si] = Slot { rip: r, ..SLOT_EMPTY };
+    }
+    if st.slots[si].state == SLOT_COUNTING {
+        refill_slot(r, SERVED.key, r as usize & 0xFFF);
     }
 }
 
