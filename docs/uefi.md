@@ -37,3 +37,19 @@ How it works (ported from v64, `docs/uefi.md` there):
 
 Test: `node tests/uefi.mjs` (Alpine x86_64 kernel, initramfs and ISO) boots to
 the login prompt with ACPI and the CD.
+
+# Q35
+
+`machine_type: "q35"` (with `acpi: true`) gives the machine QEMU's Q35
+chipset (`src/q35.js`, after v64's): the MCH at 00:00.0 with the BIOS shadow
+registers and the PCI Express configuration window (PCIEXBAR; SeaBIOS puts
+it at 0xB0000000, OVMF at 0xE0000000, decoded before any BAR), and the ICH9
+LPC bridge at 00:1f.0 with PMBASE/ACPI_CNTL (the PM block at 0x600), the
+PIRQA-H route registers and the root complex register block. PCI interrupts
+follow QEMU's wiring: devices 0-24 rotate their pins over PIRQE-H, devices
+25-31 use the RCBA route registers; PIRQn is IOAPIC input 16 + n and the ISA
+IRQ of its route register at the PIC. The ACPI tables (Q35 DSDT with PIC and
+APIC routing, MCFG) come through the table loader with both firmwares.
+Disks and the CD stay on v86's PIIX IDE function (no AHCI). With UEFI the
+display is the `bochs_vga` plugin, whose BAR OVMF moves out of the ECAM
+window. Test: `node tests/q35.mjs` (SeaBIOS), `UEFI=1 node tests/q35.mjs`.
