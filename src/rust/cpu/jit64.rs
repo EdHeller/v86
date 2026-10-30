@@ -294,8 +294,33 @@ pub unsafe fn core_switched() { bump_epochs(); CHECK = true }
 // ---------------------------------------------------------------------------------------------
 // helpers called from the generated code
 
+/// the source operand of an SseLane instruction (stored by the module before it calls j64_alu)
+static mut SSE_SRC: [u64; 2] = [0; 2];
+
+/// dword lane operations on xmm register `x` with SSE_SRC (Insn::SseLane)
+unsafe fn sse_lane(op: i32, x: u8, imm: u8) {
+    let d = crate::cpu::global_pointers::reg_xmm.offset(x as isize) as *mut u32;
+    let dst: [u32; 4] = [*d, *d.add(1), *d.add(2), *d.add(3)];
+    let s: [u32; 4] = [SSE_SRC[0] as u32, (SSE_SRC[0] >> 32) as u32, SSE_SRC[1] as u32, (SSE_SRC[1] >> 32) as u32];
+    let r: [u32; 4] = match op {
+        0 => [dst[0].wrapping_add(s[0]), dst[1].wrapping_add(s[1]), dst[2].wrapping_add(s[2]), dst[3].wrapping_add(s[3])],
+        1 => if imm > 31 { [0; 4] } else { dst.map(|v| v << imm) },
+        2 => if imm > 31 { [0; 4] } else { dst.map(|v| v >> imm) },
+        3 => [s[(imm & 3) as usize], s[(imm >> 2 & 3) as usize], s[(imm >> 4 & 3) as usize], s[(imm >> 6 & 3) as usize]],
+        4 => [dst[0], s[0], dst[1], s[1]],
+        _ => [dst[(imm & 3) as usize], dst[(imm >> 2 & 3) as usize], s[(imm >> 4 & 3) as usize], s[(imm >> 6 & 3) as usize]],
+    };
+    for i in 0..4 {
+        *d.add(i) = r[i];
+    }
+}
+
 #[no_mangle]
 pub unsafe fn j64_alu(op: i32, a: i64, b: i64, bits: i32) -> i64 {
+    if op >= 40 {
+        sse_lane(op - 40, a as u8, (a >> 8) as u8);
+        return 0;
+    }
     let bits = bits as u32;
     long_mode::jit_alu(op as u8, a as u64, b as u64, bits) as i64
 }
@@ -572,12 +597,14 @@ enum Insn {
     /// movq xmm <- xmm / m64 (zero extending) and movq xmm / m64 <- xmm
     SseMovq { load: bool, x: u8, rm: Opd },
     SsePunpcklqdq { x: u8, rm: Opd },
+    /// dword lane operations: 0 paddd, 1 pslld imm, 2 psrld imm, 3 pshufd, 4 punpckldq, 5 shufps
+    SseLane { op: u8, x: u8, rm: Opd, imm: u8 },
     /// an instruction the jit cannot compile: the interpreter runs just this one from inside the block
     Interp,
 }
 
 fn is_sse(i: &Insn) -> bool {
-    matches!(i, Insn::SseMov { .. } | Insn::SseLogic { .. } | Insn::SseMovd { .. } | Insn::SseMovq { .. } | Insn::SsePunpcklqdq { .. })
+    matches!(i, Insn::SseMov { .. } | Insn::SseLogic { .. } | Insn::SseMovd { .. } | Insn::SseMovq { .. } | Insn::SsePunpcklqdq { .. } | Insn::SseLane { .. })
 }
 
 struct Cursor<'a> {
@@ -609,7 +636,7 @@ fn kind(i: &Insn) -> u32 {
         Insn::Neg { .. } | Insn::Not { .. } | Insn::Bswap { .. } => 19,
         Insn::Imul { .. } | Insn::MulDiv { .. } => 20,
         Insn::Cmpxchg { .. } | Insn::Xadd { .. } | Insn::Rdtsc | Insn::IfFlag { .. } | Insn::Pushf => 22,
-        Insn::SseMov { .. } | Insn::SseLogic { .. } | Insn::SseMovd { .. } | Insn::SseMovq { .. } | Insn::SsePunpcklqdq { .. } => 23,
+        Insn::SseMov { .. } | Insn::SseLogic { .. } | Insn::SseMovd { .. } | Insn::SseMovq { .. } | Insn::SsePunpcklqdq { .. } | Insn::SseLane { .. } => 23,
         Insn::CallInd { .. } | Insn::JmpInd { .. } => 21,
         Insn::Xchg { .. } => 22,
         Insn::Sext { .. } => 23,
@@ -1026,6 +1053,29 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                     let m = modrm(&mut c, &p)?;
                     Insn::SsePunpcklqdq { x: m.reg, rm: m.rm }
                 },
+                0xFE | 0x62 if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseLane { op: if op2 == 0xFE { 0 } else { 4 }, x: m.reg, rm: m.rm, imm: 0 }
+                },
+                0x70 if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    let imm = c.u8()?;
+                    Insn::SseLane { op: 3, x: m.reg, rm: m.rm, imm }
+                },
+                0xC6 if !p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    let imm = c.u8()?;
+                    Insn::SseLane { op: 5, x: m.reg, rm: m.rm, imm }
+                },
+                0x72 if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    let imm = c.u8()?;
+                    match (m.reg & 7, m.rm) {
+                        (6, Opd::Reg(n, _)) => Insn::SseLane { op: 1, x: n, rm: m.rm, imm },
+                        (2, Opd::Reg(n, _)) => Insn::SseLane { op: 2, x: n, rm: m.rm, imm },
+                        _ => return None,
+                    }
+                },
                 0xC8..=0xCF => {
                     if p.osz16 {
                         return None;
@@ -1121,6 +1171,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         Insn::SseMovd { to_xmm, bits, x, rm } => Insn::SseMovd { to_xmm, bits, x, rm: fix(rm) },
         Insn::SseMovq { load, x, rm } => Insn::SseMovq { load, x, rm: fix(rm) },
         Insn::SsePunpcklqdq { x, rm } => Insn::SsePunpcklqdq { x, rm: fix(rm) },
+        Insn::SseLane { op, x, rm, imm } => Insn::SseLane { op, x, rm: fix(rm), imm },
         i => i,
     };
     if unsafe { DISABLE_MASK } >> kind(&insn) & 1 != 0 {
@@ -1174,7 +1225,7 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::Cmpxchg { dst, .. } | Insn::Xadd { dst, .. } => (false, true, has_mem(&dst)),
         Insn::Rdtsc => (false, false, false),
         Insn::IfFlag { .. } | Insn::Pushf => (true, false, true),
-        Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovd { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } => (false, false, has_mem(&rm)),
+        Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovd { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } | Insn::SseLane { rm, .. } => (false, false, has_mem(&rm)),
     };
     FlagFx { reads, writes_all, fault }
 }
@@ -1431,7 +1482,7 @@ fn insn_regs(i: &Insn) -> (u16, u16) {
         Insn::Rdtsc => { r |= 1 | 1 << 2; w |= 1 | 1 << 2; },
         Insn::IfFlag { .. } => {},
         Insn::Pushf => { r |= 1 << 4; w |= 1 << 4; },
-        Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } => {
+        Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } | Insn::SseLane { rm, .. } => {
             if let Opd::Mem(ea) = rm { ea_regs(&ea, &mut r) }
         },
         Insn::SseMovd { rm, .. } => opd_regs(&rm, &mut r, &mut w),
@@ -2922,6 +2973,22 @@ impl<'a> Gen<'a> {
                         }
                     },
                 }
+            },
+            Insn::SseLane { op, x, rm, imm } => {
+                // the source to SSE_SRC, then the helper works on the register in memory
+                self.sse_src128(&rm);
+                self.b.const_i32((&raw mut SSE_SRC) as i32);
+                self.b.get_local_i64(&self.t_v);
+                self.b.store_aligned_i64(0);
+                self.b.const_i32((&raw mut SSE_SRC) as i32 + 8);
+                self.b.get_local_i64(&self.t_a);
+                self.b.store_aligned_i64(0);
+                self.b.const_i32(40 + op as i32);
+                self.b.const_i64(x as i64 | (imm as i64) << 8);
+                self.b.const_i64(0);
+                self.b.const_i32(0);
+                self.b.call_fn4_i32_i64_i64_i32_ret_i64("j64_alu");
+                self.b.drop_();
             },
             Insn::SseLogic { op, x, rm } => {
                 self.sse_src128(&rm);
