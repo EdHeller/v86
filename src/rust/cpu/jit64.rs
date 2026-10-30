@@ -1263,6 +1263,13 @@ struct Gen<'a> {
     /// flags are needed after the current instruction
     cur_live_out: bool,
     smc_needed: bool,
+    /// the block around the whole module: every exit stores its state in x_* and branches to its end,
+    /// where the epilogue (rip, instruction counter, chaining) is emitted once
+    exit_label: Label,
+    x_rip: WasmLocalI64,
+    x_extra: WasmLocal,
+    /// 0 plain, 1 may chain, 2 the dispatcher has to interpret the instruction at rip and look at the next one
+    x_mode: WasmLocal,
 }
 
 #[derive(Clone, Copy)]
@@ -1339,13 +1346,7 @@ impl<'a> Gen<'a> {
             {
                 let t = self.b.new_local_i64();
                 let a = self.b.new_local();
-                self.b.load_fixed_i32(rip_hi as u32);
-                self.b.extend_unsigned_i32_to_i64();
-                self.b.const_i64(32);
-                self.b.shl_i64();
-                self.b.load_fixed_i32(instruction_pointer as u32);
-                self.b.extend_unsigned_i32_to_i64();
-                self.b.or_i64();
+                self.b.get_local_i64(&self.x_rip);
                 self.b.set_local_i64(&t);
                 // a = &CHAIN[hash(t)]
                 self.b.get_local_i64(&t);
@@ -1410,35 +1411,94 @@ impl<'a> Gen<'a> {
         self.b.block_end();
     }
 
+    /// the common end of the module: stores rip, counts the instructions and chains or returns
+    fn epilogue(&mut self) {
+        self.b.const_i32(instruction_pointer as i32);
+        self.b.get_local_i64(&self.x_rip);
+        self.b.wrap_i64_to_i32();
+        self.b.store_aligned_i32(0);
+        self.b.const_i32(rip_hi as i32);
+        self.b.get_local_i64(&self.x_rip);
+        self.b.const_i64(32);
+        self.b.shr_u_i64();
+        self.b.wrap_i64_to_i32();
+        self.b.store_aligned_i32(0);
+        let addr = instruction_counter as u32;
+        self.b.const_i32(addr as i32);
+        self.b.load_fixed_i32(addr);
+        self.b.get_local(&self.n_local);
+        self.b.add_i32();
+        self.b.get_local(&self.x_extra);
+        self.b.add_i32();
+        self.b.store_aligned_i32(0);
+        self.b.const_i32(unsafe { &raw const EXIT_KIND } as i32);
+        self.b.get_local(&self.x_mode);
+        self.b.store_aligned_i32(0);
+        self.b.get_local(&self.x_mode);
+        self.b.const_i32(1);
+        self.b.eq_i32();
+        self.b.if_void();
+        self.chain();
+        self.b.block_end();
+    }
+
     fn exit_const_kind(&mut self, target: u64, extra: i32, kind: i32) {
         self.materialize();
-        self.store_rip(target);
-        self.push_counter_update(extra);
-        self.chain();
-        self.set_exit_kind(kind);
-        self.b.return_();
+        self.rip_val(target);
+        self.exit_stack_rip(extra, if kind == 1 { 1 } else { 0 });
     }
 
-    /// debugging: why the module returned (read by the dispatcher)
-    fn set_exit_kind(&mut self, kind: i32) {
-        self.b.const_i32(unsafe { &raw const EXIT_KIND } as i32);
-        self.b.const_i32(kind);
-        self.b.store_aligned_i32(0);
+    /// leaves the module: the i64 on the stack is the rip to continue at (the flags are in memory)
+    fn exit_stack_rip(&mut self, extra: i32, mode: i32) {
+        self.b.set_local_i64(&self.x_rip);
+        self.b.const_i32(extra);
+        self.b.set_local(&self.x_extra);
+        self.b.const_i32(mode);
+        self.b.set_local(&self.x_mode);
+        self.b.br(self.exit_label);
     }
 
-    /// leave the block without touching rip (an exception has redirected it already)
-    fn exit_keep_rip(&mut self) {
-        self.push_counter_update(self.n);
-        self.set_exit_kind(2);
-        self.b.return_();
+    /// the access of the current instruction cannot be done in the module (page not in the tlb, mmio, a
+    /// page with code, a fault): the instruction has made no change yet; the interpreter runs it. Used inside
+    /// the slow branch of a memory access.
+    fn retry_exit(&mut self) {
+        let saved = self.pending;
+        self.materialize();
+        let (cur, n) = (self.cur, self.n);
+        self.rip_val(cur);
+        self.exit_stack_rip(n - 1, 2);
+        self.pending = saved;
     }
 
-    /// like `exit_keep_rip`, for a jump that was just made (ret, indirect call and jump): chains when it can
+    /// an instruction the module leaves to the interpreter (the dispatcher runs exactly this one and then
+    /// looks for a module for the next)
+    fn exit_interp(&mut self) {
+        self.materialize();
+        let (cur, n) = (self.cur, self.n);
+        self.rip_val(cur);
+        self.exit_stack_rip(n - 1, 2);
+    }
+
+    /// leaves for a jump that was just made (ret, indirect call and jump): the target is on the stack
     fn exit_jump(&mut self) {
-        self.push_counter_update(self.n);
-        self.chain();
-        self.set_exit_kind(2);
-        self.b.return_();
+        let n = self.n;
+        self.materialize();
+        self.exit_stack_rip(n, 1);
+    }
+
+    /// the i64 on the stack is a rip: a non canonical one makes the interpreter run the instruction (#GP)
+    fn check_canonical_or_retry(&mut self, t: &WasmLocalI64) {
+        self.b.get_local_i64(t);
+        self.b.const_i64(16);
+        self.b.shl_i64();
+        self.b.const_i64(16);
+        self.b.shr_s_i64();
+        self.b.get_local_i64(t);
+        self.b.eq_i64();
+        self.b.eqz_i32();
+        self.b.if_void();
+        self.retry_exit();
+        self.b.block_end();
     }
 
     /// leave the function; rip is the start of the basic block selected by `pc`
@@ -1451,84 +1511,22 @@ impl<'a> Gen<'a> {
             b.const_i32(block_starts[i] as i32);
             b.set_local(&t);
         }, false);
-        let tt = self.b.new_local_i64();
         self.b.get_local_i64(&self.base);
         self.b.get_local(&t);
         self.b.extend_unsigned_i32_to_i64();
         self.b.add_i64();
-        self.b.set_local_i64(&tt);
-        self.b.const_i32(instruction_pointer as i32);
-        self.b.get_local_i64(&tt);
-        self.b.wrap_i64_to_i32();
-        self.b.store_aligned_i32(0);
-        self.b.const_i32(rip_hi as i32);
-        self.b.get_local_i64(&tt);
-        self.b.const_i64(32);
-        self.b.shr_u_i64();
-        self.b.wrap_i64_to_i32();
-        self.b.store_aligned_i32(0);
-        self.b.free_local_i64(tt);
         self.b.free_local(t);
-        self.push_counter_update(0);
-        self.set_exit_kind(3);
-        self.b.return_();
+        self.exit_stack_rip(0, 0);
     }
 
-    fn set_previous_ip(&mut self) {
-        let m0 = self.b.body_len();
-        self.set_previous_ip_inner();
-        unsafe { CAT_BYTES[0] = CAT_BYTES[0].wrapping_add((self.b.body_len() - m0) as u32) }
-    }
+    /// (nothing in a module raises an exception: the interpreter runs the instruction again)
+    fn set_previous_ip(&mut self) {}
 
-    fn set_previous_ip_inner(&mut self) {
-        self.b.const_i32(previous_ip as i32);
-        let cur = self.cur;
-        self.rip_val(cur);
-        self.b.wrap_i64_to_i32();
-        self.b.store_aligned_i32(0);
-    }
+    fn fault_check(&mut self) {}
 
-    fn fault_check(&mut self) {
-        let m0 = self.b.body_len();
-        self.fault_check_inner();
-        unsafe { CAT_BYTES[1] = CAT_BYTES[1].wrapping_add((self.b.body_len() - m0) as u32) }
-    }
+    fn smc_check(&mut self) {}
 
-    fn fault_check_inner(&mut self) {
-        self.b.load_fixed_i32(unsafe { &raw const FLAGS[FAULT] } as u32);
-        self.b.if_void();
-        self.exit_keep_rip();
-        self.b.block_end();
-    }
-
-    /// a write happened: the check for changed code runs at the end of the instruction (the
-    /// instruction has to complete first)
-    fn smc_check(&mut self) { self.smc_needed = true; }
-
-    fn finish_insn(&mut self) {
-        let m0 = self.b.body_len();
-        self.finish_insn_inner();
-        unsafe { CAT_BYTES[2] = CAT_BYTES[2].wrapping_add((self.b.body_len() - m0) as u32) }
-    }
-
-    fn finish_insn_inner(&mut self) {
-        if self.smc_needed {
-            self.smc_needed = false;
-            self.smc_exit();
-        }
-    }
-
-    /// if a write changed code of this block, continue in the interpreter
-    fn smc_exit(&mut self) {
-        self.b.load_fixed_i32(unsafe { &raw const FLAGS[SMC] } as u32);
-        self.b.if_void();
-        let next = self.next;
-        // the exit stores pending flags, the code that follows still has them pending
-        let saved = self.pending;
-        self.exit_const_kind(next, self.n, 4);
-        self.pending = saved;
-        self.b.block_end();
-    }
+    fn finish_insn(&mut self) {}
 
     // registers --------------------------------------------------------------------------
 
@@ -1762,11 +1760,6 @@ impl<'a> Gen<'a> {
     }
 
     fn read_mem_inner(&mut self, bits: u32) {
-        if unsafe { INLINE_TLB_OFF } {
-            self.b.const_i32(bits as i32);
-            self.b.call_fn2_i64_i32_ret_i64("j64_read");
-            return;
-        }
         let mem = unsafe { crate::cpu::memory::mem8 } as u32;
         self.b.set_local_i64(&self.t_fa);
         self.tlb_hit(bits, false);
@@ -1782,14 +1775,13 @@ impl<'a> Gen<'a> {
         }
         self.b.else_();
         {
-            self.b.get_local_i64(&self.t_fa);
-            self.b.const_i32(bits as i32);
-            self.b.call_fn2_i64_i32_ret_i64("j64_read");
+            self.retry_exit();
+            self.b.const_i64(0);
         }
         self.b.block_end();
     }
 
-    /// [addr, value on stack] -> (stores the value, faults are reported through the fault flag)
+    /// [addr, value on stack] -> (stores the value; an access that cannot be done here leaves the module)
     fn write_mem(&mut self, bits: u32) {
         let m0 = self.b.body_len();
         self.write_mem_inner(bits);
@@ -1797,11 +1789,6 @@ impl<'a> Gen<'a> {
     }
 
     fn write_mem_inner(&mut self, bits: u32) {
-        if unsafe { INLINE_TLB_OFF } {
-            self.b.const_i32(bits as i32);
-            self.b.call_fn3_i64_i64_i32("j64_write");
-            return;
-        }
         let mem = unsafe { crate::cpu::memory::mem8 } as u32;
         self.b.set_local_i64(&self.t_fv);
         self.b.set_local_i64(&self.t_fa);
@@ -1819,10 +1806,7 @@ impl<'a> Gen<'a> {
         }
         self.b.else_();
         {
-            self.b.get_local_i64(&self.t_fa);
-            self.b.get_local_i64(&self.t_fv);
-            self.b.const_i32(bits as i32);
-            self.b.call_fn3_i64_i64_i32("j64_write");
+            self.retry_exit();
         }
         self.b.block_end();
     }
@@ -2295,18 +2279,7 @@ impl<'a> Gen<'a> {
         }
         match *insn {
             Insn::Nop => {},
-            Insn::Interp => {
-                self.materialize();
-                let (cur, next) = (self.cur, self.next);
-                self.store_rip(cur);
-                self.rip_val(next);
-                self.b.const_i32(0);
-                self.b.call_fn2_i64_i32_ret("j64_interp1");
-                self.b.if_void();
-                self.exit_keep_rip();
-                self.b.block_end();
-                self.smc_check();
-            },
+            Insn::Interp => self.exit_interp(),
             Insn::Alu { op, bits, dst, src } => self.emit_alu(op, bits, dst, src, true),
             Insn::Test { bits, a, b } => self.emit_alu(4, bits, a, b, false),
             Insn::Mov { bits, dst, src } => {
@@ -2434,14 +2407,10 @@ impl<'a> Gen<'a> {
                 self.set_reg(dst, bits, true);
             },
             Insn::Leave { bits } => {
-                self.set_previous_ip();
                 self.get_reg(5, 64, true);
                 self.b.set_local_i64(&self.t_ea);
                 self.b.get_local_i64(&self.t_ea);
-                self.set_reg(4, 64, true);
-                self.b.get_local_i64(&self.t_ea);
                 self.read_mem(bits);
-                self.fault_check();
                 self.b.set_local_i64(&self.t_v);
                 self.b.get_local_i64(&self.t_ea);
                 self.b.const_i64(bits as i64 / 8);
@@ -2527,9 +2496,9 @@ impl<'a> Gen<'a> {
                 self.set_reg(dst, bits, true);
             },
             Insn::Xchg { bits, a, b } => {
-                self.set_previous_ip();
+                // (the memory operand is written first: the access that cannot be done here leaves before any change)
+                let (a, b) = if has_mem(&b) { (b, a) } else { (a, b) };
                 self.ea_to_local(&a);
-                self.ea_to_local(&b);
                 let ta = self.b.new_local_i64();
                 let tb = self.b.new_local_i64();
                 self.read_opd_saved(&a, bits);
@@ -2650,11 +2619,7 @@ impl<'a> Gen<'a> {
                 self.set_previous_ip();
                 let simple = rep == 0 && !asz32 && seg < 0 && matches!(opcode, 0xA4 | 0xA5 | 0xAA | 0xAB | 0xAC | 0xAD);
                 if !simple {
-                    self.b.const_i32(opcode as i32 | (rep as i32) << 8 | (asz32 as i32) << 16);
-                    self.b.const_i32(bits as i32 | (seg + 1) << 8);
-                    self.b.call_fn2("j64_str");
-                    self.fault_check();
-                    self.smc_check();
+                    self.exit_interp();
                     return;
                 }
                 let step = bits as i64 / 8;
@@ -2892,6 +2857,15 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                     break;
                 },
                 Insn::Ret { .. } | Insn::JmpInd { .. } => break,
+                Insn::Interp | Insn::Str { .. } => {
+                    // the module leaves for the interpreter here (a string instruction that is not simple)
+                    // and comes back at the next instruction: a block start
+                    let simple = matches!(insn, Insn::Str { rep: 0, asz32: false, seg, opcode, .. } if seg < 0 && matches!(opcode, 0xA4 | 0xA5 | 0xAA | 0xAB | 0xAC | 0xAD));
+                    if !simple && off + len < code.len() && leaders.insert(off + len) {
+                        work.push(off + len);
+                    }
+                    off += len;
+                },
                 _ => off += len,
             }
         }
@@ -2986,11 +2960,15 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
         }, true);
         b.free_local(off);
     }
+    let x_rip = b.new_local_i64();
+    let x_extra = b.new_local();
+    let x_mode = b.new_local();
+    let exit_label = b.block_void();
     let loop_label = b.loop_void();
 
     let mut g = Gen {
         b, start: rip, base, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, cur: rip, next: rip, block_index,
-        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false,
+        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false, exit_label, x_rip, x_extra, x_mode,
     };
 
     // budget: return to the dispatcher now and then so that interrupts can be handled
@@ -3051,7 +3029,6 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
             },
             Insn::Call { target } => {
                 g.materialize();
-                g.set_previous_ip();
                 g.get_reg(4, 64, true);
                 g.b.const_i64(8);
                 g.b.sub_i64();
@@ -3059,8 +3036,6 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                 g.b.get_local_i64(&g.t_ea);
                 g.rip_val(next);
                 g.write_mem(64);
-                g.fault_check();
-                g.smc_check();
                 g.b.get_local_i64(&g.t_ea);
                 g.set_reg(4, 64, true);
                 let n = g.n;
@@ -3069,10 +3044,10 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
             },
             Insn::CallInd { src } => {
                 g.materialize();
-                g.set_previous_ip();
                 let target = g.b.new_local_i64();
                 g.read_opd(&src, 64);
                 g.b.set_local_i64(&target);
+                g.check_canonical_or_retry(&target);
                 g.get_reg(4, 64, true);
                 g.b.const_i64(8);
                 g.b.sub_i64();
@@ -3080,46 +3055,40 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                 g.b.get_local_i64(&g.t_ea);
                 g.rip_val(next);
                 g.write_mem(64);
-                g.fault_check();
-                g.smc_check();
                 g.b.get_local_i64(&g.t_ea);
                 g.set_reg(4, 64, true);
                 g.b.get_local_i64(&target);
-                g.b.const_i32(0);
-                g.b.call_fn2_i64_i32("j64_set_rip");
-                g.fault_check();
                 g.exit_jump();
                 g.b.free_local_i64(target);
                 ended = true;
             },
             Insn::JmpInd { src } => {
                 g.materialize();
-                g.set_previous_ip();
+                let target = g.b.new_local_i64();
                 g.read_opd(&src, 64);
-                g.b.const_i32(0);
-                g.b.call_fn2_i64_i32("j64_set_rip");
-                g.fault_check();
+                g.b.set_local_i64(&target);
+                g.check_canonical_or_retry(&target);
+                g.b.get_local_i64(&target);
                 g.exit_jump();
+                g.b.free_local_i64(target);
                 ended = true;
             },
             Insn::Ret { adj } => {
                 g.materialize();
-                g.set_previous_ip();
+                let target = g.b.new_local_i64();
                 g.get_reg(4, 64, true);
                 g.b.set_local_i64(&g.t_ea);
                 g.b.get_local_i64(&g.t_ea);
                 g.read_mem(64);
-                g.fault_check();
-                g.b.set_local_i64(&g.t_v);
+                g.b.set_local_i64(&target);
+                g.check_canonical_or_retry(&target);
                 g.b.get_local_i64(&g.t_ea);
                 g.b.const_i64(8 + adj as i64);
                 g.b.add_i64();
                 g.set_reg(4, 64, true);
-                g.b.get_local_i64(&g.t_v);
-                g.b.const_i32(0);
-                g.b.call_fn2_i64_i32("j64_set_rip");
-                g.fault_check();
+                g.b.get_local_i64(&target);
                 g.exit_jump();
+                g.b.free_local_i64(target);
                 ended = true;
             },
             _ => {
@@ -3159,8 +3128,13 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     // after the last instruction: the final wasm block of the dispatcher is closed by its code
     // (all `count` blocks have been closed by the loop above, one per basic block)
 
-    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, fl_a, fl_b, fl_r, .. } = g;
-    b.block_end(); // loop
+    g.b.block_end(); // loop
+    g.b.block_end(); // exit
+    g.epilogue();
+    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, fl_a, fl_b, fl_r, x_rip, x_extra, x_mode, .. } = g;
+    b.free_local_i64(x_rip);
+    b.free_local(x_extra);
+    b.free_local(x_mode);
     b.free_local(n_local);
     b.free_local_i64(base);
     b.free_local(pc);
@@ -3182,6 +3156,12 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
 // ---------------------------------------------------------------------------------------------
 // block cache and dispatcher
 
+/// the module left an instruction to the interpreter: run it, then look for a module for what follows
+unsafe fn interp_one() {
+    long_mode::step64();
+    CHECK = true;
+}
+
 /// Runs one step of 64-bit code: a compiled block if there is one at rip, otherwise one
 /// interpreted instruction
 pub unsafe fn run() {
@@ -3189,6 +3169,10 @@ pub unsafe fn run() {
     if CHECK {
         CHECK = false;
         if try_run_block() {
+            if EXIT_KIND == 2 {
+                interp_one();
+                return;
+            }
             if CHAIN_BUDGET == 0 {
                 CHECK = true;
                 return;
@@ -3204,6 +3188,10 @@ pub unsafe fn run() {
                 }
                 if !try_run_block() {
                     break;
+                }
+                if EXIT_KIND == 2 {
+                    interp_one();
+                    return;
                 }
             }
         }
