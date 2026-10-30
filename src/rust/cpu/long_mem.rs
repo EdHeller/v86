@@ -35,6 +35,8 @@ const F_USER: u8 = 1;
 const F_WRITE: u8 = 2;
 const F_NX: u8 = 4;
 const F_DIRTY: u8 = 8;
+/// a global translation (G in the leaf with CR4.PGE): it stays through MOV CR3
+const F_GLOBAL: u8 = 16;
 
 unsafe fn raise_pf(addr: u64, present: bool, write: bool, user: bool, fetch: bool, rsvd: bool) {
     *cr.offset(2) = addr as i32;
@@ -133,6 +135,9 @@ unsafe fn walk(
     let mut perm = user_ok as u8 * F_USER | write_ok as u8 * F_WRITE | no_exec as u8 * F_NX;
     // the dirty bit of the leaf is only ever set by write accesses
     let leaf_entry = entries[count - 1].1;
+    if leaf_entry & 0x100 != 0 && *cr.offset(4) & CR4_PGE != 0 {
+        perm |= F_GLOBAL;
+    }
     if leaf_entry & 0x40 != 0 {
         perm |= F_DIRTY;
     }
@@ -206,12 +211,12 @@ pub const JTLB_ENTRY_PHYS: u32 = 8;
 static mut JTLB: [JEntry; 4 * JTLB_SIZE] = [JEntry { vpn: INVALID, phys: 0, pad: 0 }; 4 * JTLB_SIZE];
 pub fn jtlb_address() -> u32 { (&raw const JTLB) as u32 }
 
-/// brings the entries of the page in line with its `FAST_*` bits
-unsafe fn jtlb_update(vpn: u64, phys_page: u32, fast: u8) {
+/// brings the entries of the page in line with its `FAST_*` bits (`pad` 1: a global translation)
+unsafe fn jtlb_update(vpn: u64, phys_page: u32, fast: u8, perm: u8) {
     for class in 0..4usize {
         let e = &raw mut JTLB[class * JTLB_SIZE + (vpn as usize & (JTLB_SIZE - 1))];
         if fast >> class & 1 != 0 {
-            *e = JEntry { vpn, phys: phys_page, pad: 0 };
+            *e = JEntry { vpn, phys: phys_page, pad: (perm & F_GLOBAL != 0) as u32 };
         }
         else if (*e).vpn == vpn {
             (*e).vpn = INVALID;
@@ -297,6 +302,31 @@ pub unsafe fn flush() {
     super::jit64::tlb_flushed();
 }
 
+/// MOV CR3 (no PCID): the global translations stay
+pub unsafe fn flush_nonglobal() {
+    #[allow(static_mut_refs)]
+    for e in TLB.iter_mut() {
+        if e.perm & F_GLOBAL == 0 {
+            e.vpn = INVALID;
+        }
+    }
+    #[allow(static_mut_refs)]
+    for e in JTLB.iter_mut() {
+        if e.pad == 0 {
+            e.vpn = INVALID;
+        }
+    }
+    FETCH_VPN = INVALID;
+    super::jit64::tlb_flushed_nonglobal();
+}
+
+/// Whether the current translation of a code address is global (it outlives MOV CR3)
+pub unsafe fn fetch_is_global(addr: u64) -> bool {
+    let vpn = addr >> 12;
+    let e = &raw const TLB[(vpn as usize) & (TLB_SIZE - 1)];
+    (*e).vpn == vpn && (*e).perm & F_GLOBAL != 0
+}
+
 pub unsafe fn invlpg64(addr: u64) {
     let vpn = addr >> 12;
     let e = &raw mut TLB[(vpn as usize) & (TLB_SIZE - 1)];
@@ -323,21 +353,21 @@ pub unsafe fn translate(addr: u64, write: bool, user: bool, fetch: bool) -> OrPa
         if write && (*e).fast & (FAST_WRITE_SUPERVISOR | FAST_WRITE_USER) == 0 {
             // the page may have lost its compiled code since the entry was filled
             (*e).fast = fast_flags((*e).phys, (*e).perm);
-            jtlb_update(vpn, (*e).phys, (*e).fast);
+            jtlb_update(vpn, (*e).phys, (*e).fast, (*e).perm);
         }
         else if !fetch {
             // (compiled code that left because the jit tlb had no entry gets one now)
             let class = (write as usize) << 1 | user as usize;
             let j = &raw mut JTLB[class * JTLB_SIZE + (vpn as usize & (JTLB_SIZE - 1))];
             if (*j).vpn != vpn && (*e).fast >> class & 1 != 0 {
-                *j = JEntry { vpn, phys: (*e).phys, pad: 0 };
+                *j = JEntry { vpn, phys: (*e).phys, pad: ((*e).perm & F_GLOBAL != 0) as u32 };
             }
         }
         return Ok((*e).phys | (addr & 0xFFF) as u32);
     }
     let (phys, perm) = walk(addr, write, user, fetch, true, true)?;
     *e = Entry { vpn, phys: phys & !0xFFF, perm, fast: fast_flags(phys, perm) };
-    jtlb_update(vpn, phys & !0xFFF, (*e).fast);
+    jtlb_update(vpn, phys & !0xFFF, (*e).fast, perm);
     Ok(phys)
 }
 

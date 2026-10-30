@@ -2451,7 +2451,7 @@ pub unsafe fn full_clear_tlb() {
 
 #[no_mangle]
 pub unsafe fn clear_tlb() {
-    super::long_mem::flush();
+    super::long_mem::flush_nonglobal();
     profiler::stat_increment(stat::CLEAR_TLB);
     // clear tlb excluding global pages
     *last_virt_eip = -1;

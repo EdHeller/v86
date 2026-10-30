@@ -120,7 +120,14 @@ struct State {
 
 static mut STATE: Option<State> = None;
 static mut CHECK: bool = true;
-static mut EPOCH: u32 = 1;
+/// Validity epochs of the dispatcher's slots and chain entries: [supervisor, user] code. Every
+/// tlb flush steps both; MOV CR3 keeps the global translations, and with them the supervisor epoch
+/// as long as no supervisor code was validated through a non-global translation
+static mut EPOCHS: [u32; 2] = [1, 1];
+static mut KERNEL_NONGLOBAL: bool = false;
+#[inline(always)]
+unsafe fn epoch(user: bool) -> u32 { EPOCHS[user as usize] }
+unsafe fn bump_epochs() { EPOCHS[0] = EPOCHS[0].wrapping_add(1); EPOCHS[1] = EPOCHS[1].wrapping_add(1); }
 static mut THRESHOLD: u32 = 150;
 static mut EXECUTING_PAGE: u32 = u32::MAX;
 /// bit i set: instructions of kind i are not compiled (for bisecting problems); bit 30: flags are never elided
@@ -251,10 +258,20 @@ unsafe fn state() -> &'static mut State {
 
 /// Called whenever the 64-bit tlb is flushed: the virtual to physical mapping of blocks has to be
 /// revalidated
-pub unsafe fn tlb_flushed() { EPOCH = EPOCH.wrapping_add(1) }
+pub unsafe fn tlb_flushed() { bump_epochs() }
+
+/// MOV CR3: the user epoch steps, the supervisor one when supervisor code went through a
+/// non-global translation
+pub unsafe fn tlb_flushed_nonglobal() {
+    EPOCHS[1] = EPOCHS[1].wrapping_add(1);
+    if KERNEL_NONGLOBAL {
+        EPOCHS[0] = EPOCHS[0].wrapping_add(1);
+        KERNEL_NONGLOBAL = false;
+    }
+}
 
 /// another core's state was loaded: the next instruction may be a block start
-pub unsafe fn core_switched() { EPOCH = EPOCH.wrapping_add(1); CHECK = true }
+pub unsafe fn core_switched() { bump_epochs(); CHECK = true }
 
 // ---------------------------------------------------------------------------------------------
 // helpers called from the generated code
@@ -1561,7 +1578,13 @@ impl<'a> Gen<'a> {
                 {
                     self.b.get_local(&a);
                     self.b.load_aligned_i32(8);
-                    self.b.load_fixed_i32(&raw const EPOCH as u32);
+                    // the epoch of the current privilege (EPOCHS[cpl == 3])
+                    self.b.load_fixed_u8(cpl as u32);
+                    self.b.const_i32(3);
+                    self.b.eq_i32();
+                    self.b.const_i32(2);
+                    self.b.shl_i32();
+                    self.b.load_aligned_i32((&raw const EPOCHS) as u32);
                     self.b.eq_i32();
                     self.b.if_void();
                     {
@@ -4052,7 +4075,7 @@ unsafe fn try_run_block() -> bool {
             if slot.user != user {
                 return false;
             }
-            if slot.epoch != EPOCH {
+            if slot.epoch != epoch(user) {
                 // mappings may have changed or blocks were invalidated: check that rip still
                 // maps to the block of this slot
                 let ok = match probe_fetch(r, user) {
@@ -4065,11 +4088,14 @@ unsafe fn try_run_block() -> bool {
                     *slot = SLOT_EMPTY;
                     return false;
                 }
-                slot.epoch = EPOCH;
+                slot.epoch = epoch(user);
+                if !user && !crate::cpu::long_mem::fetch_is_global(r) {
+                    KERNEL_NONGLOBAL = true;
+                }
             }
             {
                 let e = &mut CHAIN[chain_hash(r)];
-                *e = ChainEntry { rip: r, epoch: EPOCH, meta: slot.index as u32 | (user as u32) << 16 };
+                *e = ChainEntry { rip: r, epoch: epoch(user), meta: slot.index as u32 | (user as u32) << 16 };
             }
             call_block(slot.index, slot.phys_page);
             true
@@ -4079,7 +4105,7 @@ unsafe fn try_run_block() -> bool {
                 Some(b) if b.index == slot.index => {
                     if b.state == BlockState::Ready {
                         slot.state = SLOT_READY;
-                        slot.epoch = EPOCH.wrapping_sub(1);
+                        slot.epoch = epoch(slot.user).wrapping_sub(1);
                     }
                 },
                 _ => *slot = SLOT_EMPTY,
@@ -4164,7 +4190,7 @@ unsafe fn refill_slot(r: u64, key: u64, off: usize) {
     slot.user = b.user;
     slot.index = b.index;
     slot.key = key;
-    slot.epoch = EPOCH.wrapping_sub(1); // validated on the first run
+    slot.epoch = epoch(b.user).wrapping_sub(1); // validated on the first run
     slot.state = match b.state {
         BlockState::Pending => SLOT_PENDING,
         BlockState::Ready => SLOT_READY,
@@ -4224,7 +4250,7 @@ unsafe fn compile(r: u64, user: bool) {
             bit_set(&mut failed, offset);
         }
         old = st.blocks.remove(&key).map(|b| (b.state, b.index));
-        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: EPOCH, served, covered, failed, seeds: seeds.clone(), compiles: compiles + 1, heuristic: HEURISTIC_SEEDS || heuristic });
+        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: 0, served, covered, failed, seeds: seeds.clone(), compiles: compiles + 1, heuristic: HEURISTIC_SEEDS || heuristic });
         st.by_index.insert(index, key);
         let list = st.page_blocks.entry(page).or_default();
         if !list.contains(&key) {
@@ -4235,7 +4261,7 @@ unsafe fn compile(r: u64, user: bool) {
     }) };
     if let Some((state_before, index)) = old {
         // the module this one replaces: slots that point to it notice on their next visit
-        EPOCH = EPOCH.wrapping_add(1);
+        bump_epochs();
         st.by_index.remove(&index);
         match state_before {
             BlockState::Pending => { st.zombies.insert(index); },
@@ -4254,7 +4280,7 @@ unsafe fn compile(r: u64, user: bool) {
             None => {
                 let mut failed = [0u64; 64];
                 bit_set(&mut failed, offset);
-                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: EPOCH, served: [0; 64], covered: [0; 64], failed, seeds: vec![], compiles: 1, heuristic: false });
+                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: 0, served: [0; 64], covered: [0; 64], failed, seeds: vec![], compiles: 1, heuristic: false });
                 let list = st.page_blocks.entry(page).or_default();
                 if !list.contains(&key) {
                     list.push(key);
@@ -4294,7 +4320,7 @@ pub unsafe fn dirty_page(ctx: &mut jit::JitState, page: Page) -> bool {
             FLAGS[SMC] = 1;
         }
         // slots that point to these blocks notice that their block is gone on their next visit
-        EPOCH = EPOCH.wrapping_add(1);
+        bump_epochs();
         if HIST_ON {
             let e = &mut INVAL_LOG[(p as usize ^ (p >> 16) as usize) & 1023];
             if e.0 != p as u64 { *e = (p as u64, 0, list.first().map_or(false, |k| k >> 32 != 0)) }
