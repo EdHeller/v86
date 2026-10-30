@@ -3934,6 +3934,9 @@ pub static mut HEAT_MAX: u32 = u32::MAX;
 pub static mut HEAT_COMPILES: u32 = 0;
 pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
+/// supervisor pages: their likely function starts are entries from the first compile on
+/// (kernel code is reached through function pointers that direct calls never lead to)
+static mut HEURISTIC_KERNEL: bool = true;
 
 #[inline(always)]
 unsafe fn page_heat(r: u64) {
@@ -4270,7 +4273,7 @@ unsafe fn compile(r: u64, user: bool) {
     };
     seeds.push(offset as u16);
     let mut spec: Vec<u16> = vec![];
-    if HEURISTIC_SEEDS || heuristic {
+    if HEURISTIC_SEEDS || heuristic || !user && HEURISTIC_KERNEL {
         // likely function starts: endbr64, and the first byte after int3 padding at 16 byte alignment
         let mut n = 0;
         for i in 0..0x1000 - 4 {
