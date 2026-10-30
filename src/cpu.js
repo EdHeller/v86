@@ -2038,6 +2038,10 @@ CPU.prototype.add_device_timer = function(timer)
 CPU.prototype.create_usb_plugin = function(settings, bus)
 {
     const controller = settings.usb["controller"] || "uhci";
+    if(controller === "ehci")
+    {
+        throw new Error("usb.controller \"ehci\" is not supported yet (SeaBIOS hangs on its companion functions); use \"uhci\" or \"xhci\"");
+    }
     // PIIX3's function 2 of 00:01 (UHCI), 00:06.7 (EHCI with its companions), 00:14.0 (xHCI)
     const pci_id = controller === "ehci" ? 0x06 << 3 | 7 : controller === "xhci" ? 0x14 << 3 : 0x01 << 3 | 2;
     return new PluginDevice(this, USB_PLUGINS, registered_plugin(USB_PLUGINS, "usb"), pci_id, {
