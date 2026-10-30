@@ -4029,7 +4029,7 @@ static mut PENDING_SEEDS: bool = true;
 /// visits of such an entry before it is noted
 static mut PENDING_AFTER: u32 = 8;
 /// noted entries of a page that make it compile again right away (0: only at the threshold)
-static mut PENDING_BATCH: usize = 4;
+static mut PENDING_BATCH: usize = 0;
 /// supervisor pages: their likely function starts are entries from the first compile on
 /// (kernel code is reached through function pointers that direct calls never lead to)
 static mut HEURISTIC_KERNEL: bool = false;
