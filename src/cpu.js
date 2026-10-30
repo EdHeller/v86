@@ -26,6 +26,8 @@ import { VirtioConsole } from "./virtio_console.js";
 import { PCI } from "./pci.js";
 import { GraphicsAdapter, patch_vga_bios_ids } from "./graphics_adapter.js";
 import { DisplayHub } from "./display.js";
+import { build_acpi_tables, ACPI_RSDP_FILE, ACPI_TABLES_FILE, ACPI_LOADER_FILE } from "./acpi_tables.js";
+import { create_platform } from "./platform.js";
 import { PluginDevice, USB_PLUGINS, AUDIO_PLUGINS, registered_plugin } from "./device_plugin.js";
 import "./usb/plugin.js";
 import "./audio_devices/hd_audio/plugin.js";
@@ -1131,7 +1133,8 @@ CPU.prototype.init = function(settings, device_bus)
 
     this.bios.main = settings.bios;
     this.bios.vga = settings.vga_bios;
-    this.firmware = settings.firmware_code ? { code: settings.firmware_code, vars: settings.firmware_vars || null, code_region: -1, vars_region: -1 } : null;
+    this.firmware = settings.firmware_code ? { code: settings.firmware_code, vars: settings.firmware_vars || null, code_region: -1, vars_region: -1,
+        cores: settings.cpu_cores || 1, acpi: !!settings.acpi } : null;
     this.graphics_adapter_plugin = settings.graphics_adapter_plugin;
 
     this.load_bios();
@@ -1901,6 +1904,16 @@ CPU.prototype.load_bios = function()
             e820.setUint32(8, this.memory_size[0], true);
             e820.setUint32(16, 1, true);
             this.option_roms.push({ name: "etc/e820", data: new Uint8Array(e820.buffer) });
+            if(this.firmware.acpi)
+            {
+                // the ACPI tables, through QEMU's table loader (OVMF puts the PM block at 0x600)
+                const platform = create_platform({ cores: this.firmware.cores, memory_size: this.memory_size[0], tpm: false });
+                const acpi = build_acpi_tables(platform, 0x600);
+                this.option_roms.push(
+                    { name: ACPI_RSDP_FILE, data: acpi.rsdp },
+                    { name: ACPI_TABLES_FILE, data: acpi.tables },
+                    { name: ACPI_LOADER_FILE, data: acpi.loader });
+            }
         }
         this.load_firmware_flash();
         return;
