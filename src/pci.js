@@ -1,4 +1,5 @@
 import { LOG_PCI } from "./const.js";
+import { Q35 } from "./q35.js";
 import { h } from "./lib.js";
 import { dbg_assert, dbg_log } from "./log.js";
 
@@ -14,8 +15,10 @@ export const PCI_CONFIG_DATA = 0xCFC;
  * @constructor
  * @param {CPU} cpu
  */
-export function PCI(cpu)
+export function PCI(cpu, machine_type)
 {
+    /** the Q35 chipset (src/q35.js), or null: the i440FX */
+    this.q35 = null;
     this.pci_addr = new Uint8Array(4);
     this.pci_value = new Uint8Array(4);
     this.pci_response = new Uint8Array(4);
@@ -155,6 +158,14 @@ export function PCI(cpu)
     //    ],
     //    pci_bars: [],
     //};
+
+    if(machine_type === "q35")
+    {
+        this.q35 = new Q35(cpu, this);
+        this.isa_bridge_space = this.q35.lpc_space;
+        this.isa_bridge_space8 = this.q35.lpc_space8;
+        return;
+    }
 
     // This needs to be set in order for seabios to not execute code outside of
     // mapped memory. While we map the BIOS into high memory, we don't allow
@@ -354,9 +365,26 @@ PCI.prototype.pci_write8_raw = function(address, written)
  * reads RAM and drops writes. Regions: 0x59 bits 5:4 = F0000, then 0x5A-0x5F two per byte
  * (bits 1:0 and 5:4) from C0000 in steps of 16 KB up to EFFFF.
  */
+/**
+ * A byte of a function's configuration space (ECAM reads), all ones where
+ * there is none
+ * @param {number} bdf
+ * @param {number} offset
+ * @return {number}
+ */
+PCI.prototype.config_read8 = function(bdf, offset)
+{
+    const space = this.device_spaces[bdf];
+    if(!space) return 0xFF;
+    if(offset >= 0x100) return 0;
+    return space[offset >> 2] >>> ((offset & 3) << 3) & 0xFF;
+};
+
 PCI.prototype.update_pam = function()
 {
     const space = new Uint8Array(this.device_spaces[0].buffer);
+    // PAM0 to PAM6: the i440FX's at 0x59, the Q35 MCH's at 0x90
+    const pam = this.q35 ? 0x90 : 0x59;
     let lo = 0, hi = 0;
     const set_region = (address, pam) => {
         if(pam === 1)
@@ -368,11 +396,11 @@ PCI.prototype.update_pam = function()
             }
         }
     };
-    set_region(0xF0000, space[0x59] >> 4 & 3);
+    set_region(0xF0000, space[pam] >> 4 & 3);
     for(let i = 0; i < 6; i++)
     {
-        set_region(0xC0000 + i * 0x8000, space[0x5A + i] & 3);
-        set_region(0xC0000 + i * 0x8000 + 0x4000, space[0x5A + i] >> 4 & 3);
+        set_region(0xC0000 + i * 0x8000, space[pam + 1 + i] & 3);
+        set_region(0xC0000 + i * 0x8000 + 0x4000, space[pam + 1 + i] >> 4 & 3);
     }
     this.cpu.wm.exports["set_pam_read_only"](lo, hi);
 };
@@ -406,7 +434,7 @@ PCI.prototype.pci_write16_raw = function(address, written)
 
     space[addr >>> 1] = written;
 
-    if(bdf === 0 && addr >= 0x58 && addr <= 0x5F)
+    if(bdf === 0 && !this.q35 && addr >= 0x58 && addr <= 0x5F)
     {
         this.update_pam();
     }
@@ -528,7 +556,7 @@ PCI.prototype.pci_write32_raw = function(address, written)
                 " value=" + h(written >>> 0, 8), LOG_PCI);
         space[addr >>> 2] = written;
 
-        if(bdf === 0 && addr >= 0x58 && addr <= 0x5F)
+        if(bdf === 0 && !this.q35 && addr >= 0x58 && addr <= 0x5F)
         {
             this.update_pam();
         }
@@ -658,6 +686,12 @@ PCI.prototype.raise_irq = function(pci_id)
     var space = this.device_spaces[pci_id];
     dbg_assert(space);
 
+    if(this.q35)
+    {
+        this.q35.set_intx(pci_id, (space[0x3C >>> 2] >> 8 & 0xFF) - 1 & 3, true);
+        return;
+    }
+
     var pin = (space[0x3C >>> 2] >> 8 & 0xFF) - 1;
     var device = (pci_id >> 3) - 1 & 0xFF;
     var parent_pin = pin + device & 3;
@@ -672,6 +706,12 @@ PCI.prototype.lower_irq = function(pci_id)
 {
     var space = this.device_spaces[pci_id];
     dbg_assert(space);
+
+    if(this.q35)
+    {
+        this.q35.set_intx(pci_id, (space[0x3C >>> 2] >> 8 & 0xFF) - 1 & 3, false);
+        return;
+    }
 
     var pin = space[0x3C >>> 2] >> 8 & 0xFF;
     var device = pci_id >> 3 & 0xFF;

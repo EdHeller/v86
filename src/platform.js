@@ -38,11 +38,30 @@
 export var Platform;
 
 /**
- * @param {{cores: number, memory_size: number, tpm: boolean}} options
+ * @param {{cores: number, memory_size: number, tpm: boolean, machine: string, uefi: boolean}} options
  * @return {Platform}
  */
 export function create_platform(options)
 {
+    if(options.machine === "q35")
+    {
+        // ECAM where the firmware puts PCIEXBAR (SeaBIOS: 0xB0000000, OVMF:
+        // 0xE0000000); SeaBIOS allocates PCI memory above it, OVMF from 2 GiB around it
+        const ecam = { base: options.uefi ? 0xE0000000 : 0xB0000000, size: 0x10000000 };
+        return {
+            machine: "q35",
+            qemu_compatible: true,
+            apic_ids: Array.from({ length: options.cores }, (_, i) => i),
+            uarts: [{ index: 0, port: 0x3F8, irq: 4 }],
+            parallel_ports: [],
+            tpm: options.tpm,
+            ecam,
+            pm: { length: 0x80, gpe0_offset: 0x20, gpe0_base: 0, gpe0_length: 0x10, acpi_enable: 0x02, acpi_disable: 0x03 },
+            sleep_states: [{ state: 5, slp_typ: 0, supported: true }],
+            hpet: false,
+            pci_mmio_start: options.uefi ? Math.max(0x80000000, Math.ceil(options.memory_size / 0x10000000) * 0x10000000) : ecam.base + ecam.size,
+        };
+    }
     return {
         machine: "i440fx",
         qemu_compatible: true,
@@ -77,5 +96,11 @@ export function gpe0_block(platform, pm_base)
  */
 export function pci_memory_windows(platform)
 {
-    return [[platform.pci_mmio_start, PCI_MMIO_END]];
+    const start = platform.pci_mmio_start;
+    const ecam = platform.ecam;
+    if(!ecam || ecam.base + ecam.size <= start || ecam.base > PCI_MMIO_END)
+    {
+        return [[start, PCI_MMIO_END]];
+    }
+    return [[start, ecam.base - 1], [ecam.base + ecam.size, PCI_MMIO_END]].filter(([first, last]) => first <= last);
 }

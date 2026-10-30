@@ -525,6 +525,8 @@ V86.prototype.continue_init = async function(emulator, options)
     }
     settings.virtio_blk_readonly = !!options.virtio_blk_readonly;
     settings.virtio_rng = !!options.virtio_rng;
+    // "i440fx" (the default) or "q35"
+    settings.machine_type = options.machine_type;
     settings.virtio_snd = !!options.virtio_snd;
     // "keyboard" | "tablet" | "multitouch"
     settings.virtio_input = options.virtio_input;

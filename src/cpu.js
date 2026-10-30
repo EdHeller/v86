@@ -432,6 +432,7 @@ CPU.prototype.wasm_patch = function()
 
     this.device_raise_irq = get_import("device_raise_irq");
     this.device_lower_irq = get_import("device_lower_irq");
+    this.device_set_pci_irq = get_import("device_set_pci_irq");
 
     this.apic_timer = get_import("apic_timer");
 
@@ -1136,6 +1137,21 @@ CPU.prototype.init = function(settings, device_bus)
     this.firmware = settings.firmware_code ? { code: settings.firmware_code, vars: settings.firmware_vars || null, code_region: -1, vars_region: -1,
         cores: settings.cpu_cores || 1, acpi: !!settings.acpi } : null;
     this.graphics_adapter_plugin = settings.graphics_adapter_plugin;
+    /** "i440fx" (v86's PC) or "q35" */
+    this.machine_type = settings.machine_type === "q35" ? "q35" : "i440fx";
+
+    // The ACPI tables through QEMU's table loader, with the UEFI firmware and on
+    // Q35 (SeaBIOS builds v86's PC tables itself); both firmwares put the PM block at 0x600
+    if(settings.acpi && (this.firmware || this.machine_type === "q35"))
+    {
+        const platform = create_platform({ cores: settings.cpu_cores || 1, memory_size: this.memory_size[0], tpm: false,
+            machine: this.machine_type, uefi: !!this.firmware });
+        const acpi = build_acpi_tables(platform, 0x600);
+        this.option_roms.push(
+            { name: ACPI_RSDP_FILE, data: acpi.rsdp },
+            { name: ACPI_TABLES_FILE, data: acpi.tables },
+            { name: ACPI_LOADER_FILE, data: acpi.loader });
+    }
 
     this.load_bios();
 
@@ -1315,7 +1331,7 @@ CPU.prototype.init = function(settings, device_bus)
     // TODO: Make this more configurable
     if(settings.load_devices)
     {
-        this.devices.pci = new PCI(this);
+        this.devices.pci = new PCI(this, this.machine_type);
 
         if(this.acpi_enabled[0])
         {
@@ -1904,16 +1920,6 @@ CPU.prototype.load_bios = function()
             e820.setUint32(8, this.memory_size[0], true);
             e820.setUint32(16, 1, true);
             this.option_roms.push({ name: "etc/e820", data: new Uint8Array(e820.buffer) });
-            if(this.firmware.acpi)
-            {
-                // the ACPI tables, through QEMU's table loader (OVMF puts the PM block at 0x600)
-                const platform = create_platform({ cores: this.firmware.cores, memory_size: this.memory_size[0], tpm: false });
-                const acpi = build_acpi_tables(platform, 0x600);
-                this.option_roms.push(
-                    { name: ACPI_RSDP_FILE, data: acpi.rsdp },
-                    { name: ACPI_TABLES_FILE, data: acpi.tables },
-                    { name: ACPI_LOADER_FILE, data: acpi.loader });
-            }
         }
         this.load_firmware_flash();
         return;

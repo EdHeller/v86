@@ -4944,6 +4944,19 @@ unsafe fn device_raise_irq(i: u8) {
     handle_irqs()
 }
 
+/// A PCI interrupt line of the Q35 chipset: the PIRQ's ISA IRQ at the PIC
+/// (none if negative) and its IOAPIC input (16 to 23)
+#[no_mangle]
+unsafe fn device_set_pci_irq(pic_irq: i32, gsi: i32, level: bool) {
+    if pic_irq >= 0 && pic_irq < 16 {
+        if level { pic::set_irq(pic_irq as u8) } else { pic::clear_irq(pic_irq as u8) }
+    }
+    if *acpi_enabled && gsi >= 0 && gsi < 24 {
+        if level { ioapic::set_irq(gsi as u8) } else { ioapic::clear_irq(gsi as u8) }
+    }
+    handle_irqs()
+}
+
 #[no_mangle]
 unsafe fn device_lower_irq(i: u8) {
     pic::clear_irq(i);

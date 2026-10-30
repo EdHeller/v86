@@ -48,7 +48,12 @@ export function ACPI(cpu)
     // the PM I/O block: at 0xB000 (the tables SeaBIOS builds for v86); with
     // the UEFI firmware where it puts PMBA, as PIIX4's at 00:01.3
     this.pm_base = -1;
-    if(cpu.firmware)
+    if(cpu.machine_type === "q35")
+    {
+        // ICH9: the LPC decodes the PM block at PMBASE (src/q35.js); no PCI function
+        acpi = null;
+    }
+    else if(cpu.firmware)
     {
         acpi.pci_id = 0x01 << 3 | 3;
         acpi.on_config_write = () => this.update_pm_base();
@@ -59,7 +64,7 @@ export function ACPI(cpu)
     }
 
     // 00:07.0 Bridge: Intel Corporation 82371AB/EB/MB PIIX4 ACPI (rev 08)
-    this.pci_space = cpu.devices.pci.register_device(acpi);
+    this.pci_space = acpi ? cpu.devices.pci.register_device(acpi) : null;
 
     // PCI hotplug registers of the firmware's DSDT (the slot devices' _STA/_EJ0 and the GPE 1 handler read them):
     // no slot is being inserted (PCIU) or removed (PCID), ejecting does nothing. Unhandled reads return all ones,
