@@ -1,0 +1,29 @@
+[package]
+name = "v86"
+version = "0.1.0"
+publish = false
+edition = "2021"
+
+[features]
+default = []
+# Host-parallel build (cores in workers, docs/multicore.md of v64)
+parallel = []
+# (kept so the sources of the ARM core compile unchanged)
+aarch64 = []
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[profile.dev]
+lto = true
+opt-level = 2
+panic = "abort"
+overflow-checks = false
+
+[profile.release]
+lto = true
+opt-level = 3
+incremental = false
+panic = "abort"
+codegen-units = 1

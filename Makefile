@@ -274,6 +274,41 @@ build/softfloat.o: lib/softfloat/softfloat.c
 	    -o build/softfloat.o \
 	    lib/softfloat/softfloat.c
 
+# The ARM core (an AArch64 CPU for the virt machine, taken from v64): its own crate in a64/, its own
+# target directory, SoftFloat with the ARM specialization (tools/softfloat_arm.mjs)
+A64_RUST_FILES=$(shell find a64/src -name '*.rs')
+CARGO_FLAGS_ARM64=\
+		--target wasm32-unknown-unknown \
+		--features aarch64 \
+		-- \
+		-C linker=../tools/rust-lld-wrapper \
+		-C link-args="--import-table --global-base=4096 $(STRIP_DEBUG_FLAG)" \
+		-C link-args="../build/softfloat_arm.o" \
+		-C link-args="../build/zstddeclib.o" \
+		--verbose \
+		-C target-feature=+bulk-memory -C target-feature=+multivalue -C target-feature=+simd128
+
+build/softfloat_arm.o: lib/softfloat/softfloat.c tools/softfloat_arm.mjs
+	mkdir -p build
+	node tools/softfloat_arm.mjs lib/softfloat/softfloat.c build/softfloat_arm.c
+	clang -c -Wall \
+	    --target=wasm32 -O3 -flto -nostdlib -fvisibility=hidden -ffunction-sections -fdata-sections \
+	    -DSOFTFLOAT_FAST_INT64 -DINLINE_LEVEL=5 -DSOFTFLOAT_FAST_DIV32TO16 -DSOFTFLOAT_FAST_DIV64TO32 \
+	    -DSOFTFLOAT_ROUND_ODD \
+	    -o build/softfloat_arm.o \
+	    build/softfloat_arm.c
+
+build/v86-arm64.wasm: $(A64_RUST_FILES) build/softfloat_arm.o build/zstddeclib.o a64/Cargo.toml
+	mkdir -p build/
+	cd a64 && CARGO_TARGET_DIR=../build/arm64 cargo rustc --release $(CARGO_FLAGS_ARM64)
+	cp build/arm64/wasm32-unknown-unknown/release/v86.wasm build/v86-arm64.wasm
+	BLOCK_SIZE=K ls -l build/v86-arm64.wasm
+
+build/v86-arm64-debug.wasm: $(A64_RUST_FILES) build/softfloat_arm.o build/zstddeclib.o a64/Cargo.toml
+	mkdir -p build/
+	cd a64 && CARGO_TARGET_DIR=../build/arm64 cargo rustc $(CARGO_FLAGS_ARM64)
+	cp build/arm64/wasm32-unknown-unknown/debug/v86.wasm build/v86-arm64-debug.wasm
+
 build/zstddeclib.o: lib/zstd/zstddeclib.c
 	mkdir -p build
 	clang -c -Wall \
