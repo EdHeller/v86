@@ -363,6 +363,10 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
     io.register_write(0x1CF, this, undefined, this.port1CF_write);
     io.register_read(0x1CF, this, undefined, this.port1CF_read);
 
+    // the data register's aligned alias, as QEMU decodes it (OVMF's QemuVideoDxe uses it)
+    io.register_write(0x1D0, this, undefined, this.port1CF_write);
+    io.register_read(0x1D0, this, undefined, this.port1CF_read);
+
 
     const vga_offset = cpu.svga_allocate_memory(this.vga_memory_size) >>> 0;
     this.svga_memory = view(Uint8Array, cpu.wasm_memory, vga_offset, this.vga_memory_size);

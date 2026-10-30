@@ -73,7 +73,6 @@ import { BusConnector } from "./bus.js";
 const DUMP_GENERATED_WASM = false;
 const DUMP_UNCOMPILED_ASSEMBLY = false;
 
-/** @constructor */
 /** QEMU's fw_cfg items of -kernel: [part, "addr" | "size" | "data"] */
 const FW_CFG_KERNEL_ITEMS = {
     0x07: ["kernel", "addr"], 0x08: ["kernel", "size"], 0x11: ["kernel", "data"],
@@ -82,6 +81,7 @@ const FW_CFG_KERNEL_ITEMS = {
     0x16: ["setup", "addr"], 0x17: ["setup", "size"], 0x18: ["setup", "data"],
 };
 
+/** @constructor */
 export function CPU(bus, wm, stop_idling)
 {
     this.stop_idling = stop_idling;
