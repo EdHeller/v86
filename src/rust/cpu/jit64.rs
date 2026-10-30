@@ -3807,7 +3807,7 @@ pub unsafe fn run() {
         }
         before = after;
         // straight-line code reached an entry the page's module serves: run it from here
-        if served && SERVED.bits[(after as usize & 0xFFF) >> 6] >> (after & 63) & 1 != 0 {
+        if served && (*SERVED).bits[(after as usize & 0xFFF) >> 6] >> (after & 63) & 1 != 0 {
             enter_served(after);
             CHECK = true;
             return;
@@ -3821,21 +3821,27 @@ pub unsafe fn run() {
 }
 
 /// The entries the module of the page at `vpn` serves, while the mapping and the module are the ones
-/// of `epoch` (the interpreter's straight-line runs enter compiled code at them)
-struct ServedCache { vpn: u64, user: bool, epoch: u32, valid: bool, key: u64, bits: [u64; 64] }
-static mut SERVED: ServedCache = ServedCache { vpn: u64::MAX, user: false, epoch: 0, valid: false, key: 0, bits: [0; 64] };
+/// of `epoch` (the interpreter's straight-line runs enter compiled code at them); a small direct
+/// mapped cache of pages, so that the module map is not consulted on every run
+#[derive(Clone, Copy)]
+struct ServedEntry { vpn: u64, user: bool, epoch: u32, valid: bool, key: u64, bits: [u64; 64] }
+const SERVED_ENTRIES: usize = 64;
+static mut SERVED_CACHE: [ServedEntry; SERVED_ENTRIES] = [ServedEntry { vpn: u64::MAX, user: false, epoch: 0, valid: false, key: 0, bits: [0; 64] }; SERVED_ENTRIES];
+static mut SERVED: *const ServedEntry = std::ptr::null();
 
-/// Whether SERVED describes the page of `r` (looked up again when the page, the privilege or the epoch changed)
+/// Whether the module of the page of `r` serves entries (SERVED points to them)
 unsafe fn served_bits(r: u64) -> bool {
     let user = *cpl == 3;
     let vpn = r >> 12;
-    if SERVED.vpn == vpn && SERVED.user == user && SERVED.epoch == epoch(user) {
-        return SERVED.valid;
+    let e = &mut SERVED_CACHE[(vpn ^ vpn >> 6) as usize & (SERVED_ENTRIES - 1)];
+    SERVED = e;
+    if e.vpn == vpn && e.user == user && e.epoch == epoch(user) {
+        return e.valid;
     }
-    SERVED.vpn = vpn;
-    SERVED.user = user;
-    SERVED.epoch = epoch(user);
-    SERVED.valid = false;
+    e.vpn = vpn;
+    e.user = user;
+    e.epoch = epoch(user);
+    e.valid = false;
     if THRESHOLD == u32::MAX || jit::jit_disabled() {
         return false;
     }
@@ -3843,13 +3849,13 @@ unsafe fn served_bits(r: u64) -> bool {
     let key = block_key(phys & !0xFFF, user);
     match state().blocks.get(&key) {
         Some(b) if b.state == BlockState::Ready => {
-            SERVED.bits = b.served;
-            SERVED.key = key;
-            SERVED.valid = true;
+            e.bits = b.served;
+            e.key = key;
+            e.valid = true;
         },
         _ => {},
     }
-    SERVED.valid
+    e.valid
 }
 
 /// makes the slot of `r` point to its module (SERVED says that it serves `r`)
@@ -3860,7 +3866,7 @@ unsafe fn enter_served(r: u64) {
         st.slots[si] = Slot { rip: r, ..SLOT_EMPTY };
     }
     if st.slots[si].state == SLOT_COUNTING {
-        refill_slot(r, SERVED.key, r as usize & 0xFFF);
+        refill_slot(r, (*SERVED).key, r as usize & 0xFFF);
     }
 }
 
