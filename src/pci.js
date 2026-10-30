@@ -323,7 +323,7 @@ PCI.prototype.pci_query = function()
     }
 };
 
-PCI.prototype.pci_write8 = function(address, written)
+PCI.prototype.pci_write8_raw = function(address, written)
 {
     var bdf = address >> 8 & 0xFFFF;
     var addr = address & 0xFF;
@@ -378,7 +378,7 @@ PCI.prototype.update_pam = function()
     this.cpu.wm.exports["set_pam_read_only"](lo, hi);
 };
 
-PCI.prototype.pci_write16 = function(address, written)
+PCI.prototype.pci_write16_raw = function(address, written)
 {
     dbg_assert((address & 1) === 0);
 
@@ -414,7 +414,7 @@ PCI.prototype.pci_write16 = function(address, written)
     }
 };
 
-PCI.prototype.pci_write32 = function(address, written)
+PCI.prototype.pci_write32_raw = function(address, written)
 {
     dbg_assert((address & 3) === 0);
 
@@ -455,7 +455,14 @@ PCI.prototype.pci_write32 = function(address, written)
             }
             else
             {
-                if(type === 0)
+                if(type === 0 && bar.on_move)
+                {
+                    // memory, relocatable (plugin devices)
+                    var base = written & ~0xF;
+                    space[space_addr] = base | space[space_addr] & 0xF;
+                    bar.on_move(base >>> 0);
+                }
+                else if(type === 0)
                 {
                     // memory
                     var original_bar = bar.original_bar;
@@ -528,6 +535,37 @@ PCI.prototype.pci_write32 = function(address, written)
             this.update_pam();
         }
     }
+};
+
+PCI.prototype.pci_write8 = function(address, written)
+{
+    this.pci_write8_raw(address, written);
+    this.config_written(address, 1);
+};
+
+PCI.prototype.pci_write16 = function(address, written)
+{
+    this.pci_write16_raw(address, written);
+    this.config_written(address, 2);
+};
+
+PCI.prototype.pci_write32 = function(address, written)
+{
+    this.pci_write32_raw(address, written);
+    this.config_written(address, 4);
+};
+
+/**
+ * Hooks of plugin devices (src/device_plugin.js): the command register
+ * changed, a configuration byte range was written
+ */
+PCI.prototype.config_written = function(address, size)
+{
+    const device = this.devices[address >> 8 & 0xFFFF];
+    if(!device) return;
+    const offset = address & 0xFF;
+    if(device.on_command_change && offset < 6 && offset + size > 4) device.on_command_change();
+    if(device.on_config_write) device.on_config_write(offset, size);
 };
 
 PCI.prototype.register_device = function(device)
