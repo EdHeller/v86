@@ -217,14 +217,16 @@ struct ChainEntry {
     /// table index of the module, and bit 16: privilege (user)
     meta: u32,
 }
-const CHAIN_SIZE: usize = 4096;
+const CHAIN_BITS: u32 = 16;
+const CHAIN_SIZE: usize = 1 << CHAIN_BITS;
+const CHAIN_HASH_MUL: u64 = 0x9E37_79B9_7F4A_7C15;
 static mut CHAIN: [ChainEntry; CHAIN_SIZE] = [ChainEntry { rip: u64::MAX, epoch: 0, meta: 0 }; CHAIN_SIZE];
 /// instruction counter at the start of the dispatcher's call: the chain stops after CHAIN_LIMIT instructions
 static mut CHAIN_START: u32 = 0;
 /// 0: modules do not chain
 static mut CHAIN_LIMIT: u32 = 0;
 
-fn chain_hash(r: u64) -> usize { (r ^ r >> 12 ^ r >> 24) as usize & (CHAIN_SIZE - 1) }
+fn chain_hash(r: u64) -> usize { (r.wrapping_mul(CHAIN_HASH_MUL) >> (64 - CHAIN_BITS)) as usize }
 /// compute pending flags inline in the generated code instead of calling j64_flags (experiment knob)
 pub static mut INLINE_FLAGS: bool = true;
 /// Debug: interpreted instruction addresses, hashed: (rip, count); read through get_jit_config(3000 + 2 * i / + 1)
@@ -1579,17 +1581,11 @@ impl<'a> Gen<'a> {
                 self.b.set_local_i64(&t);
                 // a = &CHAIN[hash(t)]
                 self.b.get_local_i64(&t);
-                self.b.get_local_i64(&t);
-                self.b.const_i64(12);
+                self.b.const_i64(CHAIN_HASH_MUL as i64);
+                self.b.mul_i64();
+                self.b.const_i64(64 - CHAIN_BITS as i64);
                 self.b.shr_u_i64();
-                self.b.xor_i64();
-                self.b.get_local_i64(&t);
-                self.b.const_i64(24);
-                self.b.shr_u_i64();
-                self.b.xor_i64();
                 self.b.wrap_i64_to_i32();
-                self.b.const_i32(CHAIN_SIZE as i32 - 1);
-                self.b.and_i32();
                 self.b.const_i32(4);
                 self.b.shl_i32();
                 self.b.const_i32(&raw const CHAIN as i32);
