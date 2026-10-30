@@ -124,6 +124,9 @@ struct State {
     /// per virtual page: how often blocks of it were invalidated (code mixed with data is not
     /// worth compiling again and again)
     invalidations: HashMap<u64, u8, PageBuildHasher>,
+    /// per module key: entries visited since its last compile that it does not serve (they become
+    /// seeds of the next compile together, so that a page needs fewer recompiles)
+    pending_seeds: HashMap<u64, Vec<u16>, PageBuildHasher>,
 }
 
 static mut STATE: Option<State> = None;
@@ -259,6 +262,7 @@ unsafe fn state() -> &'static mut State {
             zombies: HashSet::new(),
             rmw: HashSet::new(),
             invalidations: HashMap::default(),
+            pending_seeds: HashMap::default(),
         });
     }
     STATE.as_mut().unwrap()
@@ -4020,6 +4024,8 @@ pub static mut HEAT_MAX: u32 = u32::MAX;
 pub static mut HEAT_COMPILES: u32 = 0;
 pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
+/// entries visited while their page's module did not serve them join its next compile
+static mut PENDING_SEEDS: bool = true;
 /// supervisor pages: their likely function starts are entries from the first compile on
 /// (kernel code is reached through function pointers that direct calls never lead to)
 static mut HEURISTIC_KERNEL: bool = false;
@@ -4261,6 +4267,19 @@ unsafe fn try_run_block() -> bool {
                     *m.entry(block_key(phys & !0xFFF, user)).or_insert(0) += 1;
                 }
             }
+            if slot.count == 8 && PENDING_SEEDS {
+                // (visited a few times: worth an entry when the page is compiled next)
+                if let Some(phys) = probe_fetch(r, user) {
+                    let key = block_key(phys & !0xFFF, user);
+                    if st.blocks.contains_key(&key) {
+                        let v = st.pending_seeds.entry(key).or_default();
+                        let off = (phys & 0xFFF) as u16;
+                        if v.len() < 256 && !v.contains(&off) {
+                            v.push(off);
+                        }
+                    }
+                }
+            }
             slot.count += 1;
             let limit = if slot.limit != 0 { slot.limit } else { THRESHOLD };
             if slot.count < limit {
@@ -4358,6 +4377,13 @@ unsafe fn compile(r: u64, user: bool) {
         None => (vec![], 0, [0u64; 64], false),
     };
     seeds.push(offset as u16);
+    if let Some(more) = st.pending_seeds.remove(&key) {
+        for o in more {
+            if !seeds.contains(&o) {
+                seeds.push(o);
+            }
+        }
+    }
     let mut spec: Vec<u16> = vec![];
     if HEURISTIC_SEEDS || heuristic || !user && HEURISTIC_KERNEL {
         // likely function starts: endbr64, and the first byte after int3 padding at 16 byte alignment
