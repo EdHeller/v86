@@ -24,6 +24,8 @@ import { Ne2k } from "./ne2k.js";
 import { IO } from "./io.js";
 import { VirtioConsole } from "./virtio_console.js";
 import { PCI } from "./pci.js";
+import { PluginDevice, USB_PLUGINS, registered_plugin } from "./device_plugin.js";
+import "./usb/plugin.js";
 import { PS2 } from "./ps2.js";
 import { VMwareMouse } from "./vmware.js";
 import { read_elf } from "./elf.js";
@@ -66,6 +68,7 @@ const DUMP_UNCOMPILED_ASSEMBLY = false;
 export function CPU(bus, wm, stop_idling)
 {
     this.stop_idling = stop_idling;
+    this.device_timers = [];
     this.wm = wm;
     this.wasm_patch();
     this.create_jit_imports();
@@ -581,6 +584,7 @@ CPU.prototype.get_state = function()
     state[92] = this.efer;
     state[93] = this.pat;
     state[94] = this.long_mode_state;
+    state[95] = this.devices.usb;
 
     return state;
 };
@@ -703,6 +707,7 @@ CPU.prototype.set_state = function(state)
     state[92] && this.efer.set(state[92]);
     this.long_mode_state.fill(0);
     state[94] && this.long_mode_state.set(state[94]);
+    this.devices.usb && state[95] && this.devices.usb.set_state(state[95]);
     if(!(this.long_mode_state[46] & 1)) this.long_mode_state[46] = 1; // xcr0 of states saved before it was part of the state
 
     this.set_tsc(state[43][0], state[43][1]);
@@ -963,6 +968,10 @@ CPU.prototype.reboot_internal = function()
     if(this.devices.virtio_net)
     {
         this.devices.virtio_net.reset();
+    }
+    if(this.devices.usb)
+    {
+        this.devices.usb.reset();
     }
     if(this.devices.ps2)
     {
@@ -1277,6 +1286,11 @@ CPU.prototype.init = function(settings, device_bus)
         this.devices.cdrom = this.devices.ide.secondary.master;
 
         this.devices.pit = new PIT(this, device_bus);
+
+        if(settings.usb)
+        {
+            this.devices.usb = this.create_usb_plugin(settings, device_bus);
+        }
 
         if(settings.net_device.type === "ne2k")
         {
@@ -1996,7 +2010,52 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
     }
 
     // (with workers the machine thread has to come back soon to answer them)
-    return Math.min(pit_time, rtc_time, acpi_time, apic_time, this.parallel ? 1 : Infinity);
+    let device_time = Infinity;
+    for(const timer of this.device_timers)
+    {
+        device_time = Math.min(device_time, timer(now));
+    }
+
+    return Math.min(pit_time, rtc_time, acpi_time, apic_time, device_time, this.parallel ? 1 : Infinity);
+};
+
+/**
+ * A timer of a plugin device: called with the time whenever the machine's
+ * timers run, returns the milliseconds until it needs to run again
+ * @param {function(number):number} timer
+ */
+CPU.prototype.add_device_timer = function(timer)
+{
+    this.device_timers.push(timer);
+};
+
+/**
+ * USB (usb: { controller: "uhci", tablet, mass_storage }), from v64's plugin
+ * @param {Object} settings
+ * @param {BusConnector} bus
+ * @return {PluginDevice}
+ */
+CPU.prototype.create_usb_plugin = function(settings, bus)
+{
+    const controller = settings.usb["controller"] || "uhci";
+    if(controller !== "uhci")
+    {
+        throw new Error("usb.controller \"" + controller + "\" is not supported on this machine yet (\"uhci\")");
+    }
+    return new PluginDevice(this, USB_PLUGINS, registered_plugin(USB_PLUGINS, "usb"), 0x01 << 3 | 2, {
+        "bus": {
+            "register": (name, handler) => bus.register(name, handler, null),
+            "send": (name, value) =>
+            {
+                bus.send(name, value);
+                bus.pair.send(name, value);
+            },
+        },
+    }, {
+        "controller": controller,
+        "tablet": !!settings.usb["tablet"],
+        "mass_storage": (settings.usb_disks || []).map(disk => ({ "id": disk.id, "buffer": disk.buffer, "read_only": disk.read_only })),
+    });
 };
 
 CPU.prototype.debug_init = function()

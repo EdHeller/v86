@@ -427,6 +427,13 @@ V86.prototype.continue_init = async function(emulator, options)
                 settings.fs9p_json = buffer;
                 break;
             default:
+                if(name.startsWith("usb:"))
+                {
+                    // usb.mass_storage: { id, image, read_only }
+                    const disk = options.usb.mass_storage.find(disk => "usb:" + disk.id === name);
+                    settings.usb_disks.push({ id: disk.id, buffer, read_only: !!disk.read_only });
+                    break;
+                }
                 dbg_assert(false, name);
         }
     }
@@ -497,6 +504,17 @@ V86.prototype.continue_init = async function(emulator, options)
     add_file("multiboot", options.multiboot);
     add_file("bzimage", options.bzimage);
     add_file("initrd", options.initrd);
+
+    // USB (usb: { controller, tablet, mass_storage: [{ id, image, read_only }] })
+    settings.usb = options.usb || undefined;
+    if(settings.usb)
+    {
+        settings.usb_disks = [];
+        for(const disk of settings.usb.mass_storage || [])
+        {
+            add_file("usb:" + disk.id, disk.image);
+        }
+    }
 
     if(options.filesystem && options.filesystem.handle9p)
     {
