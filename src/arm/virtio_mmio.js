@@ -303,3 +303,99 @@ VirtioMmioRng.prototype.handle = function(index, request)
     }
     this.push(index, request, written);
 };
+
+/**
+ * virtio-net (virtio 1.2 section 5.1): frames go out as net0-send and come in as net0-receive on the machine's bus, the
+ * interface of v86's network adapters (src/browser/network.js: fetch, wisp, inbrowser)
+ * @constructor
+ * @param {Object} machine
+ * @param {number} intid
+ * @param {{mac: (Array<number>|undefined)}=} options
+ */
+export function VirtioMmioNet(machine, intid, options)
+{
+    // VERSION_1, MAC (5), STATUS (16), MRG_RXBUF is not offered: a frame is one buffer chain
+    VirtioMmio.call(this, machine, intid, 1, 2, [VIRTIO_F_VERSION_1, 5, 16], 10);
+    const mac = (options && options.mac) || [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    this.config.set(mac, 0);
+    this.config[6] = 1; // status: link up
+    this.waiting = [];
+    machine.bus.register("net0-receive", frame => this.receive(frame), this);
+}
+VirtioMmioNet.prototype = Object.create(VirtioMmio.prototype);
+
+const NET_HEADER = 12;
+
+VirtioMmioNet.prototype.handle = function(index, request)
+{
+    if(index === 1)
+    {
+        // transmit: the header, then the frame
+        const parts = [];
+        let skip = NET_HEADER;
+        for(const b of request.buffers)
+        {
+            if(b.write) continue;
+            const bytes = this.mem(b.address, b.length);
+            if(skip >= bytes.length) { skip -= bytes.length; continue; }
+            parts.push(bytes.subarray(skip));
+            skip = 0;
+        }
+        const length = parts.reduce((n, p) => n + p.length, 0);
+        const frame = new Uint8Array(length);
+        let at = 0;
+        for(const p of parts) { frame.set(p, at); at += p.length; }
+        this.machine.bus.send("net0-send", frame);
+        this.push(1, request, 0);
+    }
+    else
+    {
+        // receive buffers the driver offers: kept until a frame arrives
+        this.waiting.push(request);
+        this.deliver();
+    }
+};
+
+VirtioMmioNet.prototype.receive = function(frame)
+{
+    this.pending = this.pending || [];
+    this.pending.push(new Uint8Array(frame));
+    if(this.pending.length > 256) this.pending.shift();
+    this.deliver();
+};
+
+/** Put the frames that wait into the buffers that wait */
+VirtioMmioNet.prototype.deliver = function()
+{
+    let any = false;
+    while(this.pending && this.pending.length && this.waiting.length)
+    {
+        const frame = this.pending.shift();
+        const request = this.waiting.shift();
+        const header = new Uint8Array(NET_HEADER);
+        header[10] = 1; // num_buffers
+        const data = new Uint8Array(NET_HEADER + frame.length);
+        data.set(header, 0);
+        data.set(frame, NET_HEADER);
+        let at = 0, written = 0;
+        for(const b of request.buffers)
+        {
+            if(!b.write || at >= data.length) continue;
+            const count = Math.min(b.length, data.length - at);
+            this.mem(b.address, count).set(data.subarray(at, at + count));
+            this.machine.ram_written(b.address, count);
+            at += count;
+            written += count;
+        }
+        this.push(0, request, written);
+        any = true;
+    }
+    if(any) this.interrupt();
+};
+
+VirtioMmioNet.prototype.reset = function()
+{
+    VirtioMmio.prototype.reset.call(this);
+    this.waiting = [];
+    this.pending = [];
+};

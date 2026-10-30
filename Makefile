@@ -317,6 +317,7 @@ a64-boot-tests: build/v86-arm64.wasm build/v86-arm64-parallel.wasm
 	node tests/a64/boot.mjs 1
 	node tests/a64/boot.mjs 2
 	A64_PARALLEL=1 node tests/a64/boot.mjs 2
+	node tests/a64/net.mjs
 
 build/v86-arm64-debug.wasm: $(A64_RUST_FILES) build/softfloat_arm.o build/zstddeclib.o a64/Cargo.toml
 	mkdir -p build/

@@ -18,7 +18,7 @@ import { load_linux } from "./virt/loader.js";
 import {
     A64_PROFILES, ARM32_PROFILE, VIRT_MMIO, VIRT_MMIO_COUNT, VIRT_MMIO_SIZE, VIRT_PCIE_ECAM_HIGH, VIRT_PCIE_ECAM_SIZE, VIRT_RAM_BASE, virt_machine,
 } from "./virt/platform.js";
-import { VirtioMmioBlk, VirtioMmioRng } from "./virtio_mmio.js";
+import { VirtioMmioBlk, VirtioMmioNet, VirtioMmioRng } from "./virtio_mmio.js";
 import { ParallelMachine } from "./parallel/machine.js";
 import { instantiate_v86 } from "./parallel/relocate.js";
 import { COMMAND_RELOAD, COMMAND_RESET } from "./parallel/control.js";
@@ -270,6 +270,8 @@ A64Machine.prototype.init = function(options)
         this.virtio.push(device);
     };
     for(const disk of options.disks || []) add((slot, intid) => new VirtioMmioBlk(this, intid, disk));
+    // (net_device: { mac }: the frames are net0-send and net0-receive events on machine.bus)
+    if(options.net_device) add((slot, intid) => new VirtioMmioNet(this, intid, options.net_device));
     if(options.virtio_rng) add((slot, intid) => new VirtioMmioRng(this, intid));
     if(options.kernel)
     {
