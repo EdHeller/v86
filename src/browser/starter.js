@@ -400,6 +400,12 @@ V86.prototype.continue_init = async function(emulator, options)
             case "cdrom":
                 settings.cdrom = buffer;
                 break;
+            case "firmware_code":
+                settings.firmware_code = buffer.buffer;
+                break;
+            case "firmware_vars":
+                settings.firmware_vars = buffer.buffer;
+                break;
             case "virtio_blk":
                 settings.virtio_blk = buffer;
                 break;
@@ -462,7 +468,7 @@ V86.prototype.continue_init = async function(emulator, options)
             return;
         }
 
-        if(name === "bios" || name === "vga_bios" ||
+        if(name === "bios" || name === "vga_bios" || name === "firmware_code" || name === "firmware_vars" ||
             name === "initial_state" || name === "multiboot" ||
             name === "bzimage" || name === "initrd")
         {
@@ -511,6 +517,12 @@ V86.prototype.continue_init = async function(emulator, options)
     add_file("bzimage", options.bzimage);
     add_file("initrd", options.initrd);
     add_file("virtio_blk", options.virtio_blk);
+    // UEFI (firmware: { code, vars }): OVMF in place of SeaBIOS
+    if(options.firmware)
+    {
+        add_file("firmware_code", options.firmware.code);
+        add_file("firmware_vars", options.firmware.vars);
+    }
     settings.virtio_blk_readonly = !!options.virtio_blk_readonly;
     settings.virtio_rng = !!options.virtio_rng;
     settings.virtio_snd = !!options.virtio_snd;

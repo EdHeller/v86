@@ -1276,16 +1276,19 @@ IDEInterface.prototype.ata_command = function(cmd)
             break;
 
         case ATA_CMD_EXECUTE_DEVICE_DIAGNOSTIC:
-            // the behaviour of this command is independent of the selected device
-            this.channel.master.status_reg = ATA_SR_DRDY|ATA_SR_DSC;
-            this.channel.master.error_reg = 0x01;    // Master drive passed, slave drive passed or not present
-            this.channel.master.push_irq();
-            if(this.channel.slave.drive_connected)
+            // the behaviour of this command is independent of the selected device;
+            // the drives present their signatures as after a reset (ATAPI: 0x14, 0xEB)
+            for(const drive of [this.channel.master, this.channel.slave])
             {
-                this.channel.slave.status_reg = ATA_SR_DRDY|ATA_SR_DSC;
-                this.channel.slave.error_reg = 0x01; // Slave drive passed
-                this.channel.slave.push_irq();
+                if(drive !== this.channel.master && !drive.drive_connected) continue;
+                drive.sector_count_reg = 1;
+                drive.lba_low_reg = 1;
+                drive.lba_mid_reg = drive.is_atapi ? ATAPI_SIGNATURE_LO : 0;
+                drive.lba_high_reg = drive.is_atapi ? ATAPI_SIGNATURE_HI : 0;
+                drive.status_reg = drive.is_atapi ? 0 : ATA_SR_DRDY|ATA_SR_DSC;
+                drive.error_reg = 0x01;    // passed (master: slave passed or not present)
             }
+            this.channel.master.push_irq();
             break;
 
         case ATA_CMD_INITIALIZE_DEVICE_PARAMETERS:

@@ -350,10 +350,17 @@ pub unsafe fn probe_fetch(addr: u64, user: bool) -> Option<u32> {
     // (a valid entry of the tlb already says where the page is, and that the access is permitted)
     let vpn = addr >> 12;
     let e = &raw const TLB[(vpn as usize) & (TLB_SIZE - 1)];
-    if (*e).vpn == vpn && permitted((*e).perm, false, user, true, *cr & CR0_WP != 0, *efer & EFER_NXE != 0) {
-        return Some((*e).phys | (addr & 0xFFF) as u32);
+    let phys = if (*e).vpn == vpn && permitted((*e).perm, false, user, true, *cr & CR0_WP != 0, *efer & EFER_NXE != 0) {
+        (*e).phys | (addr & 0xFFF) as u32
     }
-    walk(addr, false, user, true, false, false).ok().map(|(p, _)| p)
+    else {
+        walk(addr, false, user, true, false, false).ok()?.0
+    };
+    // code in device memory (the firmware's flash) compiles from the region's
+    // memory (code_phys); other mapped memory has none
+    if !memory::in_mapped_range(phys) { return Some(phys) }
+    let code = memory::code_phys(phys);
+    if code != phys { Some(code) } else { None }
 }
 
 pub unsafe fn probe(addr: u64, write: bool, user: bool) -> Option<u32> {
@@ -507,13 +514,13 @@ unsafe fn fetch_byte() -> OrPageFault<u8> {
             trigger_gp(0);
             return Err(());
         }
-        let phys = translate(r, false, user, true)?;
+        let phys = memory::code_phys(translate(r, false, user, true)?);
         FETCH_VPN = r >> 12;
         FETCH_PHYS = phys & !0xFFF;
         FETCH_USER = user;
     }
     let phys = FETCH_PHYS | (lo & 0xFFF);
-    dbg_assert!(!memory::in_mapped_range(phys), "code in mapped memory");
+    dbg_assert!(!memory::in_mapped_range(phys) || phys >= *crate::cpu::global_pointers::memory_size, "code in mapped memory");
     let b = *memory::mem8.offset(phys as isize);
     if lo & 0xFFF != 0xFFF {
         // cannot carry into the upper half

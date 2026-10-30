@@ -33,8 +33,7 @@ export function ACPI(cpu)
         name: "acpi",
     };
 
-    // 00:07.0 Bridge: Intel Corporation 82371AB/EB/MB PIIX4 ACPI (rev 08)
-    cpu.devices.pci.register_device(acpi);
+    this.acpi_pci = acpi;
 
     this.timer_last_value = 0;
     this.timer_imprecision_offset = 0;
@@ -46,51 +45,21 @@ export function ACPI(cpu)
 
     this.gpe = new Uint8Array(4);
 
-    io.register_read(0xB000, this, undefined, function()
+    // the PM I/O block: at 0xB000 (the tables SeaBIOS builds for v86); with
+    // the UEFI firmware where it puts PMBA, as PIIX4's at 00:01.3
+    this.pm_base = -1;
+    if(cpu.firmware)
     {
-        dbg_log("ACPI pm1_status read", LOG_ACPI);
-        return this.pm1_status;
-    });
-    io.register_write(0xB000, this, undefined, function(value)
+        acpi.pci_id = 0x01 << 3 | 3;
+        acpi.on_config_write = () => this.update_pm_base();
+    }
+    else
     {
-        dbg_log("ACPI pm1_status write: " + h(value, 4), LOG_ACPI);
-        this.pm1_status &= ~value;
-    });
+        this.register_pm(0xB000);
+    }
 
-    io.register_read(0xB002, this, undefined, function()
-    {
-        dbg_log("ACPI pm1_enable read", LOG_ACPI);
-        return this.pm1_enable;
-    });
-    io.register_write(0xB002, this, undefined, function(value)
-    {
-        dbg_log("ACPI pm1_enable write: " + h(value), LOG_ACPI);
-        this.pm1_enable = value;
-    });
-
-    // ACPI status
-    io.register_read(0xB004, this, function()
-    {
-        dbg_log("ACPI status read8", LOG_ACPI);
-        return this.status & 0xFF;
-    }, function()
-    {
-        dbg_log("ACPI status read", LOG_ACPI);
-        return this.status;
-    });
-    io.register_write(0xB004, this, undefined, function(value)
-    {
-        dbg_log("ACPI status write: " + h(value), LOG_ACPI);
-        this.status = value;
-    });
-
-    // ACPI, pmtimer
-    io.register_read(0xB008, this, undefined, undefined, function()
-    {
-        var value = this.get_timer(v86.microtick()) & 0xFFFFFF;
-        //dbg_log("pmtimer read: " + h(value >>> 0), LOG_ACPI);
-        return value;
-    });
+    // 00:07.0 Bridge: Intel Corporation 82371AB/EB/MB PIIX4 ACPI (rev 08)
+    this.pci_space = cpu.devices.pci.register_device(acpi);
 
     // PCI hotplug registers of the firmware's DSDT (the slot devices' _STA/_EJ0 and the GPE 1 handler read them):
     // no slot is being inserted (PCIU) or removed (PCID), ejecting does nothing. Unhandled reads return all ones,
@@ -144,6 +113,80 @@ export function ACPI(cpu)
         this.gpe[3] = value;
     });
 }
+
+/**
+ * The PM registers (PM1 status, enable, control, the timer) at `base`
+ * @param {number} base
+ */
+ACPI.prototype.register_pm = function(base)
+{
+    const io = this.cpu.io;
+    if(this.pm_base !== -1)
+    {
+        for(let port = this.pm_base; port < this.pm_base + 0x10; port++)
+        {
+            io.ports[port] = io.create_empty_entry();
+        }
+    }
+    this.pm_base = base;
+    if(base === -1) return;
+
+    io.register_read(base, this, undefined, function()
+    {
+        dbg_log("ACPI pm1_status read", LOG_ACPI);
+        return this.pm1_status;
+    });
+    io.register_write(base, this, undefined, function(value)
+    {
+        dbg_log("ACPI pm1_status write: " + h(value, 4), LOG_ACPI);
+        this.pm1_status &= ~value;
+    });
+
+    io.register_read(base + 2, this, undefined, function()
+    {
+        dbg_log("ACPI pm1_enable read", LOG_ACPI);
+        return this.pm1_enable;
+    });
+    io.register_write(base + 2, this, undefined, function(value)
+    {
+        dbg_log("ACPI pm1_enable write: " + h(value), LOG_ACPI);
+        this.pm1_enable = value;
+    });
+
+    // ACPI status
+    io.register_read(base + 4, this, function()
+    {
+        dbg_log("ACPI status read8", LOG_ACPI);
+        return this.status & 0xFF;
+    }, function()
+    {
+        dbg_log("ACPI status read", LOG_ACPI);
+        return this.status;
+    });
+    io.register_write(base + 4, this, undefined, function(value)
+    {
+        dbg_log("ACPI status write: " + h(value), LOG_ACPI);
+        this.status = value;
+    });
+
+    // ACPI, pmtimer
+    io.register_read(base + 8, this, undefined, undefined, function()
+    {
+        var value = this.get_timer(v86.microtick()) & 0xFFFFFF;
+        //dbg_log("pmtimer read: " + h(value >>> 0), LOG_ACPI);
+        return value;
+    });
+
+};
+
+/** PIIX4: the PM block where PMBA (config 0x40) says, while PMREGMISC (0x80) enables it */
+ACPI.prototype.update_pm_base = function()
+{
+    const space = this.pci_space;
+    space[0x40 >> 2] = space[0x40 >> 2] & 0xFFC0 | 1;
+    const base = space[0x80 >> 2] & 1 ? space[0x40 >> 2] & 0xFFC0 : -1;
+    if(base !== this.pm_base) this.register_pm(base);
+};
 
 ACPI.prototype.timer = function(now)
 {

@@ -95,6 +95,24 @@ pub fn in_mapped_range(addr: u32) -> bool {
     return addr >= 0xA0000 && addr < 0xC0000 || addr >= unsafe { *memory_size };
 }
 
+/// Where instruction fetches read `phys`, as an offset from mem8: the
+/// address itself for RAM, the region's memory for code in device memory
+/// (the UEFI firmware's flash). Such addresses are beyond the guest's RAM,
+/// so nothing compiles from them and they read as mapped.
+#[inline(always)]
+pub fn code_phys(phys: u32) -> u32 {
+    if in_mapped_range(phys) { code_phys_slow(phys) } else { phys }
+}
+#[cold]
+fn code_phys_slow(phys: u32) -> u32 {
+    match unsafe { mmio_ram::read_host(phys & !0xFFF, 4096) } {
+        Some(host) => (host as u32).wrapping_sub(unsafe { mem8 } as u32) | phys & 0xFFF,
+        None => phys,
+    }
+}
+/// RAM, or code in device memory as code_phys gives it
+pub fn fetchable(phys: u32) -> bool { !in_mapped_range(phys) || phys >= unsafe { *memory_size } }
+
 pub const VGA_LFB_ADDRESS: u32 = 0xE0000000;
 pub fn in_svga_lfb(addr: u32) -> bool {
     addr >= VGA_LFB_ADDRESS && unsafe { vga_memory_size != 0 && addr <= VGA_LFB_ADDRESS + (vga_memory_size - 1) }

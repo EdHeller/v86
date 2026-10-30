@@ -2003,10 +2003,10 @@ pub unsafe fn translate_address_read_jit(address: i32) -> OrPageFault<u32> {
     translate_address(address, false, *cpl == 3, true, true, false)
 }
 pub unsafe fn translate_address_fetch(address: i32) -> OrPageFault<u32> {
-    translate_address(address, false, *cpl == 3, false, true, true)
+    Ok(memory::code_phys(translate_address(address, false, *cpl == 3, false, true, true)?))
 }
 pub unsafe fn translate_address_fetch_jit(address: i32) -> OrPageFault<u32> {
-    translate_address(address, false, *cpl == 3, true, true, true)
+    Ok(memory::code_phys(translate_address(address, false, *cpl == 3, true, true, true)?))
 }
 
 pub unsafe fn translate_address_write(address: i32) -> OrPageFault<u32> {
@@ -2705,7 +2705,7 @@ pub unsafe fn read_imm8() -> OrPageFault<i32> {
         *eip_phys = (translate_address_fetch(eip)? ^ eip as u32) as i32;
         *last_virt_eip = eip & !0xFFF
     }
-    dbg_assert!(!memory::in_mapped_range((*eip_phys ^ eip) as u32));
+    dbg_assert!(memory::fetchable((*eip_phys ^ eip) as u32));
     let data8 = *memory::mem8.offset((*eip_phys ^ eip) as isize) as i32;
     *instruction_pointer = eip + 1;
     return Ok(data8);
@@ -2723,7 +2723,7 @@ pub unsafe fn read_imm16() -> OrPageFault<i32> {
         return Ok(read_imm8()? | read_imm8()? << 8);
     }
     else {
-        let data16 = memory::read16((*eip_phys ^ *instruction_pointer) as u32);
+        let data16 = memory::read16_no_mmap_check((*eip_phys ^ *instruction_pointer) as u32);
         *instruction_pointer = *instruction_pointer + 2;
         return Ok(data16);
     };
@@ -2737,7 +2737,7 @@ pub unsafe fn read_imm32s() -> OrPageFault<i32> {
         return Ok(read_imm16()? | read_imm16()? << 16);
     }
     else {
-        let data32 = memory::read32s((*eip_phys ^ *instruction_pointer) as u32);
+        let data32 = memory::read32_no_mmap_check((*eip_phys ^ *instruction_pointer) as u32);
         *instruction_pointer = *instruction_pointer + 4;
         return Ok(data32);
     };
@@ -3557,13 +3557,13 @@ pub unsafe fn get_phys_eip() -> OrPageFault<u32> {
         *last_virt_eip = eip & !0xFFF
     }
     let phys_addr = (*eip_phys ^ eip) as u32;
-    dbg_assert!(!memory::in_mapped_range(phys_addr));
+    dbg_assert!(memory::fetchable(phys_addr));
     return Ok(phys_addr);
 }
 
 unsafe fn jit_run_interpreted(mut phys_addr: u32) {
     profiler::stat_increment(stat::RUN_INTERPRETED);
-    dbg_assert!(!memory::in_mapped_range(phys_addr));
+    dbg_assert!(memory::fetchable(phys_addr));
 
     jit_block_boundary = false;
     let mut i = 0;
@@ -4077,7 +4077,7 @@ pub unsafe fn get_phys_eip_slow_jit(addr: i32) -> i32 {
     match translate_address_fetch_jit(addr) {
         Err(()) => 1,
         Ok(addr_low) => {
-            dbg_assert!(!memory::in_mapped_range(addr_low as u32)); // same assumption as in read_imm8
+            dbg_assert!(memory::fetchable(addr_low as u32)); // same assumption as in read_imm8
             ((addr_low as i32 + memory::mem8 as i32) ^ addr) & !0xFFF
         },
     }

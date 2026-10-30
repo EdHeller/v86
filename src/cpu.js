@@ -1123,6 +1123,7 @@ CPU.prototype.init = function(settings, device_bus)
 
     this.bios.main = settings.bios;
     this.bios.vga = settings.vga_bios;
+    this.firmware = settings.firmware_code ? { code: settings.firmware_code, vars: settings.firmware_vars || null, code_region: -1, vars_region: -1 } : null;
     this.graphics_adapter_plugin = settings.graphics_adapter_plugin;
 
     this.load_bios();
@@ -1204,7 +1205,8 @@ CPU.prototype.init = function(settings, device_bus)
         }
         else if(value === FW_CFG_ID)
         {
-            this.fw_value = i32(0);
+            // the traditional interface (revision 1): OVMF takes 0 for no fw_cfg
+            this.fw_value = i32(this.firmware ? 1 : 0);
         }
         else if(value === FW_CFG_RAM_SIZE)
         {
@@ -1338,6 +1340,12 @@ CPU.prototype.init = function(settings, device_bus)
         {
             ide_config[0][0] = { buffer: settings.hda };
             ide_config[0][1] = { buffer: settings.hdb };
+        }
+        else if(this.firmware)
+        {
+            // (OVMF: the primary channel exists without drives, as QEMU's; an
+            // open bus would keep it waiting for BSY to clear)
+            ide_config[0][0] = { buffer: undefined };
         }
         ide_config[1][0] = { is_cdrom: true, buffer: settings.cdrom };
         this.devices.ide = new IDEController(this, device_bus, ide_config);
@@ -1856,6 +1864,20 @@ CPU.prototype.load_bios = function()
     var bios = this.bios.main;
     var vga_bios = this.bios.vga;
 
+    if(this.firmware)
+    {
+        if(!this.option_roms.some(rom => rom.name === "etc/e820"))
+        {
+            // OVMF: the RAM (QEMU's etc/e820: address, length, type 1)
+            const e820 = new DataView(new ArrayBuffer(20));
+            e820.setUint32(8, this.memory_size[0], true);
+            e820.setUint32(16, 1, true);
+            this.option_roms.push({ name: "etc/e820", data: new Uint8Array(e820.buffer) });
+        }
+        this.load_firmware_flash();
+        return;
+    }
+
     if(!bios)
     {
         dbg_log("Warning: No BIOS");
@@ -2089,6 +2111,45 @@ CPU.prototype.dump_function_code = function(block_ptr, count)
 };
 
 /**
+ * The UEFI firmware (firmware: { code, vars }, OVMF as QEMU runs it): the
+ * variable store and the code end at 4 GiB, the code read-only device
+ * memory the CPU runs from, the store writable device memory (OVMF then
+ * keeps its variables in memory for the session). The last 128 KiB of the
+ * code also appear at 0xE0000, as QEMU's isa-bios alias.
+ */
+CPU.prototype.load_firmware_flash = function()
+{
+    const firmware = this.firmware;
+    const x = this.wm.exports;
+    const code = new Uint8Array(firmware.code);
+    if(firmware.code_region === -1)
+    {
+        const vars = firmware.vars ? new Uint8Array(firmware.vars) : null;
+        const code_base = 2 ** 32 - code.length;
+        const base = code_base - (vars ? vars.length : 0);
+        firmware.code_region = x["mmio_ram_allocate"](code.length);
+        new Uint8Array(this.wasm_memory.buffer, x["mmio_ram_backing"](firmware.code_region) >>> 0, code.length).set(code);
+        x["mmio_ram_set_writable"](firmware.code_region, false);
+        x["mmio_ram_map"](firmware.code_region, code_base | 0);
+        if(vars)
+        {
+            firmware.vars_region = x["mmio_ram_allocate"](vars.length);
+            new Uint8Array(this.wasm_memory.buffer, x["mmio_ram_backing"](firmware.vars_region) >>> 0, vars.length).set(vars);
+            x["mmio_ram_map"](firmware.vars_region, base | 0);
+        }
+        // what device memory does not take (writes to the code)
+        const map_base = base & ~(MMAP_BLOCK_SIZE - 1);
+        this.io.mmap_register(map_base, 2 ** 32 - map_base,
+            addr => { addr >>>= 0; return addr >= code_base ? code[addr - code_base] : 0xFF; },
+            (addr, value) => {});
+        // QEMU's isa-debugcon at 0x402: OVMF writes its log there once the port reads as 0xE9
+        this.io.register_read(0x402, this, () => 0xE9);
+        this.io.register_write(0x402, this, value => { this.bus.send("debug-console-output-byte", value); });
+    }
+    this.write_blob(code.subarray(code.length - 0x20000), 0xE0000);
+};
+
+/**
  * The display adapter plugin's descriptor, if graphics_adapter names one
  * @param {CPU} cpu
  * @return {Object|undefined}
@@ -2172,7 +2233,7 @@ CPU.prototype.debug_init = function()
 {
     if(!DEBUG) return;
 
-    if(this.io)
+    if(this.io && !this.firmware)
     {
         // write seabios debug output to console
         var seabios_debug = "";

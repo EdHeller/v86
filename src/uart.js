@@ -278,7 +278,9 @@ export function UART(cpu, port, bus)
     io.register_read(port | 6, this, function()
     {
         dbg_log("read modem status: " + h(this.modem_status), LOG_SERIAL);
-        const result = this.modem_status;
+        // (loopback: CTS, DSR, RI and DCD are RTS, DTR, OUT1 and OUT2)
+        const result = this.modem_control & UART_MCR_LOOPBACK ?
+            this.modem_status & 0x0F | (this.modem_control & 0x0F) << 4 : this.modem_status;
         // clear MSR delta bits and interrupt flag
         this.modem_status &= 0xF0;
         this.ClearInterrupt(UART_IIR_MSI);

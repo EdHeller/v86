@@ -2178,6 +2178,10 @@ pub fn jit_increase_hotness_and_maybe_compile(
     if unsafe { JIT_DISABLED } {
         return;
     }
+    // (code in device memory, the firmware's flash: interpreted)
+    if phys_address >= unsafe { *crate::cpu::global_pointers::memory_size } {
+        return;
+    }
 
     let mut ctx = get_jit_state();
     let is_compiling = ctx.compiling.is_some();
