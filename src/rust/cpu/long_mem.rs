@@ -285,6 +285,12 @@ pub unsafe fn probe_fetch(addr: u64, user: bool) -> Option<u32> {
     if !is_canonical(addr) {
         return None;
     }
+    // (a valid entry of the tlb already says where the page is, and that the access is permitted)
+    let vpn = addr >> 12;
+    let e = &raw const TLB[(vpn as usize) & (TLB_SIZE - 1)];
+    if (*e).vpn == vpn && permitted((*e).perm, false, user, true, *cr & CR0_WP != 0, *efer & EFER_NXE != 0) {
+        return Some((*e).phys | (addr & 0xFFF) as u32);
+    }
     walk(addr, false, user, true, false, false).ok().map(|(p, _)| p)
 }
 

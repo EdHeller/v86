@@ -464,6 +464,7 @@ enum Insn {
     Str { opcode: u8, rep: u8, bits: u32, asz32: bool, seg: i32 },
     Neg { bits: u32, dst: Opd },
     Not { bits: u32, dst: Opd },
+    Bswap { bits: u32, reg: u8 },
     Imul { bits: u32, dst: u8, a: Opd, b: Opd },
     CallInd { src: Opd },
     JmpInd { src: Opd },
@@ -500,7 +501,7 @@ fn kind(i: &Insn) -> u32 {
         Insn::Nop => 16,
         Insn::Bt { .. } => 17,
         Insn::Str { .. } => 18,
-        Insn::Neg { .. } | Insn::Not { .. } => 19,
+        Insn::Neg { .. } | Insn::Not { .. } | Insn::Bswap { .. } => 19,
         Insn::Imul { .. } => 20,
         Insn::CallInd { .. } | Insn::JmpInd { .. } => 21,
         Insn::Xchg { .. } => 22,
@@ -859,6 +860,12 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                     let m = modrm(&mut c, &p)?;
                     Insn::Imul { bits: osz, dst: m.reg, a: Opd::Reg(m.reg, true), b: m.rm }
                 },
+                0xC8..=0xCF => {
+                    if p.osz16 {
+                        return None;
+                    }
+                    Insn::Bswap { bits: if p.w() { 64 } else { 32 }, reg: (op2 & 7) | p.b() }
+                },
                 0xA3 | 0xAB | 0xB3 | 0xBB => {
                     let m = modrm(&mut c, &p)?;
                     let op = match op2 {
@@ -981,6 +988,7 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::Str { .. } => (false, false, true),
         Insn::Neg { dst, .. } => (false, true, has_mem(&dst)),
         Insn::Not { dst, .. } => (false, false, has_mem(&dst)),
+        Insn::Bswap { .. } => (false, false, false),
         Insn::Imul { a, b, .. } => (false, true, has_mem(&a) || has_mem(&b)),
         Insn::CallInd { .. } => (false, false, true),
         Insn::JmpInd { src } => (false, false, has_mem(&src)),
@@ -992,6 +1000,75 @@ fn flag_fx(i: &Insn) -> FlagFx {
 }
 
 /// writes memory in a way the VERIFY undo log does not see (string instructions run through the interpreter)
+/// Length of any instruction of 64-bit mode that is not a relative branch or a VEX / EVEX one (None
+/// for those): what the interpreter can run for the block when no template exists
+fn full_len(code: &[u8]) -> Option<usize> {
+    let mut c = Cursor { code, pos: 0 };
+    let mut p = Pfx { rex: 0, has_rex: false, osz16: false, asz32: false, seg: -1 };
+    let opcode = loop {
+        let b = c.u8()?;
+        match b {
+            0x66 => p.osz16 = true,
+            0x67 => p.asz32 = true,
+            0xF2 | 0xF3 | 0xF0 | 0x26 | 0x2E | 0x36 | 0x3E => {},
+            0x64 => p.seg = FS,
+            0x65 => p.seg = GS,
+            0x40..=0x4F => {
+                p.rex = b;
+                p.has_rex = true;
+                break c.u8()?;
+            },
+            _ => break b,
+        }
+    };
+    let isz = if p.osz16 { 2 } else { 4 };
+    let skip = |c: &mut Cursor, n: usize| -> Option<()> {
+        if c.pos + n > c.code.len() { return None }
+        c.pos += n;
+        Some(())
+    };
+    match opcode {
+        0x0F => {
+            let op2 = c.u8()?;
+            match op2 {
+                0x00..=0x03 | 0x0D | 0x10..=0x1F | 0x20..=0x23 | 0x28..=0x2F | 0x40..=0x6F | 0x74..=0x76 | 0x78 | 0x79
+                | 0x7C..=0x7F | 0x90..=0x9F | 0xA3 | 0xA5 | 0xAB | 0xAD | 0xAE | 0xAF | 0xB0..=0xB9 | 0xBB..=0xBF | 0xC0 | 0xC1
+                | 0xC3 | 0xC7 | 0xD0..=0xFF => { modrm(&mut c, &p)?; },
+                0x70..=0x73 | 0xA4 | 0xAC | 0xBA | 0xC2 | 0xC4..=0xC6 => { modrm(&mut c, &p)?; skip(&mut c, 1)?; },
+                0x05..=0x09 | 0x0B | 0x0E | 0x30..=0x37 | 0x77 | 0xA0 | 0xA1 | 0xA2 | 0xA8 | 0xA9 | 0xC8..=0xCF => {},
+                0x38 => { c.u8()?; modrm(&mut c, &p)?; },
+                0x3A => { c.u8()?; modrm(&mut c, &p)?; skip(&mut c, 1)?; },
+                _ => return None,
+            }
+        },
+        0x00..=0x3F => match opcode & 7 {
+            0..=3 => { modrm(&mut c, &p)?; },
+            4 => skip(&mut c, 1)?,
+            5 => skip(&mut c, isz)?,
+            _ => return None,
+        },
+        0x50..=0x5F | 0x6C..=0x6F | 0x90..=0x99 | 0x9B..=0x9F | 0xA4..=0xA7 | 0xAA..=0xAF | 0xC9 | 0xCF | 0xD7 | 0xEC..=0xEF
+        | 0xF1 | 0xF4 | 0xF5 | 0xF8..=0xFD => {},
+        0x63 | 0x84..=0x8F | 0xD0..=0xD3 | 0xD8..=0xDF | 0xFE | 0xFF => { modrm(&mut c, &p)?; },
+        0x68 => skip(&mut c, isz)?,
+        0x69 | 0x81 | 0xC7 => { modrm(&mut c, &p)?; skip(&mut c, isz)?; },
+        0x6A | 0xA8 | 0xB0..=0xB7 | 0xE4..=0xE7 => skip(&mut c, 1)?,
+        0x6B | 0x80 | 0x83 | 0xC0 | 0xC1 | 0xC6 => { modrm(&mut c, &p)?; skip(&mut c, 1)?; },
+        0xA0..=0xA3 => skip(&mut c, if p.asz32 { 4 } else { 8 })?,
+        0xA9 => skip(&mut c, isz)?,
+        0xB8..=0xBF => skip(&mut c, if p.w() { 8 } else { isz })?,
+        0xC8 => skip(&mut c, 3)?,
+        0xF6 | 0xF7 => {
+            let m = modrm(&mut c, &p)?;
+            if m.reg & 7 < 2 {
+                skip(&mut c, if opcode == 0xF6 { 1 } else { isz })?;
+            }
+        },
+        _ => return None,
+    }
+    Some(c.pos)
+}
+
 /// Length of an instruction the jit cannot compile but can hand to the interpreter one at a time
 /// (system and flag instructions, cmpxchg / xadd / bsf / bsr, the SSE moves and logic ops)
 fn interp_len(code: &[u8]) -> Option<usize> {
@@ -1209,15 +1286,28 @@ impl<'a> Gen<'a> {
 
     /// leave the block, continuing at `target`
     fn exit_const(&mut self, target: u64, extra: i32) {
+        self.exit_const_kind(target, extra, 1);
+    }
+
+    fn exit_const_kind(&mut self, target: u64, extra: i32, kind: i32) {
         self.materialize();
         self.store_rip(target);
         self.push_counter_update(extra);
+        self.set_exit_kind(kind);
         self.b.return_();
+    }
+
+    /// debugging: why the module returned (read by the dispatcher)
+    fn set_exit_kind(&mut self, kind: i32) {
+        self.b.const_i32(unsafe { &raw const EXIT_KIND } as i32);
+        self.b.const_i32(kind);
+        self.b.store_aligned_i32(0);
     }
 
     /// leave the block without touching rip (an exception has redirected it already)
     fn exit_keep_rip(&mut self) {
         self.push_counter_update(self.n);
+        self.set_exit_kind(2);
         self.b.return_();
     }
 
@@ -1250,6 +1340,7 @@ impl<'a> Gen<'a> {
         self.b.free_local_i64(tt);
         self.b.free_local(t);
         self.push_counter_update(0);
+        self.set_exit_kind(3);
         self.b.return_();
     }
 
@@ -1286,7 +1377,7 @@ impl<'a> Gen<'a> {
         let next = self.next;
         // the exit stores pending flags, the code that follows still has them pending
         let saved = self.pending;
-        self.exit_const(next, self.n);
+        self.exit_const_kind(next, self.n, 4);
         self.pending = saved;
         self.b.block_end();
     }
@@ -2218,6 +2309,27 @@ impl<'a> Gen<'a> {
                 self.mask_result(bits);
                 self.write_opd_saved(&dst, bits);
             },
+            Insn::Bswap { bits, reg } => {
+                self.get_reg(reg, bits, true);
+                self.b.set_local_i64(&self.t_v);
+                if bits == 32 {
+                    bswap32(&mut *self.b, &self.t_v);
+                }
+                else {
+                    let hi = self.b.new_local_i64();
+                    self.b.get_local_i64(&self.t_v);
+                    self.b.const_i64(32);
+                    self.b.shr_u_i64();
+                    self.b.set_local_i64(&hi);
+                    bswap32(&mut *self.b, &self.t_v);
+                    self.b.const_i64(32);
+                    self.b.shl_i64();
+                    bswap32(&mut *self.b, &hi);
+                    self.b.or_i64();
+                    self.b.free_local_i64(hi);
+                }
+                self.set_reg(reg, bits, true);
+            },
             Insn::Imul { bits, dst, a, b } => {
                 self.set_previous_ip();
                 self.pending = None;
@@ -2482,7 +2594,28 @@ fn search(b: &mut WasmBuilder, key: &WasmLocal, keys: &[i32], lo: usize, hi: usi
     }
 }
 
-unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16], spec: &[u16]) -> Option<u32> {
+/// pushes the byte swapped low 32 bits of the i64 local `v` (as an i64)
+fn bswap32(b: &mut WasmBuilder, v: &WasmLocalI64) {
+    let terms: [(u64, i64); 4] = [(0xFF, 24), (0xFF00, 8), (0xFF00, -8), (0xFF, -24)];
+    for (i, &(mask, shift)) in terms.iter().enumerate() {
+        b.get_local_i64(v);
+        if shift < 0 {
+            b.const_i64(-shift);
+            b.shr_u_i64();
+        }
+        b.const_i64(mask as i64);
+        b.and_i64();
+        if shift > 0 {
+            b.const_i64(shift);
+            b.shl_i64();
+        }
+        if i > 0 {
+            b.or_i64();
+        }
+    }
+}
+
+unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds: &[u16], spec: &[u16]) -> Option<u32> {
     use std::collections::{BTreeMap, BTreeSet};
 
     // discover the reachable instructions
@@ -2510,13 +2643,20 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16], sp
             }
             let decoded_insn = decode(&code[off..], rip.wrapping_add(off as u64)).or_else(|| {
                 if DISABLE_MASK >> 24 & 1 != 0 { return None }
-                interp_len(&code[off..]).map(|l| (Insn::Interp, l))
+                interp_len(&code[off..]).or_else(|| full_len(&code[off..])).map(|l| (Insn::Interp, l))
+            }).or_else(|| {
+                // an instruction that continues into the next page: the interpreter runs it (the length
+                // comes from the bytes after the page if they are the next page's: it checks)
+                if DISABLE_MASK >> 24 & 1 != 0 || off + 15 <= code.len() || ext.len() <= code.len() { return None }
+                let w = &ext[off..];
+                let l = decode(w, rip.wrapping_add(off as u64)).map(|(_, l)| l).or_else(|| interp_len(w)).or_else(|| full_len(w))?;
+                if off + l > code.len() { Some((Insn::Interp, l)) } else { None }
             });
             let Some((insn, len)) = decoded_insn else {
                 count_unsupported(&code[off..]);
                 break;
             };
-            if off + len > code.len() {
+            if off + len > code.len() && !matches!(insn, Insn::Interp) {
                 break;
             }
             match insn {
@@ -2524,10 +2664,11 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], seeds: &[u16], sp
                 Insn::Call { target } if !is_canonical(target) => break,
                 _ => {},
             }
-            if owner[off..off + len].iter().any(|&o| o != 0xFFFF) {
+            let end = (off + len).min(code.len());
+            if owner[off..end].iter().any(|&o| o != 0xFFFF) {
                 break;
             }
-            for o in owner[off..off + len].iter_mut() {
+            for o in owner[off..end].iter_mut() {
                 *o = off as u16;
             }
             decoded.insert(off, (insn, len));
@@ -2871,6 +3012,49 @@ pub unsafe fn run() {
         }
     }
     let before = rip();
+    if HIST_ON || STEP_PROFILE_ON || HEAT_LIMIT > 0 {
+        interp_hooks(before, checked);
+        AFTER_EXIT = false;
+        long_mode::step64();
+        let after = rip();
+        if after.wrapping_sub(before) > 15 || THRESHOLD == 0 || (after ^ before) >> 12 != 0 {
+            CHECK = true;
+            TAIL_KIND = 0;
+        }
+        return;
+    }
+    // interpret on: the straight-line code up to the next jump (a potential block start) and the
+    // instructions that need the caller's attention
+    let start = *instruction_counter;
+    let mut before = before;
+    loop {
+        long_mode::step64();
+        let after = rip();
+        if after.wrapping_sub(before) > 15 || THRESHOLD == 0 || (after ^ before) >> 12 != 0 {
+            CHECK = true;
+            return;
+        }
+        before = after;
+        if interrupt_shadow || *in_hlt || super::cpu::IRQ_CHECK || super::smp::YIELD || *flags & FLAG_TRAP != 0 || !*is_64
+            || (*instruction_counter).wrapping_sub(start) >= 24
+        {
+            return;
+        }
+    }
+}
+
+#[inline(never)]
+unsafe fn interp_hooks(before: u64, checked: bool) {
+    if AFTER_EXIT { TAIL_KIND = EXIT_KIND as usize & 7 }
+    TAIL_COUNT[TAIL_KIND] = TAIL_COUNT[TAIL_KIND].wrapping_add(1);
+    if HIST_ON {
+        if let Some(p) = probe_fetch(before, *cpl == 3) {
+            #[allow(static_mut_refs)]
+            let m = PHYS_PAGE_COUNT.get_or_insert_with(HashMap::new);
+            let e = m.entry(block_key(p & !0xFFF, *cpl == 3)).or_insert((0, before));
+            e.0 += 1;
+        }
+    }
     if HIST_ON {
         let why = if !checked { let s = &state().slots[slot_index(before)]; if s.rip == before && s.state == SLOT_READY && s.user == (*cpl == 3) { 4 } else { 0 } } else {
             let st = state();
@@ -2913,15 +3097,38 @@ pub unsafe fn run() {
         step_profile_record();
     }
     page_heat(before);
-    long_mode::step64();
-    let after = rip();
-    // a jump (or an exception): rip is a potential block start. In testing mode (threshold 0)
-    // every instruction is a potential block start.
-    if after.wrapping_sub(before) > 15 || THRESHOLD == 0 {
-        CHECK = true;
-    }
+    page_heat(before);
 }
 
+pub static mut PHYS_PAGE_COUNT: Option<HashMap<u64, (u32, u64)>> = None;
+
+/// debugging: (pages, interpreted instructions) of the pages that were interpreted at least `thr` instructions
+#[allow(static_mut_refs)]
+pub unsafe fn page_dist(thr: u32, what: u32) -> u32 {
+    let mut r = (0u32, 0u32);
+    if let Some(m) = PHYS_PAGE_COUNT.as_ref() {
+        for &(c, _) in m.values() {
+            if c >= thr { r.0 += 1; r.1 = r.1.wrapping_add(c) }
+        }
+    }
+    if what == 0 { r.0 } else { r.1 }
+}
+/// debugging: the i-th busiest page: what 0 key, 1 count, 2 rip low, 3 rip high
+#[allow(static_mut_refs)]
+pub unsafe fn top_page(i: u32, what: u32) -> u32 {
+    let Some(m) = PHYS_PAGE_COUNT.as_ref() else { return 0 };
+    let mut v: Vec<(u64, (u32, u64))> = m.iter().map(|(&k, &c)| (k, c)).collect();
+    v.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    match v.get(i as usize) {
+        Some(&(k, (c, r))) => match what { 0 => k as u32, 1 => c, 2 => r as u32, _ => (r >> 32) as u32 },
+        None => 0,
+    }
+}
+pub static mut PHYS_DUMP_BASE: u32 = 0;
+pub unsafe fn phys_byte(phys: u32) -> u32 { *crate::cpu::memory::mem8.offset(phys as isize) as u32 }
+pub static mut EXIT_KIND: i32 = 0;
+pub static mut TAIL_KIND: usize = 0;
+pub static mut TAIL_COUNT: [u32; 8] = [0; 8];
 static mut AFTER_EXIT: bool = false;
 static mut RMW_HIT: bool = false;
 
@@ -3160,7 +3367,8 @@ unsafe fn try_run_block() -> bool {
             if slot.count < limit {
                 return false;
             }
-            let Some(phys) = probe_fetch(r, user) else { return false };
+            INTERP_WHY[12] = INTERP_WHY[12].wrapping_add(1);
+            let Some(phys) = probe_fetch(r, user) else { INTERP_WHY[13] = INTERP_WHY[13].wrapping_add(1); return false };
             if slot.limit == 0 {
                 let backoff = st.invalidations.get(&((phys >> 12) as u64)).copied().unwrap_or(0) as u32;
                 if backoff != 0 && BACKOFF_CAP != 0 {
@@ -3187,6 +3395,7 @@ unsafe fn try_run_block() -> bool {
             slot.limit = 0;
             let needs = st.blocks.get(&key).map_or(true, |b| !bit(&b.served, off) && !bit(&b.failed, off));
             if needs {
+                INTERP_WHY[14] = INTERP_WHY[14].wrapping_add(1);
                 compile(r, user);
             }
             refill_slot(r, key, off);
@@ -3240,6 +3449,9 @@ unsafe fn compile(r: u64, user: bool) {
     let offset = (phys & 0xFFF) as usize;
     let code = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset((phys & !0xFFF) as isize), 0x1000);
     let page_rip = r & !0xFFF;
+    // (plus the first bytes of the next physical page, for the length of the instruction that crosses into it)
+    let ext_len = if (phys & !0xFFF) as u64 + 0x1000 + 16 <= *memory_size as u64 { 0x1000 + 16 } else { 0x1000 };
+    let ext = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset((phys & !0xFFF) as isize), ext_len);
     let st = state();
     let (mut seeds, compiles, mut failed, heuristic) = match st.blocks.get(&key) {
         Some(b) => (b.seeds.clone(), b.compiles, b.failed, b.heuristic),
@@ -3262,7 +3474,7 @@ unsafe fn compile(r: u64, user: bool) {
     }
     let out_of_range = r < RANGE_LO || r >= RANGE_HI;
     let mut old = None;
-    let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, &seeds, &spec), |index| {
+    let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, ext, &seeds, &spec), |index| {
         // registered before the module is handed to the host, which may finish synchronously
         if (STAT_COMPILED as usize) < 64 { COMPILED_RIPS[STAT_COMPILED as usize] = r as u32 }
         STAT_COMPILED += 1;
