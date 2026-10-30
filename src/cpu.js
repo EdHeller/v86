@@ -72,6 +72,14 @@ const DUMP_GENERATED_WASM = false;
 const DUMP_UNCOMPILED_ASSEMBLY = false;
 
 /** @constructor */
+/** QEMU's fw_cfg items of -kernel: [part, "addr" | "size" | "data"] */
+const FW_CFG_KERNEL_ITEMS = {
+    0x07: ["kernel", "addr"], 0x08: ["kernel", "size"], 0x11: ["kernel", "data"],
+    0x0A: ["initrd", "addr"], 0x0B: ["initrd", "size"], 0x12: ["initrd", "data"],
+    0x13: ["cmdline", "addr"], 0x14: ["cmdline", "size"], 0x15: ["cmdline", "data"],
+    0x16: ["setup", "addr"], 0x17: ["setup", "size"], 0x18: ["setup", "data"],
+};
+
 export function CPU(bus, wm, stop_idling)
 {
     this.stop_idling = stop_idling;
@@ -1128,7 +1136,21 @@ CPU.prototype.init = function(settings, device_bus)
 
     this.load_bios();
 
-    if(settings.bzimage)
+    if(settings.bzimage && this.firmware)
+    {
+        // UEFI: the kernel as QEMU's -kernel hands it over (fw_cfg setup,
+        // kernel, initrd and command line items), started by OVMF's EFI stub loader
+        const image = new Uint8Array(settings.bzimage);
+        const setup_size = ((image[0x1F1] || 4) + 1) * 512;
+        const cmdline = new TextEncoder().encode((settings.cmdline || "") + "\0");
+        this.firmware.kernel = {
+            setup: image.subarray(0, setup_size),
+            kernel: image.subarray(setup_size),
+            initrd: settings.initrd ? new Uint8Array(settings.initrd) : new Uint8Array(0),
+            cmdline,
+        };
+    }
+    else if(settings.bzimage)
     {
         const option_rom = load_kernel(this.mem8, settings.bzimage, settings.initrd, settings.cmdline || "");
 
@@ -1202,6 +1224,12 @@ CPU.prototype.init = function(settings, device_bus)
         {
             // Pretend to be qemu (for seabios)
             this.fw_value = i32(FW_CFG_SIGNATURE_QEMU);
+        }
+        else if(this.firmware && this.firmware.kernel && FW_CFG_KERNEL_ITEMS[value] !== undefined)
+        {
+            const kernel = this.firmware.kernel;
+            const [part, what] = FW_CFG_KERNEL_ITEMS[value];
+            this.fw_value = what === "data" ? kernel[part] : i32(what === "size" ? kernel[part].length : 0);
         }
         else if(value === FW_CFG_ID)
         {
