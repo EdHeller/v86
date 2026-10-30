@@ -4044,6 +4044,8 @@ static mut PENDING_SEEDS: bool = true;
 static mut PENDING_AFTER: u32 = 8;
 /// noted entries of a page that make it compile again right away (0: only at the threshold)
 static mut PENDING_BATCH: usize = 0;
+/// warm entries of a page without a module that make it compile (0: only at the threshold)
+static mut PENDING_FIRST: usize = 4;
 /// supervisor pages: their likely function starts are entries from the first compile on
 /// (kernel code is reached through function pointers that direct calls never lead to)
 static mut HEURISTIC_KERNEL: bool = false;
@@ -4290,11 +4292,18 @@ unsafe fn try_run_block() -> bool {
                 // (visited a few times: worth an entry when the page is compiled next)
                 if let Some(phys) = probe_fetch(r, user) {
                     let key = block_key(phys & !0xFFF, user);
-                    if st.blocks.contains_key(&key) {
+                    let has_module = st.blocks.contains_key(&key);
+                    if has_module || PENDING_FIRST != 0 {
                         let v = st.pending_seeds.entry(key).or_default();
                         let off = (phys & 0xFFF) as u16;
                         if v.len() < 256 && !v.contains(&off) {
                             v.push(off);
+                            // a page without a module whose code is warm in several places: compiled now
+                            if !has_module && PENDING_FIRST != 0 && v.len() >= PENDING_FIRST {
+                                compile(r, user);
+                                refill_slot(r, key, off as usize);
+                                return false;
+                            }
                             // enough of them: the page is compiled again now, with all of them
                             if v.len() >= PENDING_BATCH && PENDING_BATCH != 0 {
                                 compile(r, user);
