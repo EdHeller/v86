@@ -1220,6 +1220,61 @@ fn flag_liveness(
 }
 
 // ---------------------------------------------------------------------------------------------
+// registers an instruction uses
+
+fn opd_regs(o: &Opd, reads: &mut u16, writes: &mut u16) {
+    match *o {
+        Opd::Reg(n, rex) => {
+            // (without a REX prefix the byte registers ah..bh are the second byte of registers 0..3: both)
+            let m = if !rex && (4..8).contains(&n) { 1 << n | 1 << (n - 4) } else { 1 << n };
+            *reads |= m;
+            *writes |= m;
+        },
+        Opd::Mem(ea) => ea_regs(&ea, reads),
+        Opd::Imm(_) => {},
+    }
+}
+
+fn ea_regs(ea: &Ea, reads: &mut u16) {
+    if ea.base != NONE { *reads |= 1 << ea.base }
+    if ea.index != NONE { *reads |= 1 << ea.index }
+}
+
+/// the registers (as bit masks) an instruction may read and may write, implicit ones included
+fn insn_regs(i: &Insn) -> (u16, u16) {
+    let (mut r, mut w) = (0u16, 0u16);
+    match *i {
+        Insn::Alu { dst, src, .. } => { opd_regs(&dst, &mut r, &mut w); opd_regs(&src, &mut r, &mut w); },
+        Insn::Test { a, b, .. } => { opd_regs(&a, &mut r, &mut w); opd_regs(&b, &mut r, &mut w); },
+        Insn::Mov { dst, src, .. } => { opd_regs(&dst, &mut r, &mut w); opd_regs(&src, &mut r, &mut w); },
+        Insn::MovExt { dst, src, .. } => { opd_regs(&src, &mut r, &mut w); r |= 1 << dst; w |= 1 << dst; },
+        Insn::Lea { dst, ea, .. } => { ea_regs(&ea, &mut r); r |= 1 << dst; w |= 1 << dst; },
+        Insn::Push { src, .. } => { opd_regs(&src, &mut r, &mut w); r |= 1 << 4; w |= 1 << 4; },
+        Insn::Pop { dst, .. } => { r |= 1 << dst | 1 << 4; w |= 1 << dst | 1 << 4; },
+        Insn::IncDec { dst, .. } => opd_regs(&dst, &mut r, &mut w),
+        Insn::Shift { dst, count, .. } => {
+            opd_regs(&dst, &mut r, &mut w);
+            if matches!(count, Count::Cl) { r |= 1 << 1 }
+        },
+        Insn::Setcc { dst, .. } => opd_regs(&dst, &mut r, &mut w),
+        Insn::Cmov { dst, src, .. } => { opd_regs(&src, &mut r, &mut w); r |= 1 << dst; w |= 1 << dst; },
+        Insn::Jcc { .. } | Insn::Jmp { .. } | Insn::Nop | Insn::Interp => {},
+        Insn::Call { .. } | Insn::Ret { .. } => { r |= 1 << 4; w |= 1 << 4; },
+        Insn::Leave { .. } => { r |= 1 << 4 | 1 << 5; w |= 1 << 4 | 1 << 5; },
+        Insn::Bt { dst, idx, .. } => { opd_regs(&dst, &mut r, &mut w); opd_regs(&idx, &mut r, &mut w); },
+        Insn::Str { .. } => { r |= 1 << 0 | 1 << 6 | 1 << 7; w |= 1 << 0 | 1 << 6 | 1 << 7; },
+        Insn::Neg { dst, .. } | Insn::Not { dst, .. } => opd_regs(&dst, &mut r, &mut w),
+        Insn::Bswap { reg, .. } => { r |= 1 << reg; w |= 1 << reg; },
+        Insn::Imul { dst, a, b, .. } => { opd_regs(&a, &mut r, &mut w); opd_regs(&b, &mut r, &mut w); r |= 1 << dst; w |= 1 << dst; },
+        Insn::CallInd { src } => { opd_regs(&src, &mut r, &mut w); r |= 1 << 4; w |= 1 << 4; },
+        Insn::JmpInd { src } => opd_regs(&src, &mut r, &mut w),
+        Insn::Xchg { a, b, .. } => { opd_regs(&a, &mut r, &mut w); opd_regs(&b, &mut r, &mut w); },
+        Insn::Sext { opcode, .. } => { r |= 1 << 0; w |= 1 << 0; if opcode == 0x99 { w |= 1 << 2; r |= 1 << 2 } },
+    }
+    (r | w, w)
+}
+
+// ---------------------------------------------------------------------------------------------
 // code generation
 
 fn lo_addr(n: u8) -> u32 {
@@ -1265,6 +1320,11 @@ struct Gen<'a> {
     smc_needed: bool,
     /// the block around the whole module: every exit stores its state in x_* and branches to its end,
     /// where the epilogue (rip, instruction counter, chaining) is emitted once
+    /// the 16 guest registers: loaded when the module is entered, stored when it is left
+    regs: Vec<WasmLocalI64>,
+    /// the registers the module reads (loaded when it is entered) and writes (stored when it is left)
+    reg_loaded: u16,
+    reg_written: u16,
     exit_label: Label,
     x_rip: WasmLocalI64,
     x_extra: WasmLocal,
@@ -1413,6 +1473,19 @@ impl<'a> Gen<'a> {
 
     /// the common end of the module: stores rip, counts the instructions and chains or returns
     fn epilogue(&mut self) {
+        for n in 0..16u8 {
+            if self.reg_written >> n & 1 == 0 { continue }
+            self.b.const_i32(lo_addr(n) as i32);
+            self.b.get_local_i64(&self.regs[n as usize]);
+            self.b.wrap_i64_to_i32();
+            self.b.store_aligned_i32(0);
+            self.b.const_i32(hi_addr(n) as i32);
+            self.b.get_local_i64(&self.regs[n as usize]);
+            self.b.const_i64(32);
+            self.b.shr_u_i64();
+            self.b.wrap_i64_to_i32();
+            self.b.store_aligned_i32(0);
+        }
         self.b.const_i32(instruction_pointer as i32);
         self.b.get_local_i64(&self.x_rip);
         self.b.wrap_i64_to_i32();
@@ -1539,38 +1612,30 @@ impl<'a> Gen<'a> {
     }
 
     fn get_reg_inner(&mut self, n: u8, bits: u32, rex: bool) {
+        dbg_assert!(self.reg_loaded >> (if !rex && bits == 8 && (4..8).contains(&n) { n - 4 } else { n }) & 1 != 0, "jit64: register {} is not loaded", n);
         match bits {
-            64 => {
-                self.load_lo(n);
-                self.b.extend_unsigned_i32_to_i64();
-                self.b.load_fixed_i32(hi_addr(n));
-                self.b.extend_unsigned_i32_to_i64();
-                self.b.const_i64(32);
-                self.b.shl_i64();
-                self.b.or_i64();
-            },
+            64 => self.b.get_local_i64(&self.regs[n as usize]),
             32 => {
-                self.load_lo(n);
+                self.b.get_local_i64(&self.regs[n as usize]);
+                self.b.wrap_i64_to_i32();
                 self.b.extend_unsigned_i32_to_i64();
             },
             16 => {
-                self.load_lo(n);
-                self.b.const_i32(0xFFFF);
-                self.b.and_i32();
-                self.b.extend_unsigned_i32_to_i64();
+                self.b.get_local_i64(&self.regs[n as usize]);
+                self.b.const_i64(0xFFFF);
+                self.b.and_i64();
             },
             _ => {
                 if !rex && (4..8).contains(&n) {
-                    self.load_lo(n - 4);
-                    self.b.const_i32(8);
-                    self.b.shr_u_i32();
+                    self.b.get_local_i64(&self.regs[n as usize - 4]);
+                    self.b.const_i64(8);
+                    self.b.shr_u_i64();
                 }
                 else {
-                    self.load_lo(n);
+                    self.b.get_local_i64(&self.regs[n as usize]);
                 }
-                self.b.const_i32(0xFF);
-                self.b.and_i32();
-                self.b.extend_unsigned_i32_to_i64();
+                self.b.const_i64(0xFF);
+                self.b.and_i64();
             },
         }
     }
@@ -1583,72 +1648,38 @@ impl<'a> Gen<'a> {
     }
 
     fn set_reg_inner(&mut self, n: u8, bits: u32, rex: bool) {
-        let t = self.b.set_new_local_i64();
         match bits {
-            64 => {
-                self.b.const_i32(lo_addr(n) as i32);
-                self.b.get_local_i64(&t);
-                self.b.wrap_i64_to_i32();
-                self.b.store_aligned_i32(0);
-                self.b.const_i32(hi_addr(n) as i32);
-                self.b.get_local_i64(&t);
-                self.b.const_i64(32);
-                self.b.shr_u_i64();
-                self.b.wrap_i64_to_i32();
-                self.b.store_aligned_i32(0);
-            },
+            64 => self.b.set_local_i64(&self.regs[n as usize]),
             32 => {
-                self.b.const_i32(lo_addr(n) as i32);
-                self.b.get_local_i64(&t);
                 self.b.wrap_i64_to_i32();
-                self.b.store_aligned_i32(0);
-                self.b.const_i32(hi_addr(n) as i32);
-                self.b.const_i32(0);
-                self.b.store_aligned_i32(0);
+                self.b.extend_unsigned_i32_to_i64();
+                self.b.set_local_i64(&self.regs[n as usize]);
             },
             16 => {
-                self.b.const_i32(lo_addr(n) as i32);
-                self.load_lo(n);
-                self.b.const_i32(-0x10000);
-                self.b.and_i32();
-                self.b.get_local_i64(&t);
-                self.b.wrap_i64_to_i32();
-                self.b.const_i32(0xFFFF);
-                self.b.and_i32();
-                self.b.or_i32();
-                self.b.store_aligned_i32(0);
+                self.b.const_i64(0xFFFF);
+                self.b.and_i64();
+                self.b.get_local_i64(&self.regs[n as usize]);
+                self.b.const_i64(!0xFFFF);
+                self.b.and_i64();
+                self.b.or_i64();
+                self.b.set_local_i64(&self.regs[n as usize]);
             },
             _ => {
-                if !rex && (4..8).contains(&n) {
-                    let n = n - 4;
-                    self.b.const_i32(lo_addr(n) as i32);
-                    self.load_lo(n);
-                    self.b.const_i32(!0xFF00);
-                    self.b.and_i32();
-                    self.b.get_local_i64(&t);
-                    self.b.wrap_i64_to_i32();
-                    self.b.const_i32(0xFF);
-                    self.b.and_i32();
-                    self.b.const_i32(8);
-                    self.b.shl_i32();
-                    self.b.or_i32();
-                    self.b.store_aligned_i32(0);
+                let high = !rex && (4..8).contains(&n);
+                let r = if high { n as usize - 4 } else { n as usize };
+                self.b.const_i64(0xFF);
+                self.b.and_i64();
+                if high {
+                    self.b.const_i64(8);
+                    self.b.shl_i64();
                 }
-                else {
-                    self.b.const_i32(lo_addr(n) as i32);
-                    self.load_lo(n);
-                    self.b.const_i32(!0xFF);
-                    self.b.and_i32();
-                    self.b.get_local_i64(&t);
-                    self.b.wrap_i64_to_i32();
-                    self.b.const_i32(0xFF);
-                    self.b.and_i32();
-                    self.b.or_i32();
-                    self.b.store_aligned_i32(0);
-                }
+                self.b.get_local_i64(&self.regs[r]);
+                self.b.const_i64(if high { !0xFF00 } else { !0xFF });
+                self.b.and_i64();
+                self.b.or_i64();
+                self.b.set_local_i64(&self.regs[r]);
             },
         }
-        self.b.free_local_i64(t);
     }
 
     // memory -----------------------------------------------------------------------------
@@ -2960,6 +2991,24 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
         }, true);
         b.free_local(off);
     }
+    let regs: Vec<WasmLocalI64> = (0..16).map(|_| b.new_local_i64()).collect();
+    let (mut reg_loaded, mut reg_written) = (0u16, 0u16);
+    for (insn, _) in decoded.values() {
+        let (r, w) = insn_regs(insn);
+        reg_loaded |= r;
+        reg_written |= w;
+    }
+    for n in 0..16u8 {
+        if reg_loaded >> n & 1 == 0 { continue }
+        b.load_fixed_i32(lo_addr(n));
+        b.extend_unsigned_i32_to_i64();
+        b.load_fixed_i32(hi_addr(n));
+        b.extend_unsigned_i32_to_i64();
+        b.const_i64(32);
+        b.shl_i64();
+        b.or_i64();
+        b.set_local_i64(&regs[n as usize]);
+    }
     let x_rip = b.new_local_i64();
     let x_extra = b.new_local();
     let x_mode = b.new_local();
@@ -2968,7 +3017,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
 
     let mut g = Gen {
         b, start: rip, base, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, cur: rip, next: rip, block_index,
-        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false, exit_label, x_rip, x_extra, x_mode,
+        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false, regs, reg_loaded, reg_written, exit_label, x_rip, x_extra, x_mode,
     };
 
     // budget: return to the dispatcher now and then so that interrupts can be handled
@@ -3131,7 +3180,8 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     g.b.block_end(); // loop
     g.b.block_end(); // exit
     g.epilogue();
-    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, fl_a, fl_b, fl_r, x_rip, x_extra, x_mode, .. } = g;
+    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, fl_a, fl_b, fl_r, x_rip, x_extra, x_mode, regs, .. } = g;
+    for r in regs { b.free_local_i64(r) }
     b.free_local_i64(x_rip);
     b.free_local(x_extra);
     b.free_local(x_mode);
