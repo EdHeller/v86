@@ -10,6 +10,7 @@ const emulator = new V86({
     cmdline: "modules=loop,squashfs,sd-mod,usb-storage,uhci-hcd,ehci-pci,xhci-pci,usbhid console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on",
     cdrom: { buffer: buf(`/root/jitwork/alpine-virt-3.24.3-${tag}.iso`) }, memory_size: 256 * 1024 * 1024,
     autostart: true, acpi: false, wasm_path: repo + "/build/v86.wasm", log_level: +process.env.LOG || 0,
+    audio_device: process.env.AUDIO,
     usb: { controller: process.env.USBC || "uhci", tablet: true, mass_storage: [{ id: "stick", image: { buffer: disk.buffer } }] },
 });
 let ser = ""; const t0 = Date.now();

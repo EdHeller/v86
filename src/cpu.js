@@ -24,8 +24,9 @@ import { Ne2k } from "./ne2k.js";
 import { IO } from "./io.js";
 import { VirtioConsole } from "./virtio_console.js";
 import { PCI } from "./pci.js";
-import { PluginDevice, USB_PLUGINS, registered_plugin } from "./device_plugin.js";
+import { PluginDevice, USB_PLUGINS, AUDIO_PLUGINS, registered_plugin } from "./device_plugin.js";
 import "./usb/plugin.js";
+import "./audio_devices/hd_audio/plugin.js";
 import { PS2 } from "./ps2.js";
 import { VMwareMouse } from "./vmware.js";
 import { read_elf } from "./elf.js";
@@ -160,6 +161,7 @@ export function CPU(bus, wm, stop_idling)
 
     // managed in io.js
     /** @const */ this.memory_map_read8 = [];
+    /** @const */ this.memory_map_write16 = [];
     /** @const */ this.memory_map_write8 = [];
     /** @const */ this.memory_map_read32 = [];
     /** @const */ this.memory_map_write32 = [];
@@ -254,6 +256,13 @@ CPU.prototype.mmap_write8 = function(addr, value)
 
 CPU.prototype.mmap_write16 = function(addr, value)
 {
+    var fn16 = this.memory_map_write16[addr >>> MMAP_BLOCK_BITS];
+    if(fn16)
+    {
+        fn16(addr, value);
+        return;
+    }
+
     var fn = this.memory_map_write8[addr >>> MMAP_BLOCK_BITS];
 
     dbg_assert(value >= 0 && value <= 0xFFFF);
@@ -585,6 +594,7 @@ CPU.prototype.get_state = function()
     state[93] = this.pat;
     state[94] = this.long_mode_state;
     state[95] = this.devices.usb;
+    state[96] = this.devices.audio;
 
     return state;
 };
@@ -708,6 +718,7 @@ CPU.prototype.set_state = function(state)
     this.long_mode_state.fill(0);
     state[94] && this.long_mode_state.set(state[94]);
     this.devices.usb && state[95] && this.devices.usb.set_state(state[95]);
+    this.devices.audio && state[96] && this.devices.audio.set_state(state[96]);
     if(!(this.long_mode_state[46] & 1)) this.long_mode_state[46] = 1; // xcr0 of states saved before it was part of the state
 
     this.set_tsc(state[43][0], state[43][1]);
@@ -972,6 +983,10 @@ CPU.prototype.reboot_internal = function()
     if(this.devices.usb)
     {
         this.devices.usb.reset();
+    }
+    if(this.devices.audio)
+    {
+        this.devices.audio.reset();
     }
     if(this.devices.ps2)
     {
@@ -1322,7 +1337,21 @@ CPU.prototype.init = function(settings, device_bus)
             this.devices.virtio_balloon = new VirtioBalloon(this, device_bus);
         }
 
-        if(true)
+        if(settings.audio_device === "hd_audio")
+        {
+            this.devices.audio = new PluginDevice(this, AUDIO_PLUGINS, registered_plugin(AUDIO_PLUGINS, "hd_audio"), 0x1B << 3, {
+                "audio": {
+                    "send": (left, right) => device_bus.send("dac-send-data", [left, right]),
+                    "set_sampling_rate": rate => device_bus.send("dac-tell-sampling-rate", rate),
+                    "enable": () => device_bus.send("dac-enable"),
+                    "disable": () => device_bus.send("dac-disable"),
+                    "pcm": pcm => device_bus.send("hd-audio-pcm", pcm),
+                    "bus_send": (name, data, transfer) => device_bus.send(name, data, transfer),
+                    "bus_register": (name, handler) => device_bus.register(name, handler, this),
+                },
+            }, {});
+        }
+        else
         {
             this.devices.sb16 = new SB16(this, device_bus);
         }

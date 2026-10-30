@@ -119,10 +119,11 @@ DeviceMachine.prototype.mmap_register = function(address, size, read8, write8, r
  * @param {function(number, number)} write8
  * @param {function(number):number=} read32 aligned dwords
  * @param {function(number, number)=} write32
+ * @param {function(number, number)=} write16 whole words (registers that need them)
  */
-DeviceMachine.prototype.mmap_register_range = function(address, size, read8, write8, read32, write32)
+DeviceMachine.prototype.mmap_register_range = function(address, size, read8, write8, read32, write32, write16)
 {
-    this.handle["mmap_register_range"](address, size, read8, write8, read32, write32);
+    this.handle["mmap_register_range"](address, size, read8, write8, read32, write32, write16);
 };
 
 /**

@@ -316,16 +316,17 @@ IO.prototype.mmap_register = function(addr, size, read_func8, write_func8, read_
  * @param {number} addr
  * @param {number} size
  * @param {Object} owner
- * @param {function(number):number} read8
- * @param {function(number,number)} write8
+ * @param {function(number):number=} read8
+ * @param {function(number,number)=} write8
  * @param {function(number):number=} read32
  * @param {function(number,number)=} write32
+ * @param {function(number,number)=} write16
  */
-IO.prototype.mmap_register_range = function(addr, size, owner, read8, write8, read32, write32)
+IO.prototype.mmap_register_range = function(addr, size, owner, read8, write8, read32, write32, write16)
 {
     const cpu = this.cpu;
     const ranges = this.mmap_ranges || (this.mmap_ranges = new Map());
-    const range = { start: addr >>> 0, end: (addr >>> 0) + size, owner, read8, write8, read32, write32 };
+    const range = { start: addr >>> 0, end: (addr >>> 0) + size, owner, read8, write8, read32, write32, write16 };
     const first = addr >>> MMAP_BLOCK_BITS, last = ((addr >>> 0) + size - 1) >>> MMAP_BLOCK_BITS;
 
     for(let block = first; block <= last; block++)
@@ -340,20 +341,30 @@ IO.prototype.mmap_register_range = function(addr, size, owner, read8, write8, re
             };
             ranges.set(block, entry);
             const find = a => { a >>>= 0; return entry.list.find(r => a >= r.start && a < r.end); };
-            cpu.memory_map_read8[block] = a => { const r = find(a); return r ? r.read8(a) : entry.r8(a); };
-            cpu.memory_map_write8[block] = (a, v) => { const r = find(a); if(r) r.write8(a, v); else entry.w8(a, v); };
+            cpu.memory_map_read8[block] = a => { const r = find(a); return r ? r.read8(a >>> 0) : entry.r8(a); };
+            cpu.memory_map_write8[block] = (a, v) => { const r = find(a); if(r) r.write8(a >>> 0, v); else entry.w8(a, v); };
+            cpu.memory_map_write16[block] = (a, v) =>
+            {
+                const r = find(a);
+                if(r && r.write16) r.write16(a >>> 0, v);
+                else
+                {
+                    const w8 = r ? r.write8 : entry.w8;
+                    w8(r ? a >>> 0 : a, v & 0xFF); w8(r ? a + 1 >>> 0 : a + 1 | 0, v >> 8);
+                }
+            };
             cpu.memory_map_read32[block] = a =>
             {
                 const r = find(a);
                 if(!r) return entry.r32(a);
-                return r.read32 ? r.read32(a) : r.read8(a) | r.read8(a + 1) << 8 | r.read8(a + 2) << 16 | r.read8(a + 3) << 24;
+                return r.read32 ? r.read32(a >>> 0) : r.read8(a >>> 0) | r.read8(a + 1 >>> 0) << 8 | r.read8(a + 2 >>> 0) << 16 | r.read8(a + 3 >>> 0) << 24;
             };
             cpu.memory_map_write32[block] = (a, v) =>
             {
                 const r = find(a);
                 if(!r) return entry.w32(a, v);
-                if(r.write32) r.write32(a, v);
-                else { r.write8(a, v & 0xFF); r.write8(a + 1, v >> 8 & 0xFF); r.write8(a + 2, v >> 16 & 0xFF); r.write8(a + 3, v >>> 24); }
+                if(r.write32) r.write32(a >>> 0, v);
+                else { const b = a >>> 0; r.write8(b, v & 0xFF); r.write8(b + 1, v >> 8 & 0xFF); r.write8(b + 2, v >> 16 & 0xFF); r.write8(b + 3, v >>> 24); }
             };
         }
         entry.list.push(range);
@@ -374,6 +385,7 @@ IO.prototype.mmap_unregister_range = function(addr, size, owner)
         entry.list = entry.list.filter(r => !(r.owner === owner && r.start === addr >>> 0));
         if(!entry.list.length)
         {
+            cpu.memory_map_write16[block] = undefined;
             cpu.memory_map_read8[block] = entry.r8;
             cpu.memory_map_write8[block] = entry.w8;
             cpu.memory_map_read32[block] = entry.r32;

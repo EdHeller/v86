@@ -11,6 +11,8 @@ const IO_POOL_START = 0xD000;
 const IO_POOL_END = 0xE000;
 
 /** @const */
+export const AUDIO_PLUGINS = { registry: "V86AudioDevices", option: "audio_device", dir: "audio_devices", tag: "audio_device" };
+/** @const */
 export const USB_PLUGINS = { registry: "V86UsbControllers", option: "usb", dir: "usb", tag: "usb", entry: "./usb/plugin.js" };
 
 /** A free window of I/O ports, aligned to its size */
@@ -80,7 +82,7 @@ export function device_handle(cpu, owner)
             else io.register_read_consecutive(port, owner, r8_1, r8_2);
         },
         "mmap_register": (address, size, r8, w8, r32, w32) => io.mmap_register(address, size, r8, w8, r32, w32),
-        "mmap_register_range": (address, size, r8, w8, r32, w32) => io.mmap_register_range(address, size, owner, r8, w8, r32, w32),
+        "mmap_register_range": (address, size, r8, w8, r32, w32, w16) => io.mmap_register_range(address, size, owner, r8, w8, r32, w32, w16),
         "mmap_unregister_range": (address, size) => io.mmap_unregister_range(address, size, owner),
         "allocate_io": size => owner.allocate_io ? owner.allocate_io(size) : allocate_io_ports(cpu, size, owner.name),
 

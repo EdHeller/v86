@@ -238,6 +238,7 @@ V86.prototype.continue_init = async function(emulator, options)
 
     settings.acpi = options.acpi;
     settings.cpu_cores = options.cpu_cores;
+    settings.audio_device = options.audio_device;
     settings.cpu_workers = options.cpu_workers;
     settings.vcpu_worker_url = options.vcpu_worker_url;
     settings.wasm_source = this.wasm_source;
