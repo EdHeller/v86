@@ -93,12 +93,18 @@ struct Slot {
     /// visits needed before the block is compiled (0: the plain threshold); larger for pages whose
     /// code was overwritten often, computed once so that the hot path needs no hash lookup
     limit: u32,
+    /// INDEX_GEN of the module when the slot was filled
+    gen: u32,
 }
+/// Per module index: steps when the module of the index is replaced or dropped (a slot that points
+/// to it is valid while its generation is the current one, checked without the module map)
+static mut INDEX_GEN: [u32; 65536] = [0; 65536];
+unsafe fn retire_index(index: u16) { INDEX_GEN[index as usize] = INDEX_GEN[index as usize].wrapping_add(1) }
 const SLOT_COUNTING: u8 = 0;
 const SLOT_PENDING: u8 = 1;
 const SLOT_READY: u8 = 2;
 const SLOT_FAILED: u8 = 3;
-const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, key: 0, state: SLOT_COUNTING, user: false, limit: 0 };
+const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, key: 0, state: SLOT_COUNTING, user: false, limit: 0, gen: 0 };
 const SLOTS: usize = 65536;
 
 /// (a multiplicative hash: the xor of address bits mapped the hot entries of some kernel pages
@@ -4183,10 +4189,9 @@ unsafe fn try_run_block() -> bool {
             if slot.epoch != epoch(user) {
                 // mappings may have changed or blocks were invalidated: check that rip still
                 // maps to the block of this slot
+                // (the module is still the one of the slot when its index has the same generation)
                 let ok = match probe_fetch(r, user) {
-                    Some(phys) if block_key(phys & !0xFFF, user) == slot.key => {
-                        st.blocks.get(&slot.key).map_or(false, |b| b.index == slot.index && b.state == BlockState::Ready && bit(&b.served, (phys & 0xFFF) as usize))
-                    },
+                    Some(phys) => block_key(phys & !0xFFF, user) == slot.key && INDEX_GEN[slot.index as usize] == slot.gen,
                     _ => false,
                 };
                 if !ok {
@@ -4296,6 +4301,7 @@ unsafe fn refill_slot(r: u64, key: u64, off: usize) {
     slot.index = b.index;
     slot.key = key;
     slot.epoch = epoch(b.user).wrapping_sub(1); // validated on the first run
+    slot.gen = INDEX_GEN[b.index as usize];
     slot.state = match b.state {
         BlockState::Pending => SLOT_PENDING,
         BlockState::Ready => SLOT_READY,
@@ -4367,6 +4373,7 @@ unsafe fn compile(r: u64, user: bool) {
     if let Some((state_before, index)) = old {
         // the module this one replaces: slots that point to it notice on their next visit
         bump_epochs();
+        retire_index(index);
         st.by_index.remove(&index);
         match state_before {
             BlockState::Pending => { st.zombies.insert(index); },
@@ -4440,10 +4447,12 @@ pub unsafe fn dirty_page(ctx: &mut jit::JitState, page: Page) -> bool {
                 match b.state {
                     BlockState::Failed => {},
                     BlockState::Pending => {
+                        retire_index(b.index);
                         st.by_index.remove(&b.index);
                         st.zombies.insert(b.index);
                     },
                     BlockState::Ready => {
+                        retire_index(b.index);
                         st.by_index.remove(&b.index);
                         jit::jit64_free_index_ctx(ctx, b.index);
                     },
