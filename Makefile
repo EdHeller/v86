@@ -88,7 +88,7 @@ CARGO_FLAGS_PARALLEL=$(CARGO_FLAGS) -C target-feature=+atomics \
 CORE_FILES=cjs.js const.js io.js main.js lib.js buffer.js ide.js pci.js floppy.js \
 	   dma.js pit.js vga.js ps2.js rtc.js uart.js parallel.js vmware.js \
 	   acpi.js iso9660.js \
-	   state.js ne2k.js sb16.js virtio.js virtio_console.js virtio_net.js virtio_balloon.js virtio_rng.js virtio_blk.js device_machine.js device_plugin.js usb/usb.js usb/usb_device.js usb/hid_tablet.js usb/mass_storage.js usb/uhci.js usb/ehci.js usb/xhci.js usb/machine.js usb/plugin.js audio_devices/machine.js audio_devices/hd_audio/codec.js audio_devices/hd_audio/controller.js audio_devices/hd_audio/plugin.js \
+	   state.js ne2k.js sb16.js virtio.js virtio_console.js virtio_net.js virtio_balloon.js virtio_rng.js virtio_blk.js virtio_snd.js virtio_input.js device_machine.js device_plugin.js usb/usb.js usb/usb_device.js usb/hid_tablet.js usb/mass_storage.js usb/uhci.js usb/ehci.js usb/xhci.js usb/machine.js usb/plugin.js audio_devices/machine.js audio_devices/hd_audio/codec.js audio_devices/hd_audio/controller.js audio_devices/hd_audio/plugin.js \
 	   bus.js log.js cpu.js \
 	   elf.js kernel.js parallel/relocate.js parallel/control.js parallel/machine.js
 LIB_FILES=9p.js filesystem.js marshall.js

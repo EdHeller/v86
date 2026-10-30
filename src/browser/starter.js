@@ -511,6 +511,9 @@ V86.prototype.continue_init = async function(emulator, options)
     add_file("virtio_blk", options.virtio_blk);
     settings.virtio_blk_readonly = !!options.virtio_blk_readonly;
     settings.virtio_rng = !!options.virtio_rng;
+    settings.virtio_snd = !!options.virtio_snd;
+    // "keyboard" | "tablet" | "multitouch"
+    settings.virtio_input = options.virtio_input;
 
     // USB (usb: { controller, tablet, mass_storage: [{ id, image, read_only }] })
     settings.usb = options.usb || undefined;

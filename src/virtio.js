@@ -26,7 +26,7 @@ const VIRTIO_PCI_CAP_PCI_CFG = 5;
 
 const VIRTIO_STATUS_ACKNOWLEDGE = 1;
 const VIRTIO_STATUS_DRIVER = 2;
-const VIRTIO_STATUS_DRIVER_OK = 4;
+export const VIRTIO_STATUS_DRIVER_OK = 4;
 const VIRTIO_STATUS_FEATURES_OK = 8;
 const VIRTIO_STATUS_DEVICE_NEEDS_RESET = 64;
 const VIRTIO_STATUS_FAILED = 128;
@@ -150,6 +150,8 @@ var VirtIO_DeviceSpecificCapabilityOptions;
  *     notification: VirtIO_NotificationCapabilityOptions,
  *     isr_status: VirtIO_ISRCapabilityOptions,
  *     device_specific: (undefined | VirtIO_DeviceSpecificCapabilityOptions),
+ *     class_code: (undefined | number),
+ *     on_reset: (undefined | function()),
  * }}
  */
 var VirtIO_Options;
@@ -165,6 +167,7 @@ export function VirtIO(cpu, options)
 
     /** @const @type {CPU} */
     this.cpu = cpu;
+    this.on_reset = options.on_reset;
 
     /** @const @type {PCI} */
     this.pci = cpu.devices.pci;
@@ -184,7 +187,8 @@ export function VirtIO(cpu, options)
         // Revision ID
         0x01,
         // Prof IF, Subclass, Class code
-        0x00, 0x02, 0x00,
+        ...(options.class_code === undefined ? [0x00, 0x02, 0x00] :
+            [options.class_code & 0xFF, options.class_code >> 8 & 0xFF, options.class_code >> 16 & 0xFF]),
         // Cache line size
         0x00,
         // Latency Timer
@@ -819,6 +823,11 @@ VirtIO.prototype.init_capabilities = function(capabilities)
                     dbg_log("Warning: 8-bit read from 16-bit virtio port", LOG_VIRTIO);
                     return read(addr & ~1) >> ((addr & 1) << 3) & 0xFF;
                 };
+                const shim_read16_on_32 = function(addr)
+                {
+                    dbg_log("Warning: 16-bit read from 32-bit virtio port", LOG_VIRTIO);
+                    return read(addr & ~3) >> ((addr & 2) << 3) & 0xFFFF;
+                };
                 const shim_read8_on_32 = function(addr)
                 {
                     dbg_log("Warning: 8-bit read from 32-bit virtio port", LOG_VIRTIO);
@@ -835,9 +844,9 @@ VirtIO.prototype.init_capabilities = function(capabilities)
                 switch(field.bytes)
                 {
                     case 4:
-                        this.cpu.io.register_read(port, this, shim_read8_on_32, undefined, read);
+                        this.cpu.io.register_read(port, this, shim_read8_on_32, shim_read16_on_32, read);
                         this.cpu.io.register_read(port + 1, this, shim_read8_on_32);
-                        this.cpu.io.register_read(port + 2, this, shim_read8_on_32);
+                        this.cpu.io.register_read(port + 2, this, shim_read8_on_32, shim_read16_on_32);
                         this.cpu.io.register_read(port + 3, this, shim_read8_on_32);
                         this.cpu.io.register_write(port, this, undefined, undefined, write);
                         break;
@@ -951,6 +960,7 @@ VirtIO.prototype.set_state = function(state)
 
 VirtIO.prototype.reset = function()
 {
+    if(this.on_reset) this.on_reset();
     this.device_feature_select = 0;
     this.driver_feature_select = 0;
     this.driver_feature.set(this.device_feature);
@@ -1338,7 +1348,7 @@ VirtQueue.prototype.used_set_avail_event = function(value)
  * @param {VirtQueue} virtqueue
  * @param {number} head_idx
  */
-function VirtQueueBufferChain(virtqueue, head_idx)
+export function VirtQueueBufferChain(virtqueue, head_idx)
 {
     /** @const @type {CPU} */
     this.cpu = virtqueue.cpu;

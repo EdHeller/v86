@@ -37,6 +37,8 @@ import { VirtioNet } from "./virtio_net.js";
 import { VGAScreen } from "./vga.js";
 import { VirtioBalloon } from "./virtio_balloon.js";
 import { VirtioRng } from "./virtio_rng.js";
+import { VirtioSnd } from "./virtio_snd.js";
+import { VirtioInput } from "./virtio_input.js";
 import { VirtioBlk } from "./virtio_blk.js";
 import { Virtio9p, Virtio9pHandler, Virtio9pProxy } from "../lib/9p.js";
 
@@ -599,6 +601,8 @@ CPU.prototype.get_state = function()
     state[96] = this.devices.audio;
     state[97] = this.devices.virtio_rng;
     state[98] = this.devices.virtio_blk;
+    state[99] = this.devices.virtio_snd;
+    state[100] = this.devices.virtio_input;
 
     return state;
 };
@@ -725,6 +729,8 @@ CPU.prototype.set_state = function(state)
     this.devices.audio && state[96] && this.devices.audio.set_state(state[96]);
     this.devices.virtio_rng && state[97] && this.devices.virtio_rng.set_state(state[97]);
     this.devices.virtio_blk && state[98] && this.devices.virtio_blk.set_state(state[98]);
+    this.devices.virtio_snd && state[99] && this.devices.virtio_snd.set_state(state[99]);
+    this.devices.virtio_input && state[100] && this.devices.virtio_input.set_state(state[100]);
     if(!(this.long_mode_state[46] & 1)) this.long_mode_state[46] = 1; // xcr0 of states saved before it was part of the state
 
     this.set_tsc(state[43][0], state[43][1]);
@@ -1001,6 +1007,14 @@ CPU.prototype.reboot_internal = function()
     if(this.devices.virtio_blk)
     {
         this.devices.virtio_blk.reset();
+    }
+    if(this.devices.virtio_snd)
+    {
+        this.devices.virtio_snd.reset();
+    }
+    if(this.devices.virtio_input)
+    {
+        this.devices.virtio_input.reset();
     }
     if(this.devices.ps2)
     {
@@ -1354,6 +1368,16 @@ CPU.prototype.init = function(settings, device_bus)
         if(settings.virtio_rng)
         {
             this.devices.virtio_rng = new VirtioRng(this);
+        }
+
+        if(settings.virtio_snd)
+        {
+            this.devices.virtio_snd = new VirtioSnd(this, device_bus);
+        }
+
+        if(settings.virtio_input)
+        {
+            this.devices.virtio_input = new VirtioInput(this, device_bus, settings.virtio_input, false);
         }
 
         if(settings.virtio_blk)
