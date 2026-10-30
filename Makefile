@@ -228,6 +228,11 @@ build/v86-parallel.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Carg
 	CARGO_TARGET_DIR=build/parallel cargo rustc --release --features parallel $(CARGO_FLAGS_PARALLEL)
 	./tools/parallel_wasm.mjs build/parallel/wasm32-unknown-unknown/release/v86.wasm build/v86-parallel.wasm
 
+build/v86-parallel-seqcst.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml tools/parallel_wasm.mjs
+	mkdir -p build/
+	CARGO_TARGET_DIR=build/parallel-seqcst cargo rustc --release --features seqcst $(CARGO_FLAGS_PARALLEL)
+	./tools/parallel_wasm.mjs build/parallel-seqcst/wasm32-unknown-unknown/release/v86.wasm build/v86-parallel-seqcst.wasm
+
 build/v86-parallel-debug.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml tools/parallel_wasm.mjs
 	mkdir -p build/
 	CARGO_TARGET_DIR=build/parallel cargo rustc --features parallel $(CARGO_FLAGS_PARALLEL)

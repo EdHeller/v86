@@ -60,3 +60,12 @@ A halted worker sleeps in `Atomics.wait` on it.
 `tests/x64/smp/10_worker_core.asm` (INIT/SIPI, IPIs), `11_lock_counter.asm` and `12_lock_counter_long.asm` (atomics between a worker core and the
 boot core in 32-bit and long mode), `tests/x64/js/parallel_instances.js` (two instances, one memory, separate statics and state).
 Linux: `?arch=x86&cores=2&workers=1` on `examples/alpine64.html` served by `examples/serve.py`.
+
+## Hosts with a weaker memory order (arm64)
+
+`build/v86-parallel.wasm` lets the cores of different instances share guest RAM with plain loads and stores, which is
+correct where the host keeps x86's order of stores and loads. `build/v86-parallel-seqcst.wasm` (`make
+build/v86-parallel-seqcst.wasm`, the Cargo feature `seqcst`) makes every aligned guest RAM access of the interpreter and of the
+generated code (32-bit and 64-bit JIT) a sequentially consistent atomic and follows an unaligned one with a fence, as v64
+does, for arm64 hosts (Apple silicon, phones). It costs 15-50% in the parallel build: `examples/alpine64.html` uses it when the
+user agent looks like arm64 (`?order=seqcst` / `?order=tso` choose).

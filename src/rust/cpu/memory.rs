@@ -99,6 +99,64 @@ pub fn in_svga_lfb(addr: u32) -> bool {
     addr >= VGA_LFB_ADDRESS && addr <= unsafe { VGA_LFB_ADDRESS + (vga_memory_size - 1) }
 }
 
+
+// Guest RAM accesses. With cores in other instances and a host with a weaker memory order than x86's (the `seqcst` build) every aligned access is a sequentially
+// consistent atomic, so that code that relies on x86's ordering (a flag stored after the data it announces)
+// also works on hosts with a weaker one (arm64); an unaligned one is followed by a fence.
+#[cfg(feature = "seqcst")]
+mod ram {
+    use std::ptr;
+    use std::sync::atomic::{fence, AtomicU16, AtomicU32, AtomicU64, Ordering::SeqCst};
+    #[inline(always)]
+    pub unsafe fn load8(p: *const u8) -> u8 { std::sync::atomic::AtomicU8::from_ptr(p as *mut u8).load(SeqCst) }
+    #[inline(always)]
+    pub unsafe fn load16(p: *const u8) -> u16 {
+        if p as usize & 1 == 0 { AtomicU16::from_ptr(p as *mut u16).load(SeqCst) } else { let v = ptr::read_unaligned(p as *const u16); fence(SeqCst); v }
+    }
+    #[inline(always)]
+    pub unsafe fn load32(p: *const u8) -> u32 {
+        if p as usize & 3 == 0 { AtomicU32::from_ptr(p as *mut u32).load(SeqCst) } else { let v = ptr::read_unaligned(p as *const u32); fence(SeqCst); v }
+    }
+    #[inline(always)]
+    pub unsafe fn load64(p: *const u8) -> u64 {
+        if p as usize & 7 == 0 { AtomicU64::from_ptr(p as *mut u64).load(SeqCst) } else { let v = ptr::read_unaligned(p as *const u64); fence(SeqCst); v }
+    }
+    #[inline(always)]
+    pub unsafe fn store8(p: *mut u8, v: u8) { std::sync::atomic::AtomicU8::from_ptr(p).store(v, SeqCst) }
+    #[inline(always)]
+    pub unsafe fn store16(p: *mut u8, v: u16) {
+        if p as usize & 1 == 0 { AtomicU16::from_ptr(p as *mut u16).store(v, SeqCst) } else { ptr::write_unaligned(p as *mut u16, v); fence(SeqCst) }
+    }
+    #[inline(always)]
+    pub unsafe fn store32(p: *mut u8, v: u32) {
+        if p as usize & 3 == 0 { AtomicU32::from_ptr(p as *mut u32).store(v, SeqCst) } else { ptr::write_unaligned(p as *mut u32, v); fence(SeqCst) }
+    }
+    #[inline(always)]
+    pub unsafe fn store64(p: *mut u8, v: u64) {
+        if p as usize & 7 == 0 { AtomicU64::from_ptr(p as *mut u64).store(v, SeqCst) } else { ptr::write_unaligned(p as *mut u64, v); fence(SeqCst) }
+    }
+}
+#[cfg(not(feature = "seqcst"))]
+mod ram {
+    use std::ptr;
+    #[inline(always)]
+    pub unsafe fn load8(p: *const u8) -> u8 { *p }
+    #[inline(always)]
+    pub unsafe fn load16(p: *const u8) -> u16 { ptr::read_unaligned(p as *const u16) }
+    #[inline(always)]
+    pub unsafe fn load32(p: *const u8) -> u32 { ptr::read_unaligned(p as *const u32) }
+    #[inline(always)]
+    pub unsafe fn load64(p: *const u8) -> u64 { ptr::read_unaligned(p as *const u64) }
+    #[inline(always)]
+    pub unsafe fn store8(p: *mut u8, v: u8) { *p = v }
+    #[inline(always)]
+    pub unsafe fn store16(p: *mut u8, v: u16) { ptr::write_unaligned(p as *mut u16, v) }
+    #[inline(always)]
+    pub unsafe fn store32(p: *mut u8, v: u32) { ptr::write_unaligned(p as *mut u32, v) }
+    #[inline(always)]
+    pub unsafe fn store64(p: *mut u8, v: u64) { ptr::write_unaligned(p as *mut u64, v) }
+}
+
 #[no_mangle]
 pub fn read8(addr: u32) -> i32 {
     if in_mapped_range(addr) {
@@ -119,7 +177,7 @@ pub fn read8(addr: u32) -> i32 {
         read8_no_mmap_check(addr)
     }
 }
-pub fn read8_no_mmap_check(addr: u32) -> i32 { unsafe { *mem8.offset(addr as isize) as i32 } }
+pub fn read8_no_mmap_check(addr: u32) -> i32 { unsafe { ram::load8(mem8.offset(addr as isize)) as i32 } }
 
 #[no_mangle]
 pub fn read16(addr: u32) -> i32 {
@@ -139,7 +197,7 @@ pub fn read16(addr: u32) -> i32 {
     }
 }
 pub fn read16_no_mmap_check(addr: u32) -> i32 {
-    unsafe { ptr::read_unaligned(mem8.offset(addr as isize) as *const u16) as i32 }
+    unsafe { ram::load16(mem8.offset(addr as isize)) as i32 }
 }
 
 #[no_mangle]
@@ -165,7 +223,7 @@ pub fn read32s(addr: u32) -> i32 {
     }
 }
 pub fn read32_no_mmap_check(addr: u32) -> i32 {
-    unsafe { ptr::read_unaligned(mem8.offset(addr as isize) as *const i32) }
+    unsafe { ram::load32(mem8.offset(addr as isize)) as i32 }
 }
 
 pub unsafe fn read64s(addr: u32) -> i64 {
@@ -178,7 +236,7 @@ pub unsafe fn read64s(addr: u32) -> i64 {
         }
     }
     else {
-        ptr::read_unaligned(mem8.offset(addr as isize) as *const i64)
+        ram::load64(mem8.offset(addr as isize)) as i64
     }
 }
 
@@ -216,7 +274,7 @@ pub unsafe fn write8(addr: u32, value: i32) {
 
 pub unsafe fn write8_no_mmap_or_dirty_check(addr: u32, value: i32) {
     if write_ignored(addr) { return }
-    *mem8.offset(addr as isize) = value as u8
+    ram::store8(mem8.offset(addr as isize), value as u8)
 }
 
 #[no_mangle]
@@ -231,7 +289,7 @@ pub unsafe fn write16(addr: u32, value: i32) {
 }
 pub unsafe fn write16_no_mmap_or_dirty_check(addr: u32, value: i32) {
     if write_ignored(addr) { return }
-    ptr::write_unaligned(mem8.offset(addr as isize) as *mut u16, value as u16)
+    ram::store16(mem8.offset(addr as isize), value as u16)
 }
 
 #[no_mangle]
@@ -247,12 +305,12 @@ pub unsafe fn write32(addr: u32, value: i32) {
 
 pub unsafe fn write32_no_mmap_or_dirty_check(addr: u32, value: i32) {
     if write_ignored(addr) { return }
-    ptr::write_unaligned(mem8.offset(addr as isize) as *mut i32, value)
+    ram::store32(mem8.offset(addr as isize), value as u32)
 }
 
 pub unsafe fn write64_no_mmap_or_dirty_check(addr: u32, value: u64) {
     if write_ignored(addr) { return }
-    ptr::write_unaligned(mem8.offset(addr as isize) as *mut u64, value)
+    ram::store64(mem8.offset(addr as isize), value)
 }
 
 pub unsafe fn write128_no_mmap_or_dirty_check(addr: u32, value: reg128) {

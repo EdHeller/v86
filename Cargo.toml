@@ -8,6 +8,9 @@ edition = "2021"
 default = []
 profiler = []
 parallel = []
+# The parallel build for hosts with a weaker memory order than x86's (arm64): every aligned guest RAM access of the
+# interpreter and the generated code is a sequentially consistent atomic, an unaligned one is followed by a fence
+seqcst = ["parallel"]
 
 [lib]
 crate-type = ["cdylib"]

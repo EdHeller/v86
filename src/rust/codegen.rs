@@ -770,28 +770,28 @@ fn gen_safe_read(
 
     match bits {
         BitSize::BYTE => {
-            ctx.builder.load_u8(0);
+            ctx.builder.ram_load_u8(0);
         },
         BitSize::WORD => {
-            ctx.builder.load_unaligned_u16(0);
+            ctx.builder.ram_load_u16(0);
         },
         BitSize::DWORD => {
-            ctx.builder.load_unaligned_i32(0);
+            ctx.builder.ram_load_i32(0);
         },
         BitSize::QWORD => {
-            ctx.builder.load_unaligned_i64(0);
+            ctx.builder.ram_load_i64(0);
         },
         BitSize::DQWORD => {
             let where_to_write = where_to_write.unwrap();
             let virt_address_local = ctx.builder.set_new_local();
             ctx.builder.const_i32(0);
             ctx.builder.get_local(&virt_address_local);
-            ctx.builder.load_unaligned_i64(0);
+            ctx.builder.ram_load_i64(0);
             ctx.builder.store_unaligned_i64(where_to_write);
 
             ctx.builder.const_i32(0);
             ctx.builder.get_local(&virt_address_local);
-            ctx.builder.load_unaligned_i64(8);
+            ctx.builder.ram_load_i64(8);
             ctx.builder.store_unaligned_i64(where_to_write + 8);
 
             ctx.builder.free_local(virt_address_local);
@@ -1001,26 +1001,26 @@ fn gen_safe_write(
 
             let virt_address_local = ctx.builder.tee_new_local();
             ctx.builder.get_local_i64(local1);
-            ctx.builder.store_unaligned_i64(0);
+            ctx.builder.ram_store_i64(0);
 
             ctx.builder.get_local(&virt_address_local);
             ctx.builder.get_local_i64(local2);
-            ctx.builder.store_unaligned_i64(8);
+            ctx.builder.ram_store_i64(8);
             ctx.builder.free_local(virt_address_local);
         },
     }
     match bits {
         BitSize::BYTE => {
-            ctx.builder.store_u8(0);
+            ctx.builder.ram_store_u8(0);
         },
         BitSize::WORD => {
-            ctx.builder.store_unaligned_u16(0);
+            ctx.builder.ram_store_u16(0);
         },
         BitSize::DWORD => {
-            ctx.builder.store_unaligned_i32(0);
+            ctx.builder.ram_store_i32(0);
         },
         BitSize::QWORD => {
-            ctx.builder.store_unaligned_i64(0);
+            ctx.builder.ram_store_i64(0);
         },
         BitSize::DQWORD => {}, // handled above
     }
@@ -1143,16 +1143,16 @@ pub fn gen_safe_read_write(
 
     match bits {
         BitSize::BYTE => {
-            ctx.builder.load_u8(0);
+            ctx.builder.ram_load_u8(0);
         },
         BitSize::WORD => {
-            ctx.builder.load_unaligned_u16(0);
+            ctx.builder.ram_load_u16(0);
         },
         BitSize::DWORD => {
-            ctx.builder.load_unaligned_i32(0);
+            ctx.builder.ram_load_i32(0);
         },
         BitSize::QWORD => {
-            ctx.builder.load_unaligned_i64(0);
+            ctx.builder.ram_load_i64(0);
         },
         BitSize::DQWORD => assert!(false), // not used
     }
@@ -1242,16 +1242,16 @@ pub fn gen_safe_read_write(
 
     match bits {
         BitSize::BYTE => {
-            ctx.builder.store_u8(0);
+            ctx.builder.ram_store_u8(0);
         },
         BitSize::WORD => {
-            ctx.builder.store_unaligned_u16(0);
+            ctx.builder.ram_store_u16(0);
         },
         BitSize::DWORD => {
-            ctx.builder.store_unaligned_i32(0);
+            ctx.builder.ram_store_i32(0);
         },
         BitSize::QWORD => {
-            ctx.builder.store_unaligned_i64(0);
+            ctx.builder.ram_store_i64(0);
         },
         BitSize::DQWORD => {
             dbg_assert!(false);

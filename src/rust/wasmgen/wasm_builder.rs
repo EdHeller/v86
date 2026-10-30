@@ -766,6 +766,192 @@ impl WasmBuilder {
         self.load_aligned_i64(0);
     }
 
+    // ---- guest RAM accesses ---------------------------------------------------------------------------
+    // With cores in other instances and a host with a weaker memory order than x86's (the `seqcst` build) an aligned access is a sequentially consistent
+    // atomic (so that code that relies on x86's ordering also works on hosts with a weaker one: arm64) and
+    // an unaligned one is followed by a fence. Otherwise they are the plain accesses.
+
+    #[cfg(feature = "seqcst")]
+    fn atomic(&mut self, sub: u8, align: u8, byte_offset: u32) {
+        self.instruction_body.push(0xFE);
+        self.instruction_body.push(sub);
+        self.instruction_body.push(align);
+        write_leb_u32(&mut self.instruction_body, byte_offset);
+    }
+
+    #[cfg(feature = "seqcst")]
+    fn fence(&mut self) {
+        self.instruction_body.push(0xFE);
+        self.instruction_body.push(0x03);
+        self.instruction_body.push(0);
+    }
+
+    /// [address] -> i32 (zero extended byte)
+    pub fn ram_load_u8(&mut self, byte_offset: u32) {
+        #[cfg(feature = "seqcst")]
+        self.atomic(0x12, 0, byte_offset);
+        #[cfg(not(feature = "seqcst"))]
+        self.load_u8(byte_offset);
+    }
+
+    /// [address] -> i32 (zero extended 16 bits)
+    pub fn ram_load_u16(&mut self, byte_offset: u32) {
+        #[cfg(feature = "seqcst")]
+        {
+            let a = self.set_new_local();
+            self.get_local(&a);
+            self.const_i32(1);
+            self.and_i32();
+            self.eqz_i32();
+            self.if_i32();
+            self.get_local(&a);
+            self.atomic(0x13, 1, byte_offset);
+            self.else_();
+            self.get_local(&a);
+            self.load_unaligned_u16(byte_offset);
+            self.fence();
+            self.block_end();
+            self.free_local(a);
+        }
+        #[cfg(not(feature = "seqcst"))]
+        self.load_unaligned_u16(byte_offset);
+    }
+
+    /// [address] -> i32
+    pub fn ram_load_i32(&mut self, byte_offset: u32) {
+        #[cfg(feature = "seqcst")]
+        {
+            let a = self.set_new_local();
+            self.get_local(&a);
+            self.const_i32(3);
+            self.and_i32();
+            self.eqz_i32();
+            self.if_i32();
+            self.get_local(&a);
+            self.atomic(0x10, 2, byte_offset);
+            self.else_();
+            self.get_local(&a);
+            self.load_unaligned_i32(byte_offset);
+            self.fence();
+            self.block_end();
+            self.free_local(a);
+        }
+        #[cfg(not(feature = "seqcst"))]
+        self.load_unaligned_i32(byte_offset);
+    }
+
+    /// [address] -> i64
+    pub fn ram_load_i64(&mut self, byte_offset: u32) {
+        #[cfg(feature = "seqcst")]
+        {
+            let a = self.set_new_local();
+            self.get_local(&a);
+            self.const_i32(7);
+            self.and_i32();
+            self.eqz_i32();
+            self.if_i64();
+            self.get_local(&a);
+            self.atomic(0x11, 3, byte_offset);
+            self.else_();
+            self.get_local(&a);
+            self.load_unaligned_i64(byte_offset);
+            self.fence();
+            self.block_end();
+            self.free_local(a);
+        }
+        #[cfg(not(feature = "seqcst"))]
+        self.load_unaligned_i64(byte_offset);
+    }
+
+    /// [address, i32 value]
+    pub fn ram_store_u8(&mut self, byte_offset: u32) {
+        #[cfg(feature = "seqcst")]
+        self.atomic(0x19, 0, byte_offset);
+        #[cfg(not(feature = "seqcst"))]
+        self.store_u8(byte_offset);
+    }
+
+    /// [address, i32 value]
+    pub fn ram_store_u16(&mut self, byte_offset: u32) {
+        #[cfg(feature = "seqcst")]
+        {
+            let v = self.set_new_local();
+            let a = self.set_new_local();
+            self.get_local(&a);
+            self.const_i32(1);
+            self.and_i32();
+            self.eqz_i32();
+            self.if_void();
+            self.get_local(&a);
+            self.get_local(&v);
+            self.atomic(0x1A, 1, byte_offset);
+            self.else_();
+            self.get_local(&a);
+            self.get_local(&v);
+            self.store_unaligned_u16(byte_offset);
+            self.fence();
+            self.block_end();
+            self.free_local(a);
+            self.free_local(v);
+        }
+        #[cfg(not(feature = "seqcst"))]
+        self.store_unaligned_u16(byte_offset);
+    }
+
+    /// [address, i32 value]
+    pub fn ram_store_i32(&mut self, byte_offset: u32) {
+        #[cfg(feature = "seqcst")]
+        {
+            let v = self.set_new_local();
+            let a = self.set_new_local();
+            self.get_local(&a);
+            self.const_i32(3);
+            self.and_i32();
+            self.eqz_i32();
+            self.if_void();
+            self.get_local(&a);
+            self.get_local(&v);
+            self.atomic(0x17, 2, byte_offset);
+            self.else_();
+            self.get_local(&a);
+            self.get_local(&v);
+            self.store_unaligned_i32(byte_offset);
+            self.fence();
+            self.block_end();
+            self.free_local(a);
+            self.free_local(v);
+        }
+        #[cfg(not(feature = "seqcst"))]
+        self.store_unaligned_i32(byte_offset);
+    }
+
+    /// [address, i64 value]
+    pub fn ram_store_i64(&mut self, byte_offset: u32) {
+        #[cfg(feature = "seqcst")]
+        {
+            let v = self.set_new_local_i64();
+            let a = self.set_new_local();
+            self.get_local(&a);
+            self.const_i32(7);
+            self.and_i32();
+            self.eqz_i32();
+            self.if_void();
+            self.get_local(&a);
+            self.get_local_i64(&v);
+            self.atomic(0x18, 3, byte_offset);
+            self.else_();
+            self.get_local(&a);
+            self.get_local_i64(&v);
+            self.store_unaligned_i64(byte_offset);
+            self.fence();
+            self.block_end();
+            self.free_local(a);
+            self.free_local_i64(v);
+        }
+        #[cfg(not(feature = "seqcst"))]
+        self.store_unaligned_i64(byte_offset);
+    }
+
     pub fn load_u8(&mut self, byte_offset: u32) {
         self.instruction_body.push(op::OP_I32LOAD8U);
         self.instruction_body.push(op::MEM_NO_ALIGN);

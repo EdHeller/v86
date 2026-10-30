@@ -1913,10 +1913,10 @@ impl<'a> Gen<'a> {
         {
             self.tlb_ram_address();
             match bits {
-                8 => { self.b.load_u8(mem); self.b.extend_unsigned_i32_to_i64(); },
-                16 => { self.b.load_unaligned_u16(mem); self.b.extend_unsigned_i32_to_i64(); },
-                32 => { self.b.load_unaligned_i32(mem); self.b.extend_unsigned_i32_to_i64(); },
-                _ => self.b.load_unaligned_i64(mem),
+                8 => { self.b.ram_load_u8(mem); self.b.extend_unsigned_i32_to_i64(); },
+                16 => { self.b.ram_load_u16(mem); self.b.extend_unsigned_i32_to_i64(); },
+                32 => { self.b.ram_load_i32(mem); self.b.extend_unsigned_i32_to_i64(); },
+                _ => self.b.ram_load_i64(mem),
             }
         }
         self.b.else_();
@@ -1944,10 +1944,10 @@ impl<'a> Gen<'a> {
             self.tlb_ram_address();
             self.b.get_local_i64(&self.t_fv);
             match bits {
-                8 => { self.b.wrap_i64_to_i32(); self.b.store_u8(mem); },
-                16 => { self.b.wrap_i64_to_i32(); self.b.store_unaligned_u16(mem); },
-                32 => { self.b.wrap_i64_to_i32(); self.b.store_unaligned_i32(mem); },
-                _ => self.b.store_unaligned_i64(mem),
+                8 => { self.b.wrap_i64_to_i32(); self.b.ram_store_u8(mem); },
+                16 => { self.b.wrap_i64_to_i32(); self.b.ram_store_u16(mem); },
+                32 => { self.b.wrap_i64_to_i32(); self.b.ram_store_i32(mem); },
+                _ => self.b.ram_store_i64(mem),
             }
         }
         self.b.else_();
@@ -2809,13 +2809,13 @@ impl<'a> Gen<'a> {
                             if load {
                                 self.b.const_i32((xmm_addr(x) + half) as i32);
                                 self.b.get_local(&self.t_h);
-                                self.b.load_unaligned_i64(mem + half);
+                                self.b.ram_load_i64(mem + half);
                                 self.b.store_aligned_i64(0);
                             }
                             else {
                                 self.b.get_local(&self.t_h);
                                 self.b.load_fixed_i64(xmm_addr(x) + half);
-                                self.b.store_unaligned_i64(mem + half);
+                                self.b.ram_store_i64(mem + half);
                             }
                         }
                     },
@@ -3115,10 +3115,10 @@ impl<'a> Gen<'a> {
                 self.ea_to_local(rm);
                 self.mem128_host(false, true);
                 self.b.get_local(&self.t_h);
-                self.b.load_unaligned_i64(mem);
+                self.b.ram_load_i64(mem);
                 self.b.set_local_i64(&self.t_v);
                 self.b.get_local(&self.t_h);
-                self.b.load_unaligned_i64(mem + 8);
+                self.b.ram_load_i64(mem + 8);
                 self.b.set_local_i64(&self.t_a);
             },
         }
