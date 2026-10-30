@@ -4028,6 +4028,8 @@ static mut HEURISTIC_SEEDS: bool = false;
 static mut PENDING_SEEDS: bool = true;
 /// visits of such an entry before it is noted
 static mut PENDING_AFTER: u32 = 8;
+/// noted entries of a page that make it compile again right away (0: only at the threshold)
+static mut PENDING_BATCH: usize = 4;
 /// supervisor pages: their likely function starts are entries from the first compile on
 /// (kernel code is reached through function pointers that direct calls never lead to)
 static mut HEURISTIC_KERNEL: bool = false;
@@ -4278,6 +4280,12 @@ unsafe fn try_run_block() -> bool {
                         let off = (phys & 0xFFF) as u16;
                         if v.len() < 256 && !v.contains(&off) {
                             v.push(off);
+                            // enough of them: the page is compiled again now, with all of them
+                            if v.len() >= PENDING_BATCH && PENDING_BATCH != 0 {
+                                compile(r, user);
+                                refill_slot(r, key, off as usize);
+                                return false;
+                            }
                         }
                     }
                 }
