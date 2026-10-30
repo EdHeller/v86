@@ -57,6 +57,8 @@ struct Block {
     epoch: u32,
     /// bit per page offset: basic block starts the module can be entered at
     served: [u64; 64],
+    /// an instruction continues into the next physical page (valid only while the next virtual page maps there)
+    straddle: bool,
     /// bit per page offset: entries the decoder could not compile
     failed: [u64; 64],
     /// bit per page offset: instructions the module contains
@@ -95,6 +97,8 @@ struct Slot {
     limit: u32,
     /// INDEX_GEN of the module when the slot was filled
     gen: u32,
+    /// the module's Block::straddle
+    straddle: bool,
 }
 /// Per module index: steps when the module of the index is replaced or dropped (a slot that points
 /// to it is valid while its generation is the current one, checked without the module map)
@@ -104,7 +108,7 @@ const SLOT_COUNTING: u8 = 0;
 const SLOT_PENDING: u8 = 1;
 const SLOT_READY: u8 = 2;
 const SLOT_FAILED: u8 = 3;
-const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, key: 0, state: SLOT_COUNTING, user: false, limit: 0, gen: 0 };
+const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, key: 0, state: SLOT_COUNTING, user: false, limit: 0, gen: 0, straddle: false };
 const SLOTS: usize = 65536;
 
 /// (a multiplicative hash: the xor of address bits mapped the hot entries of some kernel pages
@@ -3331,6 +3335,16 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                 // comes from the bytes after the page if they are the next page's: it checks)
                 if DISABLE_MASK >> 24 & 1 != 0 || off + 15 <= code.len() || ext.len() <= code.len() { return None }
                 let w = &ext[off..];
+                if STRADDLE_NATIVE {
+                    // compiled from the next physical page's bytes: the module is code of that page too,
+                    // and its slots check that the next virtual page maps there (Block::straddle)
+                    if let Some((insn, l)) = decode(w, rip.wrapping_add(off as u64)) {
+                        if off + l > code.len() && !matches!(insn, Insn::Jcc { .. } | Insn::Jmp { .. } | Insn::Call { .. }) {
+                            GEN_STRADDLE = true;
+                            return Some((insn, l));
+                        }
+                    }
+                }
                 let l = decode(w, rip.wrapping_add(off as u64)).map(|(_, l)| l).or_else(|| interp_len(w)).or_else(|| full_len(w))?;
                 if off + l > code.len() { Some((Insn::Interp, l)) } else { None }
             });
@@ -3338,7 +3352,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
                 count_unsupported(&code[off..]);
                 break;
             };
-            if off + len > code.len() && !matches!(insn, Insn::Interp) {
+            if off + len > code.len() && !matches!(insn, Insn::Interp) && !GEN_STRADDLE {
                 break;
             }
             match insn {
@@ -4020,6 +4034,10 @@ pub static mut HEAT_MAX: u32 = u32::MAX;
 pub static mut HEAT_COMPILES: u32 = 0;
 pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
+/// instructions that continue into the next page compile (from the next physical page's bytes)
+static mut STRADDLE_NATIVE: bool = true;
+/// the module being generated has such an instruction
+static mut GEN_STRADDLE: bool = false;
 /// entries visited while their page's module did not serve them join its next compile
 static mut PENDING_SEEDS: bool = true;
 /// visits of such an entry before it is noted
@@ -4228,7 +4246,8 @@ unsafe fn try_run_block() -> bool {
                 // maps to the block of this slot
                 // (the module is still the one of the slot when its index has the same generation)
                 let ok = match probe_fetch(r, user) {
-                    Some(phys) => block_key(phys & !0xFFF, user) == slot.key && INDEX_GEN[slot.index as usize] == slot.gen,
+                    Some(phys) => block_key(phys & !0xFFF, user) == slot.key && INDEX_GEN[slot.index as usize] == slot.gen
+                        && (!slot.straddle || probe_fetch((r & !0xFFF).wrapping_add(0x1000), user) == Some((phys & !0xFFF) + 0x1000)),
                     _ => false,
                 };
                 if !ok {
@@ -4358,6 +4377,7 @@ unsafe fn refill_slot(r: u64, key: u64, off: usize) {
     slot.key = key;
     slot.epoch = epoch(b.user).wrapping_sub(1); // validated on the first run
     slot.gen = INDEX_GEN[b.index as usize];
+    slot.straddle = b.straddle;
     slot.state = match b.state {
         BlockState::Pending => SLOT_PENDING,
         BlockState::Ready => SLOT_READY,
@@ -4406,6 +4426,7 @@ unsafe fn compile(r: u64, user: bool) {
     }
     let out_of_range = r < RANGE_LO || r >= RANGE_HI;
     GEN_PAGE = page;
+    GEN_STRADDLE = false;
     let mut old = None;
     let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, ext, &seeds, &spec), |index| {
         // registered before the module is handed to the host, which may finish synchronously
@@ -4424,7 +4445,16 @@ unsafe fn compile(r: u64, user: bool) {
             bit_set(&mut failed, offset);
         }
         old = st.blocks.remove(&key).map(|b| (b.state, b.index));
-        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: 0, served, covered, failed, seeds: seeds.clone(), compiles: compiles + 1, heuristic: HEURISTIC_SEEDS || heuristic });
+        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: 0, served, covered, failed, seeds: seeds.clone(), compiles: compiles + 1, heuristic: HEURISTIC_SEEDS || heuristic, straddle: GEN_STRADDLE });
+        if GEN_STRADDLE {
+            // writes to the next page invalidate this module as well
+            let list = st.page_blocks.entry(page + 1).or_default();
+            if !list.contains(&key) {
+                list.push(key);
+            }
+            jit::maybe_has_code_set(Page::of_u32(page + 1));
+            crate::cpu::cpu::tlb_set_has_code(Page::of_u32(page + 1), true);
+        }
         st.by_index.insert(index, key);
         let list = st.page_blocks.entry(page).or_default();
         if !list.contains(&key) {
@@ -4455,7 +4485,7 @@ unsafe fn compile(r: u64, user: bool) {
             None => {
                 let mut failed = [0u64; 64];
                 bit_set(&mut failed, offset);
-                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: 0, served: [0; 64], covered: [0; 64], failed, seeds: vec![], compiles: 1, heuristic: false });
+                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: 0, served: [0; 64], covered: [0; 64], failed, seeds: vec![], compiles: 1, heuristic: false, straddle: false });
                 let list = st.page_blocks.entry(page).or_default();
                 if !list.contains(&key) {
                     list.push(key);
