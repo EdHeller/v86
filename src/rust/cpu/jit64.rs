@@ -101,7 +101,9 @@ const SLOT_FAILED: u8 = 3;
 const SLOT_EMPTY: Slot = Slot { rip: u64::MAX, count: 0, phys_page: 0, epoch: 0, index: 0, key: 0, state: SLOT_COUNTING, user: false, limit: 0 };
 const SLOTS: usize = 65536;
 
-fn slot_index(r: u64) -> usize { (r ^ r >> 12 ^ r >> 24) as usize & (SLOTS - 1) }
+/// (a multiplicative hash: the xor of address bits mapped the hot entries of some kernel pages
+/// onto the same slots, which then took turns counting and never reached the threshold)
+fn slot_index(r: u64) -> usize { (r.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - 16)) as usize & (SLOTS - 1) }
 
 struct State {
     blocks: HashMap<u64, Block, PageBuildHasher>,
