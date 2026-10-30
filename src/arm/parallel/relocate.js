@@ -10,7 +10,7 @@
 // hosts encode in the load or store instruction). Slot 0 is the machine
 // instance's, so its state block is where v86.wasm has it.
 
-import { dbg_assert } from "../../log.js";
+import { dbg_assert } from "../log.js";
 
 export const PAGE_SIZE = 65536;
 export const STATE_SLOTS = 8;

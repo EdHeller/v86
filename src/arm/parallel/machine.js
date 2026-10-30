@@ -8,8 +8,7 @@
 // control block's clock offset current and stops all cores (parks them at a
 // safe point) around snapshots, resets, sleep states and pauses.
 
-import { dbg_log } from "../../log.js";
-import { LOG_CPU } from "../../const.js";
+import { dbg_log, LOG_CPU } from "../log.js";
 import { CORE_STATE_RANGES } from "../state_layout.js";
 import { image_size, PAGE_SIZE } from "./relocate.js";
 import * as C from "./control.js";

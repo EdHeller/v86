@@ -297,7 +297,13 @@ VirtioMmioRng.prototype.handle = function(index, request)
     {
         if(!b.write) continue;
         const target = this.mem(b.address, b.length);
-        for(let at = 0; at < b.length; at += 65536) crypto.getRandomValues(target.subarray(at, Math.min(b.length, at + 65536)));
+        // (the memory may be shared, which getRandomValues refuses: fill a copy)
+        for(let at = 0; at < b.length; at += 65536)
+        {
+            const part = new Uint8Array(Math.min(b.length, at + 65536) - at);
+            crypto.getRandomValues(part);
+            target.set(part, at);
+        }
         this.machine.ram_written(b.address, b.length);
         written += b.length;
     }
