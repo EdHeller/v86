@@ -398,6 +398,9 @@ V86.prototype.continue_init = async function(emulator, options)
             case "cdrom":
                 settings.cdrom = buffer;
                 break;
+            case "virtio_blk":
+                settings.virtio_blk = buffer;
+                break;
             case "fda":
                 settings.fda = buffer;
                 break;
@@ -505,6 +508,9 @@ V86.prototype.continue_init = async function(emulator, options)
     add_file("multiboot", options.multiboot);
     add_file("bzimage", options.bzimage);
     add_file("initrd", options.initrd);
+    add_file("virtio_blk", options.virtio_blk);
+    settings.virtio_blk_readonly = !!options.virtio_blk_readonly;
+    settings.virtio_rng = !!options.virtio_rng;
 
     // USB (usb: { controller, tablet, mass_storage: [{ id, image, read_only }] })
     settings.usb = options.usb || undefined;

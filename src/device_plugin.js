@@ -7,8 +7,8 @@ import { LOG_PCI } from "./const.js";
 import { dbg_log } from "./log.js";
 import { v86 } from "./main.js";
 
-const IO_POOL_START = 0xD000;
-const IO_POOL_END = 0xE000;
+const IO_POOL_START = 0x9000;
+const IO_POOL_END = 0xA000;
 
 /** @const */
 export const AUDIO_PLUGINS = { registry: "V86AudioDevices", option: "audio_device", dir: "audio_devices", tag: "audio_device" };

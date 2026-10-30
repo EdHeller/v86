@@ -36,6 +36,8 @@ import { IDEController } from "./ide.js";
 import { VirtioNet } from "./virtio_net.js";
 import { VGAScreen } from "./vga.js";
 import { VirtioBalloon } from "./virtio_balloon.js";
+import { VirtioRng } from "./virtio_rng.js";
+import { VirtioBlk } from "./virtio_blk.js";
 import { Virtio9p, Virtio9pHandler, Virtio9pProxy } from "../lib/9p.js";
 
 import { load_kernel } from "./kernel.js";
@@ -595,6 +597,8 @@ CPU.prototype.get_state = function()
     state[94] = this.long_mode_state;
     state[95] = this.devices.usb;
     state[96] = this.devices.audio;
+    state[97] = this.devices.virtio_rng;
+    state[98] = this.devices.virtio_blk;
 
     return state;
 };
@@ -719,6 +723,8 @@ CPU.prototype.set_state = function(state)
     state[94] && this.long_mode_state.set(state[94]);
     this.devices.usb && state[95] && this.devices.usb.set_state(state[95]);
     this.devices.audio && state[96] && this.devices.audio.set_state(state[96]);
+    this.devices.virtio_rng && state[97] && this.devices.virtio_rng.set_state(state[97]);
+    this.devices.virtio_blk && state[98] && this.devices.virtio_blk.set_state(state[98]);
     if(!(this.long_mode_state[46] & 1)) this.long_mode_state[46] = 1; // xcr0 of states saved before it was part of the state
 
     this.set_tsc(state[43][0], state[43][1]);
@@ -987,6 +993,14 @@ CPU.prototype.reboot_internal = function()
     if(this.devices.audio)
     {
         this.devices.audio.reset();
+    }
+    if(this.devices.virtio_rng)
+    {
+        this.devices.virtio_rng.reset();
+    }
+    if(this.devices.virtio_blk)
+    {
+        this.devices.virtio_blk.reset();
     }
     if(this.devices.ps2)
     {
@@ -1335,6 +1349,16 @@ CPU.prototype.init = function(settings, device_bus)
         if(settings.virtio_balloon)
         {
             this.devices.virtio_balloon = new VirtioBalloon(this, device_bus);
+        }
+
+        if(settings.virtio_rng)
+        {
+            this.devices.virtio_rng = new VirtioRng(this);
+        }
+
+        if(settings.virtio_blk)
+        {
+            this.devices.virtio_blk = new VirtioBlk(this, settings.virtio_blk, { readonly: settings.virtio_blk_readonly, id: "v86disk" });
         }
 
         if(settings.audio_device === "hd_audio")
@@ -2067,7 +2091,7 @@ CPU.prototype.add_device_timer = function(timer)
 CPU.prototype.create_usb_plugin = function(settings, bus)
 {
     const controller = settings.usb["controller"] || "uhci";
-    if(controller === "ehci")
+    if(controller === "ehci" && !globalThis.ALLOW_EHCI)
     {
         throw new Error("usb.controller \"ehci\" is not supported yet (SeaBIOS hangs on its companion functions); use \"uhci\" or \"xhci\"");
     }

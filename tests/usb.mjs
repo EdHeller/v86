@@ -11,6 +11,8 @@ const emulator = new V86({
     cdrom: { buffer: buf(`/root/jitwork/alpine-virt-3.24.3-${tag}.iso`) }, memory_size: 256 * 1024 * 1024,
     autostart: true, acpi: false, wasm_path: repo + "/build/v86.wasm", log_level: +process.env.LOG || 0,
     audio_device: process.env.AUDIO,
+    virtio_rng: !!process.env.VRNG,
+    virtio_blk: process.env.VBLK ? { buffer: disk.buffer.slice(0) } : undefined,
     usb: { controller: process.env.USBC || "uhci", tablet: true, mass_storage: [{ id: "stick", image: { buffer: disk.buffer } }] },
 });
 let ser = ""; const t0 = Date.now();
