@@ -4026,6 +4026,8 @@ pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
 /// entries visited while their page's module did not serve them join its next compile
 static mut PENDING_SEEDS: bool = true;
+/// visits of such an entry before it is noted
+static mut PENDING_AFTER: u32 = 2;
 /// supervisor pages: their likely function starts are entries from the first compile on
 /// (kernel code is reached through function pointers that direct calls never lead to)
 static mut HEURISTIC_KERNEL: bool = false;
@@ -4267,7 +4269,7 @@ unsafe fn try_run_block() -> bool {
                     *m.entry(block_key(phys & !0xFFF, user)).or_insert(0) += 1;
                 }
             }
-            if slot.count == 8 && PENDING_SEEDS {
+            if slot.count == PENDING_AFTER && PENDING_SEEDS {
                 // (visited a few times: worth an entry when the page is compiled next)
                 if let Some(phys) = probe_fetch(r, user) {
                     let key = block_key(phys & !0xFFF, user);
