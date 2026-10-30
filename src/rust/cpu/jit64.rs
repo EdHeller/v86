@@ -551,6 +551,8 @@ enum Insn {
     Rdtsc,
     /// cli (false) and sti (true) at CPL 0: sti ends the block, with the interrupt shadow set
     IfFlag { set: bool },
+    /// pushfq (the flags in memory, when no lazy flags of the interpreter are pending)
+    Pushf,
     /// 128 bit moves between an xmm register and an xmm register or memory (the alignment is checked for the aligned forms)
     SseMov { load: bool, aligned: bool, x: u8, rm: Opd },
     /// pxor / por / pand / pandn and the xorps family: 0 xor, 1 or, 2 and, 3 andn
@@ -596,7 +598,7 @@ fn kind(i: &Insn) -> u32 {
         Insn::Str { .. } => 18,
         Insn::Neg { .. } | Insn::Not { .. } | Insn::Bswap { .. } => 19,
         Insn::Imul { .. } | Insn::MulDiv { .. } => 20,
-        Insn::Cmpxchg { .. } | Insn::Xadd { .. } | Insn::Rdtsc | Insn::IfFlag { .. } => 22,
+        Insn::Cmpxchg { .. } | Insn::Xadd { .. } | Insn::Rdtsc | Insn::IfFlag { .. } | Insn::Pushf => 22,
         Insn::SseMov { .. } | Insn::SseLogic { .. } | Insn::SseMovd { .. } | Insn::SseMovq { .. } | Insn::SsePunpcklqdq { .. } => 23,
         Insn::CallInd { .. } | Insn::JmpInd { .. } => 21,
         Insn::Xchg { .. } => 22,
@@ -921,6 +923,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         },
         0xC9 => Insn::Leave { bits: if p.osz16 { 16 } else { 64 } },
         0xFA | 0xFB if rep == 0 => Insn::IfFlag { set: opcode == 0xFB },
+        0x9C if rep == 0 && !p.osz16 => Insn::Pushf,
         0xE8 => {
             let d = c.i32()?;
             let target = rip.wrapping_add(c.pos as u64).wrapping_add(d as u64);
@@ -1160,7 +1163,7 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::MulDiv { op, src, .. } => (false, op < 6, has_mem(&src)),
         Insn::Cmpxchg { dst, .. } | Insn::Xadd { dst, .. } => (false, true, has_mem(&dst)),
         Insn::Rdtsc => (false, false, false),
-        Insn::IfFlag { .. } => (true, false, true),
+        Insn::IfFlag { .. } | Insn::Pushf => (true, false, true),
         Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovd { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } => (false, false, has_mem(&rm)),
     };
     FlagFx { reads, writes_all, fault }
@@ -1417,6 +1420,7 @@ fn insn_regs(i: &Insn) -> (u16, u16) {
         },
         Insn::Rdtsc => { r |= 1 | 1 << 2; w |= 1 | 1 << 2; },
         Insn::IfFlag { .. } => {},
+        Insn::Pushf => { r |= 1 << 4; w |= 1 << 4; },
         Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } => {
             if let Opd::Mem(ea) = rm { ea_regs(&ea, &mut r) }
         },
@@ -2812,6 +2816,33 @@ impl<'a> Gen<'a> {
                     self.write_opd_saved(&dst, bits);
                 }
                 self.pending = Some(Pending { kind: 0, bits, keep_cf: false });
+            },
+            Insn::Pushf => {
+                self.materialize();
+                // lazy flags of the interpreter: it pushes them itself
+                self.b.load_fixed_i32(flags_changed as u32);
+                self.b.if_void();
+                self.retry_exit();
+                self.b.block_end();
+                self.set_previous_ip();
+                self.b.load_fixed_i32(flags as u32);
+                self.b.const_i32(!(FLAG_VM | FLAG_RF));
+                self.b.and_i32();
+                self.b.const_i32(FLAGS_DEFAULT);
+                self.b.or_i32();
+                self.b.extend_unsigned_i32_to_i64();
+                self.b.set_local_i64(&self.t_v);
+                self.get_reg(4, 64, true);
+                self.b.const_i64(8);
+                self.b.sub_i64();
+                self.b.set_local_i64(&self.t_ea);
+                self.b.get_local_i64(&self.t_ea);
+                self.b.get_local_i64(&self.t_v);
+                self.write_mem(64);
+                self.fault_check();
+                self.smc_check();
+                self.b.get_local_i64(&self.t_ea);
+                self.set_reg(4, 64, true);
             },
             Insn::IfFlag { set } => {
                 // CPL 0 (IOPL is at least the CPL): otherwise the interpreter (#GP or not)
