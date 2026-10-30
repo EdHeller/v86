@@ -53,3 +53,15 @@ APIC routing, MCFG) come through the table loader with both firmwares.
 Disks and the CD stay on v86's PIIX IDE function (no AHCI). With UEFI the
 display is the `bochs_vga` plugin, whose BAR OVMF moves out of the ECAM
 window. Test: `node tests/q35.mjs` (SeaBIOS), `UEFI=1 node tests/q35.mjs`.
+
+# TPM 2.0
+
+`tpm: { wasm: { url: "bios/libtpms.wasm" } }` (with `acpi: true`, on Q35 or
+with UEFI, where the ACPI tables come through the table loader) adds v64's
+TPM 2.0: the CRB interface at 0xFED40000 in front of libtpms compiled to
+WebAssembly (`src/tpm/`, `bios/libtpms.wasm`, licenses in
+`bios/LIBTPMS-LICENSES.txt`), a TPM2 ACPI table with its event log area,
+and the `MSFT0101` device. Its permanent state lives in memory for the
+session. OVMF finds it ("TPM2 detected", TPM2_Startup, PCR banks, measured
+boot); Linux needs `tpm_crb`, which Alpine's virt kernel does not ship.
+Test: `UEFI=1 node tests/tpm.mjs`.
