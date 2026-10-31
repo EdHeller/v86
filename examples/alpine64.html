@@ -4,7 +4,9 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
 <style>
     body { font: 14px sans-serif; margin: 16px; background: #222; color: #ddd; }
-    #screen_container { display: inline-block; background: #000; vertical-align: top; }
+    #main { display: inline-block; vertical-align: top; }
+    #screen_container { display: inline-block; background: #000; vertical-align: top; cursor: text; }
+    .hint { font-size: 12px; color: #999; margin: 4px 0; }
     #screen_container canvas { image-rendering: pixelated; }
     #side { display: inline-block; vertical-align: top; margin-left: 16px; max-width: 900px; }
     button { margin-right: 8px; }
@@ -23,15 +25,18 @@
     <button id="copy">copy timing log</button>
     <label><input type="checkbox" id="autologin" checked> log in as root automatically</label>
 </p>
-<div id="screen_container">
-    <div style="white-space: pre; font: 14px monospace; line-height: 14px"></div>
-    <canvas style="display: none"></canvas>
+<div id="main">
+    <div id="screen_container">
+        <div style="white-space: pre; font: 14px monospace; line-height: 14px"></div>
+        <canvas style="display: none"></canvas>
+    </div>
+    <p class="hint">Click the screen to type into it (tty1); click the terminal below for the serial console (ttyS0).</p>
+    <div id="terminal"></div>
+    <div id="serialpre"></div>
 </div>
 <div id="side">
     <div id="log"></div>
     <div id="status"></div>
-    <div id="terminal"></div>
-    <div id="serialpre"></div>
 </div>
 
 <script>
@@ -55,9 +60,12 @@ document.getElementById("title").innerHTML = "Alpine Linux " + version + " <b>" 
 const t0 = performance.now();
 
 // The kernel and initramfs are taken out of the ISO and booted directly, so that the kernel command line
-// can send the console to the serial port (the ISO itself is the root media, as usual). tty0 stays a console
-// for the screen; the last console= is the one init and the serial getty use.
-const cmdline = "modules=loop,squashfs,sd-mod,usb-storage quiet console=tty0 console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on";
+// can send the console to the serial port (the ISO itself is the root media, as usual). tty1 stays a console
+// for the screen; the last console= is the one init and the serial getty use. (Not tty0: Alpine's init adds
+// a getty for every console= that has none, and one on tty0 shares the screen with tty1's: its shell has no
+// controlling tty, "-sh: can't access tty; job control turned off", and keys typed on the screen go to
+// either of the two.)
+const cmdline = "modules=loop,squashfs,sd-mod,usb-storage quiet console=tty1 console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on";
 const options = {
     wasm_path: param("wasm") === "prev" ? "../build/v86-prev.wasm" : "../build/v86.wasm",
     acpi: param("acpi") !== null || +param("cores") > 1,   // ?acpi=1: ACPI + APIC/IOAPIC
@@ -127,9 +135,14 @@ document.getElementById("login").onclick = () => emulator.keyboard_send_text("ro
 // 40000 iterations of i=$((i+1)) in busybox ash, run over the serial console so that the result is logged here
 document.getElementById("bench").onclick = () => {
     log("benchmark started (serial shell): 40000-iteration shell loop");
-    emulator.serial0_send("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\n");
+    emulator.serial0_send("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\r");
 };
 document.getElementById("copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText(tag + "\n" + lines.join("\n"));
+
+// clicking the screen gives it the keyboard (the terminal keeps it while it has the focus)
+document.getElementById("screen_container").addEventListener("mousedown", () => {
+    if(document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+});
 
 let gui_on = true;
 document.getElementById("gui").onclick = () => {
@@ -149,7 +162,9 @@ setInterval(() => {
         seen.login = true;
         log("LOGIN PROMPT REACHED  (boot time)");
         if(document.getElementById("autologin").checked) {
-            emulator.serial0_send("root\n");            // the serial console, whose output the timeline reads
+            // (CR, like the Enter key of a terminal: getty turns on CR -> NL for the session only when the
+            // login name ends with CR; with LF, Enter typed in the terminal later shows ^M)
+            emulator.serial0_send("root\r");            // the serial console, whose output the timeline reads
             emulator.keyboard_send_text("root\n");      // and the screen console, for you
             log("typed root");
         }
