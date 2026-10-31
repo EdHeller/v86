@@ -298,24 +298,37 @@ pub unsafe fn flush() {
         e.vpn = INVALID;
     }
     jtlb_flush();
+    clear_filled();
     FETCH_VPN = INVALID;
     super::jit64::tlb_flushed();
 }
 
 /// MOV CR3 (no PCID): the global translations stay
 pub unsafe fn flush_nonglobal() {
-    #[allow(static_mut_refs)]
-    for e in TLB.iter_mut() {
-        if e.perm & F_GLOBAL == 0 {
-            e.vpn = INVALID;
+    // (only the filled indices: the rest is invalid already)
+    let mut kept = 0;
+    for k in 0..FILLED_N {
+        let i = FILLED[k] as usize;
+        let mut global = false;
+        let e = &raw mut TLB[i];
+        if (*e).vpn != INVALID {
+            if (*e).perm & F_GLOBAL == 0 { (*e).vpn = INVALID } else { global = true }
+        }
+        for class in 0..4 {
+            let j = &raw mut JTLB[class * JTLB_SIZE + i];
+            if (*j).vpn != INVALID {
+                if (*j).pad == 0 { (*j).vpn = INVALID } else { global = true }
+            }
+        }
+        if global {
+            FILLED[kept] = i as u16;
+            kept += 1;
+        }
+        else {
+            FILLED_BITS[i >> 6] &= !(1 << (i & 63));
         }
     }
-    #[allow(static_mut_refs)]
-    for e in JTLB.iter_mut() {
-        if e.pad == 0 {
-            e.vpn = INVALID;
-        }
-    }
+    FILLED_N = kept;
     FETCH_VPN = INVALID;
     super::jit64::tlb_flushed_nonglobal();
 }
@@ -375,7 +388,26 @@ pub unsafe fn translate(addr: u64, write: bool, user: bool, fetch: bool) -> OrPa
     let (phys, perm) = walk(addr, write, user, fetch, true, true)?;
     *e = Entry { vpn, phys: phys & !0xFFF, perm, fast: fast_flags(phys, perm) };
     jtlb_update(vpn, phys & !0xFFF, (*e).fast, perm);
+    note_filled(vpn as usize & (TLB_SIZE - 1));
     Ok(phys)
+}
+
+/// The tlb indices (also the jit tlb's: same size) filled since the last flush, so that MOV CR3
+/// does not scan the tables
+static mut FILLED: [u16; TLB_SIZE] = [0; TLB_SIZE];
+static mut FILLED_N: usize = 0;
+static mut FILLED_BITS: [u64; TLB_SIZE / 64] = [0; TLB_SIZE / 64];
+const _: () = assert!(JTLB_SIZE == TLB_SIZE);
+unsafe fn note_filled(i: usize) {
+    if FILLED_BITS[i >> 6] >> (i & 63) & 1 == 0 {
+        FILLED_BITS[i >> 6] |= 1 << (i & 63);
+        FILLED[FILLED_N] = i as u16;
+        FILLED_N += 1;
+    }
+}
+unsafe fn clear_filled() {
+    FILLED_N = 0;
+    FILLED_BITS = [0; TLB_SIZE / 64];
 }
 
 /// Like `translate`, but never raises an exception and does not modify page table entries
