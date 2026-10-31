@@ -197,6 +197,10 @@ static mut TLB: [Entry; TLB_SIZE] = [Entry { vpn: INVALID, phys: 0, perm: 0, fas
 /// at supervisor / user level, in this order), so an access needs one compare. An entry exists only
 /// when the access can be done inline: plain ram, permitted for the kind, and for writes a page that
 /// has no compiled code and is dirty. Entries are made from the entries of `TLB` (`FAST_*`), and go with them.
+/// the `phys` of a jit tlb entry: what the low 32 bits of a linear address in the page add up with
+/// to the address in ram (so compiled code needs one add)
+fn jdelta(vpn: u64, phys_page: u32) -> u32 { phys_page.wrapping_sub((vpn as u32) << 12) }
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct JEntry {
@@ -216,7 +220,7 @@ unsafe fn jtlb_update(vpn: u64, phys_page: u32, fast: u8, perm: u8) {
     for class in 0..4usize {
         let e = &raw mut JTLB[class * JTLB_SIZE + (vpn as usize & (JTLB_SIZE - 1))];
         if fast >> class & 1 != 0 {
-            *e = JEntry { vpn, phys: phys_page, pad: (perm & F_GLOBAL != 0) as u32 };
+            *e = JEntry { vpn, phys: jdelta(vpn, phys_page), pad: (perm & F_GLOBAL != 0) as u32 };
         }
         else if (*e).vpn == vpn {
             (*e).vpn = INVALID;
@@ -283,7 +287,7 @@ pub unsafe fn code_page_added(physical_page: u32) {
     // (the write tables)
     #[allow(static_mut_refs)]
     for e in JTLB[2 * JTLB_SIZE..].iter_mut() {
-        if e.vpn != INVALID && e.phys >> 12 == physical_page {
+        if e.vpn != INVALID && e.phys.wrapping_add((e.vpn as u32) << 12) >> 12 == physical_page {
             e.vpn = INVALID;
         }
     }
@@ -380,7 +384,7 @@ pub unsafe fn translate(addr: u64, write: bool, user: bool, fetch: bool) -> OrPa
             let class = (write as usize) << 1 | user as usize;
             let j = &raw mut JTLB[class * JTLB_SIZE + (vpn as usize & (JTLB_SIZE - 1))];
             if (*j).vpn != vpn && (*e).fast >> class & 1 != 0 {
-                *j = JEntry { vpn, phys: (*e).phys, pad: ((*e).perm & F_GLOBAL != 0) as u32 };
+                *j = JEntry { vpn, phys: jdelta(vpn, (*e).phys), pad: ((*e).perm & F_GLOBAL != 0) as u32 };
             }
         }
         return Ok((*e).phys | (addr & 0xFFF) as u32);

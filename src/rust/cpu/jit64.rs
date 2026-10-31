@@ -2197,12 +2197,10 @@ impl<'a> Gen<'a> {
     /// to the address of the entry
     fn tlb_hit(&mut self, bits: u32, write: bool) {
         use crate::cpu::long_mem::*;
-        // page number and entry address (in the table of this kind of access at this privilege level)
+        // entry address (in the table of this kind of access at this privilege level)
         self.b.get_local_i64(&self.t_fa);
         self.b.const_i64(12);
         self.b.shr_u_i64();
-        self.b.set_local_i64(&self.t_fp);
-        self.b.get_local_i64(&self.t_fp);
         self.b.wrap_i64_to_i32();
         self.b.const_i32(JTLB_MASK as i32);
         self.b.and_i32();
@@ -2210,22 +2208,18 @@ impl<'a> Gen<'a> {
         self.b.shl_i32();
         self.b.get_local(if write { &self.jw } else { &self.jr });
         self.b.add_i32();
-        self.b.set_local(&self.t_fe);
-        // the entry is for this page (entries only exist for accesses that can be done here)
-        self.b.get_local(&self.t_fe);
+        self.b.tee_local(&self.t_fe);
         self.b.load_aligned_i64(0);
-        self.b.get_local_i64(&self.t_fp);
-        self.b.eq_i64();
+        // the entry is for the page of the access's last byte (entries only exist for accesses that
+        // can be done here; one that crosses into the next page does not match)
+        self.b.get_local_i64(&self.t_fa);
         if bits > 8 {
-            // does not cross the page
-            self.b.get_local_i64(&self.t_fa);
-            self.b.wrap_i64_to_i32();
-            self.b.const_i32(0xFFF);
-            self.b.and_i32();
-            self.b.const_i32(0x1000 - bits as i32 / 8);
-            self.b.leu_i32();
-            self.b.and_i32();
+            self.b.const_i64(bits as i64 / 8 - 1);
+            self.b.add_i64();
         }
+        self.b.const_i64(12);
+        self.b.shr_u_i64();
+        self.b.eq_i64();
     }
 
     /// pushes the address in ram of the byte addressed by t_fa (after tlb_hit)
@@ -2235,9 +2229,7 @@ impl<'a> Gen<'a> {
         self.b.load_aligned_i32(JTLB_ENTRY_PHYS);
         self.b.get_local_i64(&self.t_fa);
         self.b.wrap_i64_to_i32();
-        self.b.const_i32(0xFFF);
-        self.b.and_i32();
-        self.b.or_i32();
+        self.b.add_i32();
     }
 
     /// [addr on stack] -> value
@@ -4527,9 +4519,7 @@ fn access_fn(b: &mut WasmBuilder, bits: u32, write: bool) {
     b.load_aligned_i32(JTLB_ENTRY_PHYS);
     b.get_local_i64(&addr);
     b.wrap_i64_to_i32();
-    b.const_i32(0xFFF);
-    b.and_i32();
-    b.or_i32();
+    b.add_i32();
     if write {
         b.get_local_i64(&val);
         match bits {
@@ -4567,7 +4557,7 @@ unsafe fn jt_lookup(addr: i64, tab: i32, bytes: u32) -> Option<*mut u8> {
         MEM_MISS = 1;
         return None;
     }
-    let phys = *(e.add(JTLB_ENTRY_PHYS as usize) as *const u32) | (a as u32 & 0xFFF);
+    let phys = (*(e.add(JTLB_ENTRY_PHYS as usize) as *const u32)).wrapping_add(a as u32);
     Some(crate::cpu::memory::mem8.add(phys as usize))
 }
 #[no_mangle]
