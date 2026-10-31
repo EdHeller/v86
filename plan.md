@@ -57,9 +57,12 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
 1. [ ] **virtio-gpu with an optional WebGPU renderer (top priority).**
    - Port v64's `src/graphics_adapters/virtio_gpu/` (19 files; `docs/gpu-devices.md`, `docs/display-design.md`
      there) as a plugin next to `bochs_vga` and `vmware_svga`, option `graphics_adapter: "virtio_gpu"`.
-   - Step 1, 2D: resources, transfers, scanout to the existing screen adapter, the cursor, EDID. On x86 over
-     virtio-pci (the x86 VirtIO core, which needs a memory BAR for its structures: today it only has I/O BARs). On
-     arm64 over virtio-mmio first (no PCIe needed), and over virtio-pci once task 3 lands.
+   - [x] Step 1a, 2D on x86 (2026-10-31): v64's plugin (`src/graphics_adapters/virtio_gpu/`, `build/v86-virtio-gpu.js`)
+     as virtio-vga in the VGA slot; the x86 VirtIO core got capabilities in a memory BAR, adapter BARs, the
+     VGA BIOS as expansion ROM and shared-memory capabilities; `src/virtio_devices.js` is v64's adapter handle.
+     `tests/virtio_gpu.mjs [x86_64|x86]`: Linux's virtio_gpu binds, fbcon on virtio_gpudrmfb, tty1's text on the
+     scanout. `examples/alpine64.html?graphics_adapter=virtio_gpu` shows the console in Chromium.
+   - [ ] Step 1b, 2D on arm64: over virtio-mmio first (no PCIe needed), over virtio-pci once task 3 lands.
    - Step 2, 3D: virgl (GL) and Venus (Vulkan) through v64's glbridge/gfxstream path with WebGPU
      (`docs/glbridge.md`, `docs/gfxstream-plan.md`). Host-visible memory is device memory on the core's bus.
    - It must stay optional: without WebGPU, or with the option off, the device is 2D only (or the machine keeps its

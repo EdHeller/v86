@@ -251,6 +251,8 @@ V86.prototype.continue_init = async function(emulator, options)
     settings.load_devices = true;
     settings.memory_size = options.memory_size || 64 * 1024 * 1024;
     settings.vga_memory_size = options.vga_memory_size || 8 * 1024 * 1024;
+    // (a graphics_adapter plugin's VRAM: vram_size, else vga_memory_size if given, else the adapter's own default)
+    settings.vram_size = options.vram_size || options.vga_memory_size;
     settings.boot_order = boot_order;
     settings.fastboot = options.fastboot || false;
     settings.bootmenu = options.bootmenu || false;

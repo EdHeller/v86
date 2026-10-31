@@ -7,6 +7,7 @@
 import { LOG_PCI, FLAG_VM } from "./const.js";
 import { dbg_log } from "./log.js";
 import { device_handle, allocate_io_ports, plugin_pci_device } from "./device_plugin.js";
+import { create_adapter_virtio_device } from "./virtio_devices.js";
 
 // For Types Only
 import { CPU } from "./cpu.js";
@@ -170,7 +171,9 @@ GraphicsAdapter.prototype.create_handle = function()
         "dirty_min_offset": () => cpu.svga_dirty_bitmap_min_offset[0],
         "dirty_max_offset": () => cpu.svga_dirty_bitmap_max_offset[0],
 
-        "create_virtio": () => { throw new Error("graphics_adapter \"" + this.name + "\": virtio adapters are not supported"); },
+        // a virtio function in the adapter's slot (virtio-gpu as virtio-vga; the
+        // descriptor as in v64's virtio_devices, see create_adapter_virtio_device)
+        "create_virtio": descriptor => this.create_virtio(descriptor),
         "on_host_display_size": handler =>
             cpu.bus.register("display-host-size", data => handler(data[0], data[1], data[2] || 0), this),
         "in_vm86": () => !!(cpu.flags[0] & FLAG_VM),
@@ -218,6 +221,17 @@ GraphicsAdapter.prototype.register_pci = function(description)
     }
     this.pci_device = plugin_pci_device(this, description);
     return this.cpu.devices.pci.register_device(this.pci_device);
+};
+
+GraphicsAdapter.prototype.create_virtio = function(descriptor)
+{
+    if(this.pci_device)
+    {
+        throw new Error("graphics_adapter \"" + this.name + "\" registered its PCI function twice");
+    }
+    const device = create_adapter_virtio_device(this.cpu, descriptor, this.pci_id);
+    this.pci_device = device.virtio;
+    return device.handle;
 };
 
 GraphicsAdapter.prototype.vga = function()

@@ -88,7 +88,7 @@ CARGO_FLAGS_PARALLEL=$(CARGO_FLAGS) -C target-feature=+atomics \
 CORE_FILES=cjs.js const.js io.js main.js lib.js buffer.js ide.js pci.js floppy.js \
 	   dma.js pit.js vga.js ps2.js rtc.js uart.js parallel.js vmware.js \
 	   acpi.js iso9660.js \
-	   state.js ne2k.js sb16.js virtio.js virtio_console.js virtio_net.js virtio_balloon.js virtio_rng.js virtio_blk.js virtio_snd.js virtio_input.js display.js graphics_adapter.js platform.js acpi_tables.js q35.js device_machine.js device_plugin.js usb/usb.js usb/usb_device.js usb/hid_tablet.js usb/mass_storage.js usb/uhci.js usb/ehci.js usb/xhci.js usb/machine.js usb/plugin.js audio_devices/machine.js audio_devices/hd_audio/codec.js audio_devices/hd_audio/controller.js audio_devices/hd_audio/plugin.js \
+	   state.js ne2k.js sb16.js virtio.js virtio_devices.js virtio_console.js virtio_net.js virtio_balloon.js virtio_rng.js virtio_blk.js virtio_snd.js virtio_input.js display.js graphics_adapter.js platform.js acpi_tables.js q35.js device_machine.js device_plugin.js usb/usb.js usb/usb_device.js usb/hid_tablet.js usb/mass_storage.js usb/uhci.js usb/ehci.js usb/xhci.js usb/machine.js usb/plugin.js audio_devices/machine.js audio_devices/hd_audio/codec.js audio_devices/hd_audio/controller.js audio_devices/hd_audio/plugin.js \
 	   bus.js log.js cpu.js \
 	   elf.js kernel.js parallel/relocate.js parallel/control.js parallel/machine.js
 LIB_FILES=9p.js filesystem.js marshall.js
@@ -106,7 +106,7 @@ RUST_FILES=$(shell find src/rust/ -name '*.rs') \
 GRAPHICS_ADAPTER_COMMON=src/cjs.js src/const.js src/lib.js src/log.js src/bus.js src/display.js \
 	src/device_machine.js src/graphics_adapters/machine.js src/graphics_adapters/vga_core.js src/graphics_adapters/renderer_protocol.js
 SVGA=src/graphics_adapters/vmware_svga
-GRAPHICS_ADAPTER_PLUGINS=build/v86-bochs-vga.js build/v86-vmware-svga.js
+GRAPHICS_ADAPTER_PLUGINS=build/v86-bochs-vga.js build/v86-vmware-svga.js build/v86-virtio-gpu.js
 graphics-adapters: $(GRAPHICS_ADAPTER_PLUGINS)
 
 # the TPM 2.0 plugin (tpm option; libtpms itself is bios/libtpms.wasm)
@@ -140,6 +140,25 @@ build/v86-vmware-svga.js: $(CLOSURE) src/*.js src/graphics_adapters/*.js src/gra
 		--js $(SVGA)/svga3d_d9wg.js --js $(SVGA)/svga3d_tables.js \
 		--js $(SVGA)/svga3d_dx.js --js $(SVGA)/svga3d.js \
 		--js $(SVGA)/svga_device.js --js $(SVGA)/plugin.js
+
+build/v86-virtio-gpu.js: $(CLOSURE) src/*.js src/graphics_adapters/*.js src/graphics_adapters/virtio_gpu/*.js src/graphics_adapters/vmware_svga/*.js
+	mkdir -p build
+	java -jar $(CLOSURE) --js_output_file $@ --define=DEBUG=false $(CLOSURE_FLAGS) \
+		--compilation_level SIMPLE --jscomp_off=missingProperties \
+		--output_wrapper ';(function(){%output%}).call(this);' \
+		--js $(GRAPHICS_ADAPTER_COMMON) --js src/graphics_adapters/vmware_svga/svga_cursor.js \
+		--js src/graphics_adapters/vmware_svga/svga_constants.js --js src/graphics_adapters/vmware_svga/svga_dx_formats.js \
+		--js src/graphics_adapters/virtio_gpu/edid.js --js src/graphics_adapters/virtio_gpu/virgl_caps.js \
+		--js src/graphics_adapters/virtio_gpu/tgsi.js --js src/graphics_adapters/virtio_gpu/tgsi_vgpu10.js \
+		--js src/graphics_adapters/virtio_gpu/virgl_context.js --js src/graphics_adapters/virtio_gpu/virgl.js \
+		--js src/graphics_adapters/virtio_gpu/venus_protocol.js --js src/graphics_adapters/virtio_gpu/venus_device_info.js \
+		--js src/graphics_adapters/virtio_gpu/venus_vk_resources.js --js src/graphics_adapters/virtio_gpu/venus_vk_commands.js \
+		--js src/graphics_adapters/virtio_gpu/venus_vk_pipeline.js \
+		--js src/graphics_adapters/virtio_gpu/venus_vk.js --js src/graphics_adapters/virtio_gpu/venus_state.js --js src/graphics_adapters/virtio_gpu/venus.js \
+		--js src/graphics_adapters/virtio_gpu/gfxstream_protocol.js --js src/graphics_adapters/virtio_gpu/gfxstream_vk.js \
+		--js src/graphics_adapters/virtio_gpu/gfxstream.js \
+		--js src/graphics_adapters/virtio_gpu/virtio_gpu_device.js \
+		--js src/graphics_adapters/virtio_gpu/plugin.js
 
 CORE_FILES:=$(addprefix src/,$(CORE_FILES))
 LIB_FILES:=$(addprefix lib/,$(LIB_FILES))

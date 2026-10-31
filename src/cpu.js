@@ -1360,7 +1360,7 @@ CPU.prototype.init = function(settings, device_bus)
             const hub = this.devices.display = new DisplayHub(device_bus, settings.screen);
             this.add_device_timer(now => hub.timer(now));
             this.devices.graphics_adapter = new GraphicsAdapter(this, settings.graphics_adapter_plugin,
-                { vram_size: settings.vga_memory_size, renderer: settings.graphics_adapter_renderer });
+                { vram_size: settings.vram_size, renderer: settings.graphics_adapter_renderer });
             this.devices.vga = this.devices.graphics_adapter.vga();
         }
         else
