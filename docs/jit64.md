@@ -32,6 +32,34 @@ follows the page tier of v64 (see `docs/ir-design.md` there): no intermediate re
   instructions, and the sse moves (movups / movaps / movdqa / movdqu / movd / movq) and logic ops (pxor / por / pand /
   pandn / xorps ...). Everything else is `Insn::Interp`.
 
+## Coverage and dispatch
+
+- **Global translations survive MOV CR3.** The 64-bit tlb and the jit tlb keep
+  global entries (G with CR4.PGE) on a CR3 write; the dispatcher's slots and
+  chain entries carry an epoch per privilege, and the supervisor epoch only
+  steps on a CR3 write when supervisor code was validated through a
+  non-global translation.
+- **Module generations.** A slot is revalidated by its module index's
+  generation (bumped when the module is replaced or dropped), not through the
+  module map.
+- **Hashes.** Slots (65536) and chain entries (65536) use a multiplicative
+  hash: the xor of address bits put the hot entries of some kernel pages on
+  the same slots, which then never reached the compile threshold.
+- **Pending seeds.** An entry visited eight times in a page whose module does
+  not serve it is noted; the page's next compile serves all noted entries
+  (instead of one per recompile).
+- **Straight-line runs enter modules.** The interpreter's run up to the next
+  jump stops at the first instruction the page's module serves.
+- **Compiled instead of interpreted:** cli/sti at CPL 0 (sti leaves with the
+  interrupt shadow set), pause on one core, pushfq, shifts by cl without live
+  flags, dword lane SSE (paddd, pslld/psrld imm, pshufd, punpckldq, shufps),
+  and instructions that continue into the next page (compiled from the next
+  physical page; the module is code of both pages and its slots check that
+  the next virtual page maps there).
+
+Alpine x86_64 to the login prompt (bootmin.mjs, one core, Node, this host):
+about 95 s before these changes, 55-56 s after; v64 43.5 s.
+
 ## The interpreter
 
 `rep movs` / `rep stos` go page stretch by page stretch (`string_fast`), the interpreter runs straight-line code in a
