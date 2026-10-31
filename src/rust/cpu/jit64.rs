@@ -4610,7 +4610,7 @@ static mut GEN_STRADDLE: bool = false;
 /// entries visited while their page's module did not serve them join its next compile
 static mut PENDING_SEEDS: bool = true;
 /// visits of such an entry before it is noted
-static mut PENDING_AFTER: u32 = 8;
+static mut PENDING_AFTER: u32 = 2;
 static mut MISS_LIMIT: u32 = 0;
 static mut MISS_BACKOFF_MAX: u32 = 4;
 /// noted entries of a page that make it compile again right away (0: only at the threshold)
