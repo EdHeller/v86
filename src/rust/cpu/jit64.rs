@@ -221,6 +221,37 @@ pub static mut WATCH_OFF: [u32; 4096] = [0; 4096];
 pub static mut PAGE_HIST: [(u64, u32); 4096] = [(0, 0); 4096];
 pub static mut INTERP_WHY: [u32; 24] = [0; 24];
 pub static mut ALU_OPS: [u32; 64] = [0; 64];
+/// debugging: interpreter batches by the kind of their first rip (counts, instructions):
+/// 0 page without module, 1 served entry, 2 covered (inside a block), 3 not covered, 4 unmapped,
+/// 5 continuation (no dispatcher check before it)
+pub static mut BATCH_COUNT: [u32; 8] = [0; 8];
+pub static mut BATCH_INSNS: [u32; 8] = [0; 8];
+const BATCH_STATS: bool = false;
+struct BatchStat { class: usize, start: u32 }
+impl BatchStat {
+    unsafe fn new(r: u64, checked: bool) -> BatchStat {
+        let user = *cpl == 3;
+        let class = if !checked { 5 } else { match probe_fetch(r, user) {
+            Some(p) => match state().blocks.get(&block_key(p & !0xFFF, user)) {
+                Some(b) if b.state == BlockState::Ready => {
+                    let off = (p & 0xFFF) as usize;
+                    if bit(&b.served, off) { 1 } else if bit(&b.covered, off) { 2 } else { 3 }
+                },
+                _ => 0,
+            },
+            None => 4,
+        } };
+        BatchStat { class, start: *instruction_counter }
+    }
+}
+impl Drop for BatchStat {
+    fn drop(&mut self) {
+        unsafe {
+            BATCH_COUNT[self.class] += 1;
+            BATCH_INSNS[self.class] = BATCH_INSNS[self.class].wrapping_add((*instruction_counter).wrapping_sub(self.start));
+        }
+    }
+}
 const COUNT_CHAINS: bool = false;
 /// debugging: after every compiled block run, redo it in the interpreter from the saved state and
 /// record the first differences (read through get_jit_config(5000 + i)); the interpreter's result is kept
@@ -4230,6 +4261,7 @@ pub unsafe fn run() {
     let _guard = TimeGuard { timed, t0 };
     let mut before = before;
     let served = served_bits(before);
+    let _bs = if BATCH_STATS { Some(BatchStat::new(before, checked)) } else { None };
     let _heat = PageHeat { start: *instruction_counter, rip: before, user: *cpl == 3 };
     loop {
         long_mode::step64();
@@ -4248,10 +4280,15 @@ pub unsafe fn run() {
         if interrupt_shadow || *in_hlt || super::cpu::IRQ_CHECK || super::smp::YIELD || *flags & FLAG_TRAP != 0 || !*is_64
             || (*instruction_counter).wrapping_sub(start) >= 24
         {
+            if BATCH_STATS {
+                let r = if interrupt_shadow { 0 } else if *in_hlt { 1 } else if super::cpu::IRQ_CHECK { 2 } else if super::smp::YIELD { 3 } else if *flags & FLAG_TRAP != 0 { 4 } else if !*is_64 { 5 } else { 6 };
+                BATCH_COUNT[r] = BATCH_COUNT[r]; BATCH_END[r] += 1;
+            }
             return;
         }
     }
 }
+pub static mut BATCH_END: [u32; 8] = [0; 8];
 
 /// Page heat (v64's HOT): instructions interpreted per page; a page without a module that reaches
 /// PAGE_HOT is compiled, with the entries noted on it (pending seeds), though none of them reached
@@ -4804,6 +4841,14 @@ unsafe fn try_run_block() -> bool {
             false
         },
         SLOT_COUNTING => {
+            // the page's module (compiled after this slot started counting) may serve r
+            if served_bits(r) && bit(&(*SERVED).bits, (r & 0xFFF) as usize) {
+                refill_slot(r, (*SERVED).key, (r & 0xFFF) as usize);
+                if st.slots[si].state != SLOT_COUNTING {
+                    return try_run_block();
+                }
+            }
+            let slot = &mut st.slots[si];
             if HIST_ON {
                 if let Some(phys) = probe_fetch(r, user) {
                     #[allow(static_mut_refs)]

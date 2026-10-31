@@ -762,7 +762,7 @@ unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
                 set_reg(RAX, osz, true, b);
                 set_reg(n, osz, true, a);
             }
-            else if p.rep == 0xF3 {
+            else if p.rep == 0xF3 && super::apic::CORE_COUNT > 1 {
                 // pause: another core may be the one we wait for
                 super::smp::YIELD = true;
             }
