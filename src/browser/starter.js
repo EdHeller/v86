@@ -728,7 +728,9 @@ V86.prototype.continue_init = async function(emulator, options)
             {
                 try
                 {
-                    await import("../tpm/plugin.js");
+                    // (from the source tree; a name the bundler does not resolve)
+                    const entry = ["..", "tpm", "plugin.js"].join("/");
+                    await import(entry);
                 }
                 catch(e)
                 {

@@ -88,7 +88,7 @@ CARGO_FLAGS_PARALLEL=$(CARGO_FLAGS) -C target-feature=+atomics \
 CORE_FILES=cjs.js const.js io.js main.js lib.js buffer.js ide.js pci.js floppy.js \
 	   dma.js pit.js vga.js ps2.js rtc.js uart.js parallel.js vmware.js \
 	   acpi.js iso9660.js \
-	   state.js ne2k.js sb16.js virtio.js virtio_console.js virtio_net.js virtio_balloon.js virtio_rng.js virtio_blk.js virtio_snd.js virtio_input.js display.js graphics_adapter.js platform.js acpi_tables.js device_machine.js device_plugin.js usb/usb.js usb/usb_device.js usb/hid_tablet.js usb/mass_storage.js usb/uhci.js usb/ehci.js usb/xhci.js usb/machine.js usb/plugin.js audio_devices/machine.js audio_devices/hd_audio/codec.js audio_devices/hd_audio/controller.js audio_devices/hd_audio/plugin.js \
+	   state.js ne2k.js sb16.js virtio.js virtio_console.js virtio_net.js virtio_balloon.js virtio_rng.js virtio_blk.js virtio_snd.js virtio_input.js display.js graphics_adapter.js platform.js acpi_tables.js q35.js device_machine.js device_plugin.js usb/usb.js usb/usb_device.js usb/hid_tablet.js usb/mass_storage.js usb/uhci.js usb/ehci.js usb/xhci.js usb/machine.js usb/plugin.js audio_devices/machine.js audio_devices/hd_audio/codec.js audio_devices/hd_audio/controller.js audio_devices/hd_audio/plugin.js \
 	   bus.js log.js cpu.js \
 	   elf.js kernel.js parallel/relocate.js parallel/control.js parallel/machine.js
 LIB_FILES=9p.js filesystem.js marshall.js
@@ -108,6 +108,14 @@ GRAPHICS_ADAPTER_COMMON=src/cjs.js src/const.js src/lib.js src/log.js src/bus.js
 SVGA=src/graphics_adapters/vmware_svga
 GRAPHICS_ADAPTER_PLUGINS=build/v86-bochs-vga.js build/v86-vmware-svga.js
 graphics-adapters: $(GRAPHICS_ADAPTER_PLUGINS)
+
+# the TPM 2.0 plugin (tpm option; libtpms itself is bios/libtpms.wasm)
+build/v86-tpm.js: $(CLOSURE) src/tpm/*.js src/device_machine.js
+	mkdir -p build
+	java -jar $(CLOSURE) --js_output_file $@ --define=DEBUG=false $(CLOSURE_FLAGS) \
+		--compilation_level SIMPLE --jscomp_off=missingProperties \
+		--output_wrapper ';(function(){%output%}).call(this);' \
+		--js src/cjs.js src/device_machine.js src/tpm/libtpms.js src/tpm/crb.js src/tpm/store.js src/tpm/plugin.js
 
 # the optional WebGPU renderer of vmware_svga's 3D (build/glbridge/libv86-webgpu.js)
 glbridge:
