@@ -4020,7 +4020,7 @@ pub unsafe fn run() {
 /// the per-entry threshold
 const PAGE_HEAT_ENTRIES: usize = 4096;
 static mut PAGE_HEAT: [(u64, u32); PAGE_HEAT_ENTRIES] = [(u64::MAX, 0); PAGE_HEAT_ENTRIES];
-static mut PAGE_HOT: u32 = 2000;
+static mut PAGE_HOT: u32 = 0;
 struct PageHeat { start: u32, rip: u64, user: bool }
 impl Drop for PageHeat {
     fn drop(&mut self) {
