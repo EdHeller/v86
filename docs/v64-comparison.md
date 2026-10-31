@@ -1,5 +1,29 @@
 # Why v64's x86-64 tier is faster than ours (notes)
 
+**Update (later the same day): ours is now faster.** Alpine x86_64 to login (Node, this host):
+ours about 40 s, v64 44.5 s; shell loop (40000 iterations): ours 2.4 s, v64 2.9-3.3 s. What closed the gap:
+
+- PAUSE on one core left `smp::YIELD` set for good: every interpreted run stopped after one instruction
+  and every in-place step left its module.
+- Incremental compiles: a page whose module misses entries gets another module for them (discovery stops
+  at entries the page's modules serve) instead of recompiling the page; 98 MB of generated code per boot
+  became 34 MB. The function table grew from 900 to 12000 entries (v64's size): it was nearly full.
+- With compiles that cheap, page heat (2000 interpreted instructions compile a page) and noting entries
+  after two visits pay off.
+- INVLPG of a page without compiled code keeps the epochs; the global-page check walks the page tables when
+  the TLB lacks the page (kernel code looked non-global, every MOV CR3 retired all kernel slots); a replaced
+  module drops its chain entries instead of stepping the epochs.
+- MOV CR3 visits only the TLB indices of non-global translations (the jit TLB is 4096 entries now).
+- Shorter inline accesses (one compare for page and crossing; entries hold the address delta).
+- SSSE3/SSE4.1/SSE4.2 advertised in long mode (the kernel then does about 11 % less work, like on v64),
+  with pshufb, palignr, psrldq/pslldq, psrlq/psllq, psubd, paddq and psubq compiled.
+
+Still open: V8 compiles each module lazily with Liftoff on its first call (about 1-3 s of the main thread
+per boot; `--no-wasm-lazy-compilation` moves it to background threads in Node); a 32-bit Alpine kernel
+does not boot with SSE4 advertised (so it is advertised in long mode only).
+
+The notes below are from before these changes.
+
 Measured on the same 4-core host, Node, Alpine x86_64 to the login prompt
 (`bootmin.mjs`): v64 43.5 s, ours 55.5 s (it was 95 s before this round).
 Both retire about the same guest work (5.6 G vs 5.9 G instructions).
