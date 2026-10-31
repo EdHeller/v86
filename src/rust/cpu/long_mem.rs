@@ -309,30 +309,21 @@ pub unsafe fn flush() {
 
 /// MOV CR3 (no PCID): the global translations stay
 pub unsafe fn flush_nonglobal() {
-    // (only the filled indices: the rest is invalid already)
-    let mut kept = 0;
+    // (only the indices filled with non-global translations: the rest stays)
     for k in 0..FILLED_N {
         let i = FILLED[k] as usize;
-        let mut global = false;
         let e = &raw mut TLB[i];
-        if (*e).vpn != INVALID {
-            if (*e).perm & F_GLOBAL == 0 { (*e).vpn = INVALID } else { global = true }
+        if (*e).perm & F_GLOBAL == 0 {
+            (*e).vpn = INVALID;
         }
         for class in 0..4 {
             let j = &raw mut JTLB[class * JTLB_SIZE + i];
-            if (*j).vpn != INVALID {
-                if (*j).pad == 0 { (*j).vpn = INVALID } else { global = true }
+            if (*j).pad == 0 {
+                (*j).vpn = INVALID;
             }
         }
-        if global {
-            FILLED[kept] = i as u16;
-            kept += 1;
-        }
-        else {
-            FILLED_BITS[i >> 6] &= !(1 << (i & 63));
-        }
     }
-    FILLED_N = kept;
+    clear_filled();
     FETCH_VPN = INVALID;
     super::jit64::tlb_flushed_nonglobal();
 }
@@ -392,12 +383,14 @@ pub unsafe fn translate(addr: u64, write: bool, user: bool, fetch: bool) -> OrPa
     let (phys, perm) = walk(addr, write, user, fetch, true, true)?;
     *e = Entry { vpn, phys: phys & !0xFFF, perm, fast: fast_flags(phys, perm) };
     jtlb_update(vpn, phys & !0xFFF, (*e).fast, perm);
-    note_filled(vpn as usize & (TLB_SIZE - 1));
+    if perm & F_GLOBAL == 0 {
+        note_filled(vpn as usize & (TLB_SIZE - 1));
+    }
     Ok(phys)
 }
 
-/// The tlb indices (also the jit tlb's: same size) filled since the last flush, so that MOV CR3
-/// does not scan the tables
+/// The tlb indices (also the jit tlb's: same size) filled with non-global translations since the
+/// last flush, so that MOV CR3 does not scan the tables
 static mut FILLED: [u16; TLB_SIZE] = [0; TLB_SIZE];
 static mut FILLED_N: usize = 0;
 static mut FILLED_BITS: [u64; TLB_SIZE / 64] = [0; TLB_SIZE / 64];
