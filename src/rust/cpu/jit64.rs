@@ -4312,7 +4312,7 @@ pub static mut BATCH_END: [u32; 8] = [0; 8];
 /// the per-entry threshold
 const PAGE_HEAT_ENTRIES: usize = 4096;
 static mut PAGE_HEAT: [(u64, u32); PAGE_HEAT_ENTRIES] = [(u64::MAX, 0); PAGE_HEAT_ENTRIES];
-static mut PAGE_HOT: u32 = 0;
+static mut PAGE_HOT: u32 = 2000;
 struct PageHeat { start: u32, rip: u64, user: bool }
 impl Drop for PageHeat {
     fn drop(&mut self) {
