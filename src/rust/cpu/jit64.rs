@@ -1230,6 +1230,11 @@ fn flag_fx(i: &Insn) -> FlagFx {
         Insn::IfFlag { .. } | Insn::Pushf => (true, false, true),
         Insn::SseMov { rm, .. } | Insn::SseLogic { rm, .. } | Insn::SseMovd { rm, .. } | Insn::SseMovq { rm, .. } | Insn::SsePunpcklqdq { rm, .. } | Insn::SseLane { rm, .. } => (false, false, has_mem(&rm)),
     };
+    // Memory accesses do not fault inside a module: their slow path leaves it (retry_exit, which
+    // stores the pending flags on its own path) and the interpreter runs the instruction again. So
+    // only the instructions that run the interpreter or a helper that may raise an exception in place
+    // need the flags in memory before them; dead flags are never computed for the others' sake.
+    let fault = fault && (unsafe { !FLAGS_ACROSS_ACCESSES } || matches!(*i, Insn::Str { .. } | Insn::Interp));
     FlagFx { reads, writes_all, fault }
 }
 
@@ -4223,6 +4228,8 @@ pub static mut HEAT_MAX: u32 = u32::MAX;
 pub static mut HEAT_COMPILES: u32 = 0;
 pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
+/// pending flags stay pending across memory accesses (their slow paths store them)
+static mut FLAGS_ACROSS_ACCESSES: bool = true;
 /// instructions without a template are interpreted inside the module (else it leaves for them)
 static mut INPLACE_STEP: bool = true;
 /// instructions that continue into the next page compile (from the next physical page's bytes)
