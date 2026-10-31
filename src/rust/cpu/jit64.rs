@@ -3992,6 +3992,7 @@ pub unsafe fn run() {
     let _guard = TimeGuard { timed, t0 };
     let mut before = before;
     let served = served_bits(before);
+    let _heat = PageHeat { start: *instruction_counter, rip: before, user: *cpl == 3 };
     loop {
         long_mode::step64();
         let after = rip();
@@ -4010,6 +4011,34 @@ pub unsafe fn run() {
             || (*instruction_counter).wrapping_sub(start) >= 24
         {
             return;
+        }
+    }
+}
+
+/// Page heat (v64's HOT): instructions interpreted per page; a page without a module that reaches
+/// PAGE_HOT is compiled, with the entries noted on it (pending seeds), though none of them reached
+/// the per-entry threshold
+const PAGE_HEAT_ENTRIES: usize = 4096;
+static mut PAGE_HEAT: [(u64, u32); PAGE_HEAT_ENTRIES] = [(u64::MAX, 0); PAGE_HEAT_ENTRIES];
+static mut PAGE_HOT: u32 = 2000;
+struct PageHeat { start: u32, rip: u64, user: bool }
+impl Drop for PageHeat {
+    fn drop(&mut self) {
+        unsafe {
+            if PAGE_HOT == 0 || THRESHOLD == u32::MAX || jit::jit_disabled() { return }
+            let n = (*instruction_counter).wrapping_sub(self.start);
+            let key = self.rip >> 12 | (self.user as u64) << 63;
+            let e = &mut PAGE_HEAT[(key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 52) as usize & (PAGE_HEAT_ENTRIES - 1)];
+            if e.0 != key {
+                *e = (key, 0);
+            }
+            e.1 = e.1.saturating_add(n);
+            if e.1 < PAGE_HOT { return }
+            e.1 = 0;
+            let Some(phys) = probe_fetch(self.rip, self.user) else { return };
+            let bkey = block_key(phys & !0xFFF, self.user);
+            if state().blocks.contains_key(&bkey) { return }
+            compile(self.rip, self.user);
         }
     }
 }
@@ -4438,7 +4467,7 @@ unsafe fn try_run_block() -> bool {
                 if let Some(phys) = probe_fetch(r, user) {
                     let key = block_key(phys & !0xFFF, user);
                     let has_module = st.blocks.contains_key(&key);
-                    if has_module || PENDING_FIRST != 0 {
+                    if has_module || PENDING_FIRST != 0 || PAGE_HOT != 0 {
                         let v = st.pending_seeds.entry(key).or_default();
                         let off = (phys & 0xFFF) as u16;
                         if v.len() < 256 && !v.contains(&off) {
