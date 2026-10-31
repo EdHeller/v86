@@ -28,8 +28,9 @@
   direct kernel boot (`tests/a64/boot.mjs`, `examples/alpine-arm64.html`) and from the official ISO through UEFI
   (`tests/a64/uefi.mjs`, `?uefi=1`; `docs/arm64.md`, "UEFI"). Not ported yet: PCIe, networking,
   graphics, sound, snapshots, Android (`src/arm/virt/ranchu.js` is only a stub copy).
-- **Demo package:** `alpine-demo.tar.gz` in the repository root (git-ignored). It has our build at `/` and v64 at
-  `/v64/`. Packages are recorded in `docs/releases.md`.
+- **Demo package:** `alpine-demo.tar.gz` in the repository root (git-ignored). It has our build at `/`, v64 at
+  `/v64/` and upstream v86 at `/v86/` (EdHeller/v86 master, labelled by commit and author date, e.g. "v86 315b2b0
+  (Oct 30, 2026 21:24 GMT)"; 32-bit only). Packages are recorded in `docs/releases.md`.
 - **Known issues:**
   - A 32-bit Alpine kernel hangs at boot when SSSE3/SSE4 are advertised, so they are advertised in long mode only
     (`instr_0FA2`).
@@ -90,3 +91,5 @@
     store as CFI flash, fw_cfg over MMIO. The official Alpine aarch64 ISO boots through it and GRUB to a login in
     about 60 s (`tests/a64/uefi.mjs`, in `make a64-boot-tests`; `examples/alpine-arm64.html?uefi=1`). v64 has no
     arm64 UEFI, so this was written new. Serial console only: no GOP until there is a ramfb or virtio-gpu.
+  - Upstream v86 (master 315b2b0, Oct 30, 2026 21:24 GMT) added to the demo package at `/v86/` as a third comparison
+    target next to v64: 32-bit Alpine to login in about 50 s in headless Chromium.
