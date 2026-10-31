@@ -25,8 +25,9 @@
   - Graphics adapters (`bochs_vga`, `vmware_svga`; WebGPU optional; `tests/graphics_adapter.mjs`).
   - Multicore, cooperative and in workers.
 - **ARM core:** `build/v86-arm64.wasm`, from v64 (`docs/arm64.md`). It boots Alpine aarch64 on the `virt` board by
-  direct kernel boot (`tests/a64/boot.mjs`, `examples/alpine-arm64.html`). Not ported yet: PCIe, networking,
-  graphics, sound, snapshots, UEFI, Android (`src/arm/virt/ranchu.js` is only a stub copy).
+  direct kernel boot (`tests/a64/boot.mjs`, `examples/alpine-arm64.html`) and from the official ISO through UEFI
+  (`tests/a64/uefi.mjs`, `?uefi=1`; `docs/arm64.md`, "UEFI"). Not ported yet: PCIe, networking,
+  graphics, sound, snapshots, Android (`src/arm/virt/ranchu.js` is only a stub copy).
 - **Demo package:** `alpine-demo.tar.gz` in the repository root (git-ignored). It has our build at `/` and v64 at
   `/v64/`. Packages are recorded in `docs/releases.md`.
 - **Known issues:**
@@ -50,7 +51,7 @@
 
 ## Next tasks, in order
 
-1. [ ] **UEFI on the ARM target, with a check.**
+1. [x] **UEFI on the ARM target, with a check.**
    - Port v64's arm64 UEFI support: AAVMF/edk2 `ArmVirtQemu` firmware in pflash, fw_cfg (MMIO), the device tree
      handed to the firmware, and a ramfb or virtio-gpu console if the firmware needs one. Put the firmware and its
      licence in `bios/`.
@@ -85,3 +86,7 @@
   - Demo page fixes: `console=tty1` instead of `tty0`, which removed the "-sh: can't access tty; job control turned
     off" shell and the keys split between two gettys; the serial login now ends with CR, so `^M` no longer shows.
   - New `alpine-demo.tar.gz`.
+  - UEFI on the ARM target: edk2 ArmVirtQemu (QEMU 9.2.0's build, `bios/aavmf-*.fd`) from pflash, the variable
+    store as CFI flash, fw_cfg over MMIO. The official Alpine aarch64 ISO boots through it and GRUB to a login in
+    about 60 s (`tests/a64/uefi.mjs`, in `make a64-boot-tests`; `examples/alpine-arm64.html?uefi=1`). v64 has no
+    arm64 UEFI, so this was written new. Serial console only: no GOP until there is a ramfb or virtio-gpu.

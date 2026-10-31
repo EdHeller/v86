@@ -11,7 +11,8 @@
 </style>
 <p>Alpine Linux <b>aarch64</b> 3.24.3 on the ARM core (an AArch64 CPU for QEMU's virt board, taken from the v64 project): the kernel and
 initramfs of the official virt ISO, the ISO on a virtio-mmio disk, the serial console on the PL011.
-&nbsp; <a href="?">1 core</a> | <a href="?cores=2">2</a> | <a href="?cores=4">4</a> | <a href="?cores=2&workers=1">2 in workers</a> | <a href="?jit=0">no JIT</a></p>
+&nbsp; <a href="?">1 core</a> | <a href="?cores=2">2</a> | <a href="?cores=4">4</a> | <a href="?cores=2&workers=1">2 in workers</a> | <a href="?jit=0">no JIT</a> | <a href="?uefi=1">UEFI</a>
+(<code>?uefi=1</code>: the ISO booted by edk2's UEFI firmware and the ISO's GRUB, no direct kernel boot)</p>
 <div id="log"></div>
 <div id="terminal"></div>
 <div id="serialpre"></div>
@@ -42,12 +43,18 @@ try
     // ?workers=1 (with ?cores=N): the cores other than the first run in Web Workers (a cross-origin isolated page: python3 serve.py)
     const workers = param("workers") !== null && cores > 1 && self.crossOriginIsolated;
     const [wasm, image] = await Promise.all([get(workers ? "../build/v86-arm64-parallel.wasm" : "../build/v86-arm64.wasm"), get("alpine-aarch64.iso")]);
+    // ?uefi=1: UEFI firmware (edk2 ArmVirtQemu) in the flash with a fresh variable store; it boots the ISO's GRUB
+    const uefi = param("uefi") === "1";
     const files = iso_files(image);
     const take = name => { const [offset, length] = files.get(name); return image.slice(offset, offset + length); };
+    const boot = uefi ?
+        { firmware: { code: await get("../bios/aavmf-code.fd"), vars: new Uint8Array(await get("../bios/aavmf-vars.fd")) } } :
+        { kernel: take("BOOT/VMLINUZ_VIRT"), initrd: take("BOOT/INITRAMFS_VIRT"),
+          cmdline: "console=ttyAMA0 modules=loop,squashfs,sd-mod,virtio-blk,virtio-mmio,virtio_blk,virtio_mmio,isofs" };
     const machine = await A64Machine.create({
         wasm: workers ? new Uint8Array(wasm) : wasm,
-        parallel: workers ? { worker_url: new URL("../src/arm/parallel/vcpu_worker_entry.js", location.href) } : undefined, kernel: take("BOOT/VMLINUZ_VIRT"), initrd: take("BOOT/INITRAMFS_VIRT"),
-        cmdline: "console=ttyAMA0 modules=loop,squashfs,sd-mod,virtio-blk,virtio-mmio,virtio_blk,virtio_mmio,isofs",
+        parallel: workers ? { worker_url: new URL("../src/arm/parallel/vcpu_worker_entry.js", location.href) } : undefined,
+        ...boot,
         memory_size: 512 << 20, cpu_cores: cores, disks: [{ buffer: image, readonly: true }], virtio_rng: true,
         jit_switches: param("jit") === "0" ? { a64_page: 0 } : {},
     });
@@ -72,7 +79,7 @@ try
         if(serial.length > 4000) serial = serial.slice(-2000);
         if(/localhost login:/.test(serial) && !window.__login) { window.__login = true; log("login prompt reached"); }
     });
-    log("booting (" + cores + " core" + (cores > 1 ? "s" : "") + ")");
+    log("booting (" + cores + " core" + (cores > 1 ? "s" : "") + (uefi ? ", UEFI" : "") + ")");
     machine.run();
 }
 catch(error)

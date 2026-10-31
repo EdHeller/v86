@@ -3,8 +3,9 @@
 // the machine has, laid out as the reference's (QEMU 9.2 virt, dumpdtb): the
 // same nodes, properties and phandle numbering (the clock 0x8000, the cores
 // from the last one up, then the GIC), so the two compare node for node.
-// v86 has no flash, fw-cfg, PL061 and gpio-keys, or platform bus; those
-// nodes are absent (allowed differences, tests/platform/a64-profile.json).
+// v86 has no PL061 and gpio-keys, or platform bus; those nodes are absent
+// (allowed differences, tests/platform/a64-profile.json); the flash and
+// fw-cfg are there when the machine boots UEFI firmware.
 // The PCIe host bridge (P5.6) is the reference's: its ECAM, windows and
 // interrupt map.
 
@@ -13,6 +14,8 @@ import {
     VIRT_PCIE_ECAM_SIZE, VIRT_PCIE_MMIO, VIRT_PCIE_MMIO_HIGH, VIRT_PCIE_MMIO_HIGH_SIZE, VIRT_PCIE_MMIO_SIZE, VIRT_PCIE_PIO,
     VIRT_PCIE_PIO_SIZE, VIRT_RAM_BASE, VIRT_RTC, VIRT_UART,
 } from "./platform.js";
+import { VIRT_FLASH_SIZE } from "./pflash.js";
+import { VIRT_FW_CFG, VIRT_FW_CFG_SIZE } from "./fw_cfg.js";
 
 const FDT_MAGIC = 0xD00DFEED;
 const FDT_BEGIN_NODE = 1, FDT_END_NODE = 2, FDT_PROP = 3, FDT_END = 9;
@@ -130,7 +133,7 @@ export function flatten(root, boot_cpu = 0)
  * cores, no PCIe, whose ECAM and window are above 4 GiB)
  * @param {{cores: number, memory_size: number, bootargs: (string|undefined),
  *          initrd: ({start: number, end: number}|undefined), rng_seed: (Uint8Array|undefined),
- *          extended: ({base: number, size: number}|undefined), arm32: (boolean|undefined)}} m
+ *          extended: ({base: number, size: number}|undefined), arm32: (boolean|undefined), uefi: (boolean|undefined)}} m
  * @return {DtNode}
  */
 export function virt_tree(m)
@@ -154,6 +157,17 @@ export function virt_tree(m)
     {
         children.push(node("memory@" + m.extended.base.toString(16), [
             ["reg", [...u64(m.extended.base), ...u64(m.extended.size)]], ["device_type", "memory"],
+        ]));
+    }
+    // (UEFI: the flash holding the firmware and its variables, and fw_cfg, as the reference has them)
+    if(m.uefi)
+    {
+        children.push(node("fw-cfg@" + VIRT_FW_CFG.toString(16), [
+            ["dma-coherent", true], ["reg", [...u64(VIRT_FW_CFG), ...u64(VIRT_FW_CFG_SIZE)]], ["compatible", "qemu,fw-cfg-mmio"],
+        ]));
+        children.push(node("flash@0", [
+            ["bank-width", [4]], ["reg", [...u64(0), ...u64(VIRT_FLASH_SIZE), ...u64(VIRT_FLASH_SIZE), ...u64(VIRT_FLASH_SIZE)]],
+            ["compatible", "cfi-flash"],
         ]));
     }
     for(let n = 0; n < VIRT_MMIO_COUNT; n++)

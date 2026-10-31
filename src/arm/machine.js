@@ -15,6 +15,9 @@ import { VirtDeviceSpace } from "./virt/io.js";
 import { PL011 } from "./virt/pl011.js";
 import { PL031 } from "./virt/pl031.js";
 import { load_linux } from "./virt/loader.js";
+import { CfiFlash, VIRT_FLASH_SIZE } from "./virt/pflash.js";
+import { FwCfg, VIRT_FW_CFG, VIRT_FW_CFG_SIZE } from "./virt/fw_cfg.js";
+import { flatten, virt_tree } from "./virt/dtb.js";
 import {
     A64_PROFILES, ARM32_PROFILE, VIRT_MMIO, VIRT_MMIO_COUNT, VIRT_MMIO_SIZE, VIRT_PCIE_ECAM_HIGH, VIRT_PCIE_ECAM_SIZE, VIRT_RAM_BASE, virt_machine,
 } from "./virt/platform.js";
@@ -83,6 +86,8 @@ export function A64Machine(options)
  *   kernel, initrd: ArrayBuffers; cmdline: string
  *   memory_size (default 512 MiB), cpu_cores (default 1), a64_profile ("v2" default)
  *   disks: [{ buffer: ArrayBuffer, readonly: boolean }] on virtio-mmio, virtio_rng: boolean
+ *   firmware: { code, vars } (ArrayBuffers: bios/aavmf-code.fd and a copy of bios/aavmf-vars.fd) boots UEFI firmware
+ *     from the flash instead of a kernel; the variable store is written in place (firmware.vars)
  *   ir_sync_publication: compile page functions synchronously
  * @return {Promise<A64Machine>}
  */
@@ -232,7 +237,12 @@ A64Machine.prototype.init = function(options)
     if(!exports["a64_set_cores"](cores)) throw new Error("the GIC's frames overlap a device");
     // guest RAM at 0x4000_0000, one allocation in the 32-bit memory
     if(memory_size >= 0x80000000) throw new Error("memory_size: the ARM core takes less than 2 GiB of RAM");
-    const pointer = exports["a64_allocate_memory"](memory_size) >>> 0;
+    // (UEFI: the firmware's code is read-only guest memory after the RAM)
+    const firmware = options.firmware;
+    const code = firmware ? new Uint8Array(firmware.code) : null;
+    if(code && (code.length > VIRT_FLASH_SIZE || !code.length)) throw new Error("firmware.code: at most 64 MiB");
+    const code_size = code ? Math.ceil(code.length / 0x10000) * 0x10000 : 0;
+    const pointer = exports["a64_allocate_memory"](memory_size + code_size) >>> 0;
     if(!exports["a64_bus_set_ram"](memory_size)) throw new Error("RAM of " + memory_size + " bytes does not fit");
     this.ram_pointer = pointer;
     this.mem_buffer = this.wasm_memory.buffer;
@@ -242,6 +252,29 @@ A64Machine.prototype.init = function(options)
         "pl011": new PL011(this, this.bus),
         "pl031": new PL031(this),
     };
+    if(firmware)
+    {
+        new Uint8Array(this.wasm_memory.buffer, pointer + memory_size, code_size).set(code);
+        if(!exports["a64_bus_map_rom"](0, 0, code_size, 0, memory_size)) throw new Error("the flash's ROM does not map");
+        // (the rest of the code's unit reads as the erased padding of QEMU's image: zeros)
+        if(code_size < VIRT_FLASH_SIZE)
+        {
+            this.io.register_mmio(code_size, VIRT_FLASH_SIZE - code_size, { name: "pflash0", read: (o, w) => w === 8 ? 0n : 0, write: () => {} });
+        }
+        const vars = firmware.vars instanceof Uint8Array ? firmware.vars : new Uint8Array(firmware.vars || new ArrayBuffer(0));
+        this.devices["pflash1"] = new CfiFlash(vars);
+        this.io.register_mmio(VIRT_FLASH_SIZE, VIRT_FLASH_SIZE, {
+            name: "pflash1",
+            read: (offset, width) => this.devices["pflash1"].read(offset, width),
+            write: (offset, width, value) => { this.devices["pflash1"].write(offset, width, value); },
+        });
+        this.devices["fw_cfg"] = new FwCfg({ cores });
+        this.io.register_mmio(VIRT_FW_CFG, VIRT_FW_CFG_SIZE, {
+            name: "fw_cfg",
+            read: (offset, width) => this.devices["fw_cfg"].read(offset, width),
+            write: (offset, width, value) => { this.devices["fw_cfg"].write(offset, width, value); },
+        });
+    }
     // The generic PCIe host the device tree describes, with no function on it: configuration reads give all ones
     // (no device), as the reference's host does for an empty slot
     this.io.register_mmio(VIRT_PCIE_ECAM_HIGH, VIRT_PCIE_ECAM_SIZE, {
@@ -273,12 +306,36 @@ A64Machine.prototype.init = function(options)
     // (net_device: { mac }: the frames are net0-send and net0-receive events on machine.bus)
     if(options.net_device) add((slot, intid) => new VirtioMmioNet(this, intid, options.net_device));
     if(options.virtio_rng) add((slot, intid) => new VirtioMmioRng(this, intid));
-    if(options.kernel)
+    if(firmware)
+    {
+        this.boot_files = { firmware: true, dtb: options.dtb, cores };
+        this.load_boot();
+    }
+    else if(options.kernel)
     {
         this.boot_files = { kernel: options.kernel, initrd: options.initrd, cmdline: options.cmdline, dtb: options.dtb, cores };
-        const { entry, x0 } = load_linux(this, this.boot_files);
-        this.boot(entry, x0);
+        this.load_boot();
     }
+};
+
+/**
+ * Load what boots (again, at a reset) and start core 0: the kernel, or with UEFI firmware the device tree at RAM's
+ * base, where edk2's ArmVirtQemu looks for it (QEMU puts it there when it boots firmware), and the reset vector at 0
+ */
+A64Machine.prototype.load_boot = function()
+{
+    if(this.boot_files.firmware)
+    {
+        const rng_seed = new Uint8Array(32);
+        globalThis.crypto?.getRandomValues?.(rng_seed);
+        const dtb = this.boot_files.dtb ? new Uint8Array(this.boot_files.dtb) :
+            flatten(virt_tree({ cores: this.cores, memory_size: this.memory_size[0], rng_seed, uefi: true }));
+        this.write_blob_physical(dtb, VIRT_RAM_BASE);
+        this.boot(0, 0);
+        return;
+    }
+    const { entry, x0 } = load_linux(this, this.boot_files);
+    this.boot(entry, x0);
 };
 
 A64Machine.prototype.boot = function(entry, x0)
@@ -352,8 +409,7 @@ A64Machine.prototype.reset = function()
     if(!this.booted) return;
     for(const device of Object.values(this.devices)) device.reset?.();
     for(const device of this.virtio) device.reset();
-    const { entry, x0 } = load_linux(this, this.boot_files);
-    this.boot(entry, x0);
+    this.load_boot();
 };
 
 /** One turn: the cores' slices and the devices' timers; milliseconds until the machine needs to run again */
@@ -409,8 +465,7 @@ A64Machine.prototype.reboot_workers = function()
     this.parallel.schedule(COMMAND_RESET);
     for(const device of Object.values(this.devices)) device.reset?.();
     for(const device of this.virtio) device.reset();
-    const { entry, x0 } = load_linux(this, this.boot_files);
-    this.boot(entry, x0);
+    this.load_boot();
 };
 
 A64Machine.prototype.run_once = function()
