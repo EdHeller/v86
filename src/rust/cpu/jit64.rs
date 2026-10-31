@@ -142,7 +142,35 @@ static mut EPOCHS: [u32; 2] = [1, 1];
 static mut KERNEL_NONGLOBAL: bool = false;
 #[inline(always)]
 unsafe fn epoch(user: bool) -> u32 { EPOCHS[user as usize] }
-unsafe fn bump_epochs() { EPOCHS[0] = EPOCHS[0].wrapping_add(1); EPOCHS[1] = EPOCHS[1].wrapping_add(1); }
+unsafe fn bump_epochs() { bump_epoch(0); bump_epoch(1) }
+unsafe fn bump_epoch(p: usize) {
+    INTERP_WHY[20 + p] = INTERP_WHY[20 + p].wrapping_add(1);
+    EPOCHS[p] = EPOCHS[p].wrapping_add(1);
+    CODE_VPNS[p] = [0; 64];
+}
+/// Per privilege: the linear pages (hashed) whose translations validated slots, chain entries or
+/// served entries of the current epoch; an INVLPG of another page leaves the epoch as it is
+static mut CODE_VPNS: [[u64; 64]; 2] = [[0; 64]; 2];
+fn vpn_bit(vpn: u64) -> usize { (vpn ^ vpn >> 12 ^ vpn >> 24) as usize & 4095 }
+unsafe fn note_code_vpn(vpn: u64, user: bool) {
+    let i = vpn_bit(vpn);
+    CODE_VPNS[user as usize][i >> 6] |= 1 << (i & 63);
+}
+/// INVLPG of linear page `vpn`
+pub unsafe fn tlb_flushed_page(vpn: u64) {
+    if !PAGE_INVLPG {
+        bump_epochs();
+        return;
+    }
+    let i = vpn_bit(vpn);
+    for p in 0..2 {
+        if CODE_VPNS[p][i >> 6] >> (i & 63) & 1 != 0 {
+            INTERP_WHY[22] = INTERP_WHY[22].wrapping_add(1);
+            bump_epoch(p);
+        }
+    }
+}
+static mut PAGE_INVLPG: bool = true;
 static mut THRESHOLD: u32 = 150;
 static mut EXECUTING_PAGE: u32 = u32::MAX;
 /// bit i set: instructions of kind i are not compiled (for bisecting problems); bit 30: flags are never elided
@@ -189,7 +217,9 @@ pub static mut WATCH_PAGE_FULL: u64 = 0;
 pub static mut WATCH_PAGE: u64 = u64::MAX;
 pub static mut WATCH_OFF: [u32; 4096] = [0; 4096];
 pub static mut PAGE_HIST: [(u64, u32); 4096] = [(0, 0); 4096];
-pub static mut INTERP_WHY: [u32; 16] = [0; 16];
+pub static mut INTERP_WHY: [u32; 24] = [0; 24];
+pub static mut ALU_OPS: [u32; 64] = [0; 64];
+const COUNT_CHAINS: bool = false;
 /// debugging: after every compiled block run, redo it in the interpreter from the saved state and
 /// record the first differences (read through get_jit_config(5000 + i)); the interpreter's result is kept
 pub static mut VERIFY: bool = false;
@@ -281,9 +311,10 @@ pub unsafe fn tlb_flushed() { bump_epochs() }
 /// MOV CR3: the user epoch steps, the supervisor one when supervisor code went through a
 /// non-global translation
 pub unsafe fn tlb_flushed_nonglobal() {
-    EPOCHS[1] = EPOCHS[1].wrapping_add(1);
+    bump_epoch(1);
     if KERNEL_NONGLOBAL {
-        EPOCHS[0] = EPOCHS[0].wrapping_add(1);
+        INTERP_WHY[23] = INTERP_WHY[23].wrapping_add(1);
+        bump_epoch(0);
         KERNEL_NONGLOBAL = false;
     }
 }
@@ -317,6 +348,8 @@ unsafe fn sse_lane(op: i32, x: u8, imm: u8) {
 
 #[no_mangle]
 pub unsafe fn j64_alu(op: i32, a: i64, b: i64, bits: i32) -> i64 {
+    INTERP_WHY[16] = INTERP_WHY[16].wrapping_add(1);
+    ALU_OPS[op as usize & 63] = ALU_OPS[op as usize & 63].wrapping_add(1);
     if op >= 40 {
         sse_lane(op - 40, a as u8, (a >> 8) as u8);
         return 0;
@@ -454,6 +487,7 @@ pub unsafe fn step_profile_reset() { STEP_COUNTS.clear() }
 /// interrupts were just enabled, the cpu halted or the mode changed.
 #[no_mangle]
 pub unsafe fn j64_interp1(next: i64, _unused: i32) -> i32 {
+    INTERP_WHY[17] = INTERP_WHY[17].wrapping_add(1);
     RMW_HIT = true;
     if STEP_PROFILE_ON {
         step_profile_record();
@@ -481,9 +515,17 @@ pub unsafe fn j64_set_rip(target: i64, _unused: i32) {
 /// operands and the result (all masked to `bits`)
 #[no_mangle]
 pub unsafe fn j64_flags(kind_bits: i32, a: i64, b: i64, r: i64) {
+    INTERP_WHY[18] = INTERP_WHY[18].wrapping_add(1);
     let bits = (kind_bits & 0xFF) as u32;
-    let kind = kind_bits >> 8;
+    let keep_cf = kind_bits >> 16 & 1 != 0;
+    let kind = kind_bits >> 8 & 0xFF;
     let (a, b, r) = (a as u64, b as u64, r as u64);
+    if keep_cf {
+        let old_cf = *flags & FLAG_CARRY != 0;
+        j64_flags(kind << 8 | bits as i32, a as i64, b as i64, r as i64);
+        *flags = *flags & !FLAG_CARRY | if old_cf { FLAG_CARRY } else { 0 };
+        return;
+    }
     let msb = bits - 1;
     if kind == 3 {
         // carry flag only
@@ -517,6 +559,7 @@ pub unsafe fn j64_str(code: i32, info: i32) {
 /// flags computed lazily by 16/32 bit code may still be pending when 64-bit code is entered
 #[no_mangle]
 pub unsafe fn j64_materialize_flags() {
+    INTERP_WHY[19] = INTERP_WHY[19].wrapping_add(1);
     let f = get_eflags();
     *flags = f;
     *flags_changed = 0;
@@ -1562,6 +1605,10 @@ struct Gen<'a> {
     x_extra: WasmLocal,
     /// 0 plain, 1 may chain, 2 the dispatcher has to interpret the instruction at rip and look at the next one
     x_mode: WasmLocal,
+    /// shared retry exit: the flags to store (kind/bits, -1 for none) and the offset of the instruction
+    retry_label: Label,
+    x_fk: WasmLocal,
+    x_ri: WasmLocal,
 }
 
 #[derive(Clone, Copy)]
@@ -1627,7 +1674,17 @@ impl<'a> Gen<'a> {
         unsafe { CAT_BYTES[9] = CAT_BYTES[9].wrapping_add((self.b.body_len() - m0) as u32) }
     }
 
+    fn count_at(&mut self, i: u32) {
+        let w = (&raw const INTERP_WHY) as u32 + 4 * i;
+        self.b.const_i32(w as i32);
+        self.b.load_fixed_i32(w);
+        self.b.const_i32(1);
+        self.b.add_i32();
+        self.b.store_aligned_i32(0);
+    }
+
     fn chain_inner(&mut self) {
+        if COUNT_CHAINS { self.count_at(20) }
         self.b.load_fixed_i32(&raw const CHAIN_LIMIT as u32);
         self.b.if_void();
         {
@@ -1638,6 +1695,7 @@ impl<'a> Gen<'a> {
             self.b.ltu_i32();
             self.b.if_void();
             {
+                if COUNT_CHAINS { self.count_at(21) }
                 let t = self.b.new_local_i64();
                 let a = self.b.new_local();
                 self.b.get_local_i64(&self.x_rip);
@@ -1660,6 +1718,7 @@ impl<'a> Gen<'a> {
                 self.b.eq_i64();
                 self.b.if_void();
                 {
+                    if COUNT_CHAINS { self.count_at(22) }
                     self.b.get_local(&a);
                     self.b.load_aligned_i32(8);
                     // the epoch of the current privilege (EPOCHS[cpl == 3])
@@ -1672,6 +1731,7 @@ impl<'a> Gen<'a> {
                     self.b.eq_i32();
                     self.b.if_void();
                     {
+                        if COUNT_CHAINS { self.count_at(23) }
                         // same privilege
                         self.b.get_local(&a);
                         self.b.load_aligned_i32(12);
@@ -1683,6 +1743,14 @@ impl<'a> Gen<'a> {
                         self.b.eq_i32();
                         self.b.if_void();
                         {
+                            if COUNT_CHAINS {
+                                let w = (&raw const INTERP_WHY) as u32 + 60;
+                                self.b.const_i32(w as i32);
+                                self.b.load_fixed_i32(w);
+                                self.b.const_i32(1);
+                                self.b.add_i32();
+                                self.b.store_aligned_i32(0);
+                            }
                             self.b.const_i32(0);
                             self.b.get_local(&a);
                             self.b.load_aligned_i32(12);
@@ -1769,6 +1837,20 @@ impl<'a> Gen<'a> {
     /// page with code, a fault): the instruction has made no change yet; the interpreter runs it. Used inside
     /// the slow branch of a memory access.
     fn retry_exit(&mut self) {
+        if unsafe { SHARED_RETRY } {
+            let fk = match self.pending {
+                Some(p) => (p.kind as i32) << 8 | p.bits as i32 | if p.keep_cf { 1 << 16 } else { 0 },
+                None => -1,
+            };
+            self.b.const_i32(fk);
+            self.b.set_local(&self.x_fk);
+            self.b.const_i32(self.cur.wrapping_sub(self.start) as i32);
+            self.b.set_local(&self.x_ri);
+            self.b.const_i32(self.n as i32 - 1);
+            self.b.set_local(&self.x_extra);
+            self.b.br(self.retry_label);
+            return;
+        }
         let saved = self.pending;
         self.materialize_cold();
         let (cur, n) = (self.cur, self.n);
@@ -2065,6 +2147,24 @@ impl<'a> Gen<'a> {
     }
 
     fn read_mem_inner(&mut self, bits: u32) {
+        if unsafe { OUTLINE_MEM == 2 } && !cfg!(feature = "seqcst") {
+            self.b.get_local(&self.jr);
+            self.b.call_internal(bits, false, 1, |b| access_fn(b, bits, false));
+            self.b.load_fixed_u8(unsafe { &raw const MEM_MISS } as u32);
+            self.b.if_void();
+            self.retry_exit();
+            self.b.block_end();
+            return;
+        }
+        if unsafe { OUTLINE_MEM == 1 } {
+            self.b.get_local(&self.jr);
+            self.b.call_fn2_i64_i32_ret_i64(match bits { 8 => "j64_rd8", 16 => "j64_rd16", 32 => "j64_rd32", _ => "j64_rd64" });
+            self.b.load_fixed_u8(unsafe { &raw const MEM_MISS } as u32);
+            self.b.if_void();
+            self.retry_exit();
+            self.b.block_end();
+            return;
+        }
         let mem = unsafe { crate::cpu::memory::mem8 } as u32;
         self.b.set_local_i64(&self.t_fa);
         self.tlb_hit(bits, false);
@@ -2094,6 +2194,24 @@ impl<'a> Gen<'a> {
     }
 
     fn write_mem_inner(&mut self, bits: u32) {
+        if unsafe { OUTLINE_MEM == 2 } && !cfg!(feature = "seqcst") {
+            self.b.get_local(&self.jw);
+            self.b.call_internal(bits | 0x100, true, 1, |b| access_fn(b, bits, true));
+            self.b.load_fixed_u8(unsafe { &raw const MEM_MISS } as u32);
+            self.b.if_void();
+            self.retry_exit();
+            self.b.block_end();
+            return;
+        }
+        if unsafe { OUTLINE_MEM == 1 } {
+            self.b.get_local(&self.jw);
+            self.b.call_fn3_i64_i64_i32(match bits { 8 => "j64_wr8", 16 => "j64_wr16", 32 => "j64_wr32", _ => "j64_wr64" });
+            self.b.load_fixed_u8(unsafe { &raw const MEM_MISS } as u32);
+            self.b.if_void();
+            self.retry_exit();
+            self.b.block_end();
+            return;
+        }
         let mem = unsafe { crate::cpu::memory::mem8 } as u32;
         self.b.set_local_i64(&self.t_fv);
         self.b.set_local_i64(&self.t_fa);
@@ -3705,7 +3823,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
         b.load_fixed_u8(cpl as u32);
         b.const_i32(3);
         b.eq_i32();
-        b.const_i32(14);
+        b.const_i32(JTLB_TABLE_BYTES.trailing_zeros() as i32);
         b.shl_i32();
         b.const_i32(jtlb_address() as i32);
         b.add_i32();
@@ -3718,12 +3836,15 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     let x_rip = b.new_local_i64();
     let x_extra = b.new_local();
     let x_mode = b.new_local();
+    let x_fk = b.new_local();
+    let x_ri = b.new_local();
     let exit_label = b.block_void();
+    let retry_label = b.block_void();
     let loop_label = b.loop_void();
 
     let mut g = Gen {
         b, start: rip, base, loop_label, n: 0, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, t_h, cur: rip, next: rip, block_index,
-        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false, regs, jr, jw, reg_loaded, reg_written, exit_label, x_rip, x_extra, x_mode,
+        pending: None, fl_a, fl_b, fl_r, live_out, live_in, cur_live_out: true, smc_needed: false, regs, jr, jw, reg_loaded, reg_written, exit_label, x_rip, x_extra, x_mode, retry_label, x_fk, x_ri,
     };
 
     if decoded.values().any(|(i, _)| is_sse(i)) {
@@ -3909,9 +4030,33 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     // (all `count` blocks have been closed by the loop above, one per basic block)
 
     g.b.block_end(); // loop
+    g.b.br(g.exit_label);
+    g.b.block_end(); // retry
+    {
+        // shared slow path of memory accesses: store the pending flags, the interpreter runs the instruction
+        g.b.get_local(&g.x_fk);
+        g.b.const_i32(0);
+        g.b.ge_i32();
+        g.b.if_void();
+        g.b.get_local(&g.x_fk);
+        g.b.get_local_i64(&g.fl_a);
+        g.b.get_local_i64(&g.fl_b);
+        g.b.get_local_i64(&g.fl_r);
+        g.b.call_fn4_i32_i64_i64_i64("j64_flags");
+        g.b.block_end();
+        g.b.get_local_i64(&g.base);
+        g.b.get_local(&g.x_ri);
+        g.b.extend_signed_i32_to_i64();
+        g.b.add_i64();
+        g.b.set_local_i64(&g.x_rip);
+        g.b.const_i32(3);
+        g.b.set_local(&g.x_mode);
+    }
     g.b.block_end(); // exit
     g.epilogue();
-    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, t_h, fl_a, fl_b, fl_r, x_rip, x_extra, x_mode, regs, jr, jw, .. } = g;
+    let Gen { b, base, n_local, pc, t_ea, t_v, t_a, t_fa, t_fv, t_fp, t_fe, t_h, fl_a, fl_b, fl_r, x_rip, x_extra, x_mode, x_fk, x_ri, regs, jr, jw, .. } = g;
+    b.free_local(x_fk);
+    b.free_local(x_ri);
     b.free_local(t_h);
     b.free_local(jr);
     b.free_local(jw);
@@ -3953,6 +4098,7 @@ impl Drop for TimeGuard {
 pub static mut EXIT_COUNT: [u32; 8] = [0; 8];
 
 unsafe fn interp_one() {
+    MEM_MISS = 0;
     EXIT_COUNT[EXIT_KIND as usize & 7] += 1;
     if STEP_PROFILE_ON { step_profile_record_in(EXIT_KIND == 2) }
     long_mode::step64();
@@ -4094,6 +4240,7 @@ unsafe fn served_bits(r: u64) -> bool {
     let key = block_key(phys & !0xFFF, user);
     match state().blocks.get(&key) {
         Some(b) if b.state == BlockState::Ready => {
+            note_code_vpn(vpn, user);
             e.bits = b.served;
             e.key = key;
             e.valid = true;
@@ -4230,6 +4377,108 @@ pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
 /// pending flags stay pending across memory accesses (their slow paths store them)
 static mut FLAGS_ACROSS_ACCESSES: bool = true;
+static mut SHARED_RETRY: bool = false;
+/// memory accesses of compiled code through the helpers below instead of inline (smaller code)
+static mut OUTLINE_MEM: u32 = 0;
+
+/// the body of a module's access function (see Gen::read_mem): (addr i64, table i32) -> value i64,
+/// or for writes (addr i64, value i64, table i32); MEM_MISS set when the access cannot be done here
+fn access_fn(b: &mut WasmBuilder, bits: u32, write: bool) {
+    use crate::cpu::long_mem::*;
+    let mem = unsafe { crate::cpu::memory::mem8 } as u32;
+    let addr = WasmBuilder::raw_local_i64(0);
+    let val = WasmBuilder::raw_local_i64(1);
+    let tab = WasmBuilder::raw_local(if write { 2 } else { 1 });
+    let e = WasmBuilder::raw_local(if write { 3 } else { 2 });
+    b.get_local_i64(&addr);
+    b.const_i64(12);
+    b.shr_u_i64();
+    b.wrap_i64_to_i32();
+    b.const_i32(JTLB_MASK as i32);
+    b.and_i32();
+    b.const_i32(4);
+    b.shl_i32();
+    b.get_local(&tab);
+    b.add_i32();
+    b.tee_local(&e);
+    b.load_aligned_i64(0);
+    b.get_local_i64(&addr);
+    b.const_i64(12);
+    b.shr_u_i64();
+    b.eq_i64();
+    if bits > 8 {
+        b.get_local_i64(&addr);
+        b.wrap_i64_to_i32();
+        b.const_i32(0xFFF);
+        b.and_i32();
+        b.const_i32(0x1000 - bits as i32 / 8);
+        b.leu_i32();
+        b.and_i32();
+    }
+    if write { b.if_void() } else { b.if_i64() }
+    b.get_local(&e);
+    b.load_aligned_i32(JTLB_ENTRY_PHYS);
+    b.get_local_i64(&addr);
+    b.wrap_i64_to_i32();
+    b.const_i32(0xFFF);
+    b.and_i32();
+    b.or_i32();
+    if write {
+        b.get_local_i64(&val);
+        match bits {
+            8 => { b.wrap_i64_to_i32(); b.ram_store_u8(mem); },
+            16 => { b.wrap_i64_to_i32(); b.ram_store_u16(mem); },
+            32 => { b.wrap_i64_to_i32(); b.ram_store_i32(mem); },
+            _ => b.ram_store_i64(mem),
+        }
+    }
+    else {
+        match bits {
+            8 => { b.ram_load_u8(mem); b.extend_unsigned_i32_to_i64(); },
+            16 => { b.ram_load_u16(mem); b.extend_unsigned_i32_to_i64(); },
+            32 => { b.ram_load_i32(mem); b.extend_unsigned_i32_to_i64(); },
+            _ => b.ram_load_i64(mem),
+        }
+    }
+    b.else_();
+    b.const_i32(unsafe { &raw const MEM_MISS } as i32);
+    b.const_i32(1);
+    b.store_u8(0);
+    if !write { b.const_i64(0) }
+    b.block_end();
+}
+/// set by the access helpers when the access cannot be done there (the module leaves with a retry)
+pub static mut MEM_MISS: u8 = 0;
+
+#[inline(always)]
+unsafe fn jt_lookup(addr: i64, tab: i32, bytes: u32) -> Option<*mut u8> {
+    use crate::cpu::long_mem::*;
+    let a = addr as u64;
+    let vpn = a >> 12;
+    let e = (tab as u32 + ((vpn as u32 & JTLB_MASK) << 4)) as *const u8;
+    if *(e as *const u64) != vpn || (a as u32 & 0xFFF) > 0x1000 - bytes {
+        MEM_MISS = 1;
+        return None;
+    }
+    let phys = *(e.add(JTLB_ENTRY_PHYS as usize) as *const u32) | (a as u32 & 0xFFF);
+    Some(crate::cpu::memory::mem8.add(phys as usize))
+}
+#[no_mangle]
+pub unsafe fn j64_rd8(addr: i64, tab: i32) -> i64 { match jt_lookup(addr, tab, 1) { Some(p) => *p as i64, None => 0 } }
+#[no_mangle]
+pub unsafe fn j64_rd16(addr: i64, tab: i32) -> i64 { match jt_lookup(addr, tab, 2) { Some(p) => (p as *const u16).read_unaligned() as i64, None => 0 } }
+#[no_mangle]
+pub unsafe fn j64_rd32(addr: i64, tab: i32) -> i64 { match jt_lookup(addr, tab, 4) { Some(p) => (p as *const u32).read_unaligned() as i64, None => 0 } }
+#[no_mangle]
+pub unsafe fn j64_rd64(addr: i64, tab: i32) -> i64 { match jt_lookup(addr, tab, 8) { Some(p) => (p as *const i64).read_unaligned(), None => 0 } }
+#[no_mangle]
+pub unsafe fn j64_wr8(addr: i64, v: i64, tab: i32) { if let Some(p) = jt_lookup(addr, tab, 1) { *p = v as u8 } }
+#[no_mangle]
+pub unsafe fn j64_wr16(addr: i64, v: i64, tab: i32) { if let Some(p) = jt_lookup(addr, tab, 2) { (p as *mut u16).write_unaligned(v as u16) } }
+#[no_mangle]
+pub unsafe fn j64_wr32(addr: i64, v: i64, tab: i32) { if let Some(p) = jt_lookup(addr, tab, 4) { (p as *mut u32).write_unaligned(v as u32) } }
+#[no_mangle]
+pub unsafe fn j64_wr64(addr: i64, v: i64, tab: i32) { if let Some(p) = jt_lookup(addr, tab, 8) { (p as *mut i64).write_unaligned(v) } }
 /// instructions without a template are interpreted inside the module (else it leaves for them)
 static mut INPLACE_STEP: bool = true;
 /// instructions that continue into the next page compile (from the next physical page's bytes)
@@ -4455,6 +4704,10 @@ unsafe fn try_run_block() -> bool {
                     return false;
                 }
                 slot.epoch = epoch(user);
+                note_code_vpn(r >> 12, user);
+                if slot.straddle {
+                    note_code_vpn((r >> 12) + 1, user);
+                }
                 if !user && !crate::cpu::long_mem::fetch_is_global(r) {
                     KERNEL_NONGLOBAL = true;
                 }
@@ -4716,6 +4969,11 @@ pub unsafe fn finalize_finished(index: u16) {
             if b.state == BlockState::Pending && b.index == index {
                 // slots that wait for the block notice it on their next visit
                 b.state = BlockState::Ready;
+                // (and the interpreter's served entry checks)
+                #[allow(static_mut_refs)]
+                for e in SERVED_CACHE.iter_mut() {
+                    e.vpn = u64::MAX;
+                }
             }
         }
     }

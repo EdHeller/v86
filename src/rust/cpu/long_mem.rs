@@ -204,7 +204,7 @@ struct JEntry {
     phys: u32,
     pad: u32,
 }
-pub const JTLB_SIZE: usize = 1024;
+pub const JTLB_SIZE: usize = 4096;
 pub const JTLB_MASK: u32 = JTLB_SIZE as u32 - 1;
 pub const JTLB_TABLE_BYTES: u32 = (JTLB_SIZE * 16) as u32;
 pub const JTLB_ENTRY_PHYS: u32 = 8;
@@ -324,7 +324,14 @@ pub unsafe fn flush_nonglobal() {
 pub unsafe fn fetch_is_global(addr: u64) -> bool {
     let vpn = addr >> 12;
     let e = &raw const TLB[(vpn as usize) & (TLB_SIZE - 1)];
-    (*e).vpn == vpn && (*e).perm & F_GLOBAL != 0
+    if (*e).vpn == vpn {
+        return (*e).perm & F_GLOBAL != 0;
+    }
+    // (not in the tlb: the page tables say)
+    match walk(addr, false, false, true, false, false) {
+        Ok((_, perm)) => perm & F_GLOBAL != 0,
+        Err(()) => false,
+    }
 }
 
 pub unsafe fn invlpg64(addr: u64) {
@@ -340,7 +347,7 @@ pub unsafe fn invlpg64(addr: u64) {
         }
     }
     FETCH_VPN = INVALID;
-    super::jit64::tlb_flushed();
+    super::jit64::tlb_flushed_page(vpn);
 }
 
 /// Translates a canonical address; raises a page fault on failure
