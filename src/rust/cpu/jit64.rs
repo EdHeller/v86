@@ -462,8 +462,11 @@ pub unsafe fn j64_interp1(next: i64, _unused: i32) -> i32 {
     let counter = *instruction_counter;
     long_mode::step64();
     *instruction_counter = counter;
+    if *flags_changed != 0 {
+        j64_materialize_flags();
+    }
     let stay = rip() == next as u64 && !interrupt_shadow && !*in_hlt && *is_64 && *flags & FLAG_TRAP == 0
-        && !super::smp::YIELD;
+        && !super::smp::YIELD && FLAGS[SMC] == 0 && FLAGS[FAULT] == 0 && !super::cpu::IRQ_CHECK;
     !stay as i32
 }
 
@@ -1769,6 +1772,58 @@ impl<'a> Gen<'a> {
         self.pending = saved;
     }
 
+    /// an instruction the interpreter runs from inside the module (j64_interp1): the registers go to
+    /// memory and come back, and the module goes on with the next instruction unless the step left
+    /// the straight line (a jump, an exception, a mode or interrupt state change, code written)
+    fn step_in_place(&mut self) {
+        self.materialize();
+        for n in 0..16u8 {
+            if self.reg_written >> n & 1 == 0 { continue }
+            self.b.const_i32(lo_addr(n) as i32);
+            self.b.get_local_i64(&self.regs[n as usize]);
+            self.b.wrap_i64_to_i32();
+            self.b.store_aligned_i32(0);
+            self.b.const_i32(hi_addr(n) as i32);
+            self.b.get_local_i64(&self.regs[n as usize]);
+            self.b.const_i64(32);
+            self.b.shr_u_i64();
+            self.b.wrap_i64_to_i32();
+            self.b.store_aligned_i32(0);
+        }
+        let (cur, next, n) = (self.cur, self.next, self.n);
+        self.store_rip(cur);
+        self.rip_val(next);
+        self.b.const_i32(0);
+        self.b.call_fn2_i64_i32_ret("j64_interp1");
+        let leave = self.b.set_new_local();
+        for r in 0..16u8 {
+            if self.reg_loaded >> r & 1 == 0 { continue }
+            self.b.load_fixed_i32(lo_addr(r));
+            self.b.extend_unsigned_i32_to_i64();
+            self.b.load_fixed_i32(hi_addr(r));
+            self.b.extend_unsigned_i32_to_i64();
+            self.b.const_i64(32);
+            self.b.shl_i64();
+            self.b.or_i64();
+            self.b.set_local_i64(&self.regs[r as usize]);
+        }
+        self.b.get_local(&leave);
+        self.b.if_void();
+        {
+            // rip is where the interpreter left it
+            self.b.load_fixed_i32(instruction_pointer as u32);
+            self.b.extend_unsigned_i32_to_i64();
+            self.b.load_fixed_i32(rip_hi as u32);
+            self.b.extend_unsigned_i32_to_i64();
+            self.b.const_i64(32);
+            self.b.shl_i64();
+            self.b.or_i64();
+            self.exit_stack_rip(n, 0);
+        }
+        self.b.block_end();
+        self.b.free_local(leave);
+    }
+
     /// an instruction the module leaves to the interpreter (the dispatcher runs exactly this one and then
     /// looks for a module for the next)
     fn exit_interp(&mut self) {
@@ -2529,7 +2584,7 @@ impl<'a> Gen<'a> {
         }
         match *insn {
             Insn::Nop => {},
-            Insn::Interp => self.exit_interp(),
+            Insn::Interp => if unsafe { INPLACE_STEP } { self.step_in_place() } else { self.exit_interp() },
             Insn::Alu { op, bits, dst, src } => self.emit_alu(op, bits, dst, src, true),
             Insn::Test { bits, a, b } => self.emit_alu(4, bits, a, b, false),
             Insn::Mov { bits, dst, src } => {
@@ -4122,6 +4177,8 @@ pub static mut HEAT_MAX: u32 = u32::MAX;
 pub static mut HEAT_COMPILES: u32 = 0;
 pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
+/// instructions without a template are interpreted inside the module (else it leaves for them)
+static mut INPLACE_STEP: bool = true;
 /// instructions that continue into the next page compile (from the next physical page's bytes)
 static mut STRADDLE_NATIVE: bool = true;
 /// the module being generated has such an instruction
