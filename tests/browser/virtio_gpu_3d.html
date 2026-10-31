@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>virtio-gpu 3D test</title>
+<div id="screen_container"><div style="white-space: pre; font: 14px monospace; line-height: 14px"></div><canvas style="display: none"></canvas></div>
+<script src="../../build/libv86.js"></script>
+<script src="../../build/glbridge/libv86-webgpu.js"></script>
+<script>
+// Driven by tests/virtio_gpu_3d.mjs: Alpine x86_64 with graphics_adapter "virtio_gpu" and this page's WebGPU renderer
+// (libv86-webgpu.js), the Mesa repository image (tools/alpine_repo.mjs) as the first hard disk
+const q = new URLSearchParams(location.search);
+window.serial = "";
+window.errors = [];
+window.addEventListener("error", e => window.errors.push(String(e.message)));
+const emulator = window.emulator = new V86({
+    wasm_path: "../../build/v86.wasm",
+    bios: { url: "../../bios/seabios.bin" },
+    vga_bios: { url: "../../bios/vgabios.bin" },
+    bzimage: { url: "../../build/x64-linux/boot/vmlinuz-virt" },
+    initrd: { url: "../../build/x64-linux/boot/initramfs-virt" },
+    cmdline: "modules=loop,squashfs,sd-mod console=tty0 console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on",
+    cdrom: { url: "../../build/alpine-virt-3.24.3-x86_64.iso" },
+    hda: { url: "../../build/x64-linux/gpu-repo.tar" },
+    cpu_type: "x86_64",
+    memory_size: (+q.get("memory") || 1024) << 20,
+    graphics_adapter: "virtio_gpu",
+    screen_container: document.getElementById("screen_container"),
+    autostart: true,
+});
+emulator.add_listener("serial0-output-byte", b => { window.serial += String.fromCharCode(b); });
+</script>

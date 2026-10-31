@@ -909,7 +909,7 @@ V86.prototype.get_bzimage_initrd_from_filesystem = function(filesystem)
  * Start emulation. Do nothing if emulator is running already. Can be asynchronous.
  */
 /**
- * The 3D renderer of vmware_svga on this page (V86SVGARenderer of
+ * The 3D renderer of vmware_svga and virtio_gpu on this page (V86SVGARenderer of
  * libv86-webgpu.js), when the page has loaded it and WebGPU has an adapter
  * @param {string} adapter_name
  * @return {!Promise<Object>} the device's end of the channel, or null
@@ -918,7 +918,8 @@ V86.prototype.create_adapter_renderer = async function(adapter_name)
 {
     const create = globalThis["V86SVGARenderer"];
     const gpu = typeof navigator !== "undefined" && navigator["gpu"];
-    if(adapter_name !== "vmware_svga" || typeof create !== "function" || !gpu) return null;
+    // (vmware_svga's SVGA3D and virtio_gpu's virgl and Venus: both draw through GX/VX on WebGPU)
+    if(adapter_name !== "vmware_svga" && adapter_name !== "virtio_gpu" || typeof create !== "function" || !gpu) return null;
     let adapter = null;
     try
     {

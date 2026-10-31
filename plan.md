@@ -63,6 +63,10 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
      `tests/virtio_gpu.mjs [x86_64|x86]`: Linux's virtio_gpu binds, fbcon on virtio_gpudrmfb, tty1's text on the
      scanout. `examples/alpine64.html?graphics_adapter=virtio_gpu` shows the console in Chromium.
    - [ ] Step 1b, 2D on arm64: over virtio-mmio first (no PCIe needed), over virtio-pci once task 3 lands.
+   - [x] Step 2a, virgl on x86 (2026-10-31): with the page's WebGPU renderer the device declares virgl
+     (level virgl43-hostmem); Alpine 3.23's Mesa virgl driver reports "virgl (v86 GX on WebGPU)" and kmscube's cube
+     is on the screen (`tests/virtio_gpu_3d.mjs`: headless Chromium, SwiftShader's WebGPU; the Mesa repository from
+     `tools/alpine_repo.mjs`). Still to do: Venus (Vulkan), and arm64.
    - Step 2, 3D: virgl (GL) and Venus (Vulkan) through v64's glbridge/gfxstream path with WebGPU
      (`docs/glbridge.md`, `docs/gfxstream-plan.md`). Host-visible memory is device memory on the core's bus.
    - It must stay optional: without WebGPU, or with the option off, the device is 2D only (or the machine keeps its
@@ -86,7 +90,14 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
 4. [ ] **Android on ARM.** See "Plan: Android" below.
 5. [ ] **Apple targets: Darwin up through Mac OS X 10.14 Mojave.** See "Plan: Apple" below.
 6. [ ] **The rest of v64 parity.** See "Plan: v64 parity" below.
-7. [ ] **x86 follow-up (low priority).** Cut the lazy-compile cost, for example with smaller modules or by
+7. [ ] **Buildroot images for the new machine features** (`tools/buildroot/build.sh`, user's request 2026-10-31):
+   offer an x86_64 build (64-bit kernel and userland, the x86_64 toolchain) next to the 32-bit one, and what
+   multicore needs: ACPI (CONFIG_ACPI, the MADT for the APs), SMP with the local APIC and I/O APIC
+   (CONFIG_SMP, CONFIG_X86_LOCAL_APIC/IO_APIC, NR_CPUS of 8), the HPET and the TSC as clocksources, and
+   the matching v86 options in the printed run instructions (`acpi: true`, `cpu_cores`, `cpu_type: "x86_64"`,
+   the worker build for `workers=1`). Optionally virtio_gpu/virtio-pci drivers and Mesa's virgl for the
+   GPU tests. Check: an image boots to its shell with `nproc` = the configured cores.
+8. [ ] **x86 follow-up (low priority).** Cut the lazy-compile cost, for example with smaller modules or by
    compiling off the main thread.
 
 ## Plan: Android
