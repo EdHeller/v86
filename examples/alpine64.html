@@ -44,6 +44,8 @@
 const param = name => { const m = new RegExp("[?&]" + name + "(?:=([^&?#]*))?(?:[&?#]|$)").exec(location.search); return m ? (m[1] === undefined ? "" : decodeURIComponent(m[1])) : null; };
 // ?coi=1 registers a service worker that makes the page cross-origin isolated (COOP/COEP) on hosts that cannot send the headers
 if(param("coi")) document.write('<script src="coi-serviceworker.js"><\/script>');
+// ?gpu3d=1: virtio-gpu with 3D (virgl) through the WebGPU renderer, when the browser has WebGPU
+if(param("gpu3d") !== null) document.write('<script src="../build/glbridge/libv86-webgpu.js"><\/script>');
 </script>
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" crossorigin="anonymous"></script>
 <script src="../build/libv86.js"></script>
@@ -55,7 +57,7 @@ const tag = param("arch") === "x86" ? "x86" : "x86_64";
 const iso = tag === "x86" ? "alpine-x86.iso" : "alpine.iso";
 const version = "3.24.3";
 document.getElementById("title").innerHTML = "Alpine Linux " + version + " <b>" + (tag === "x86_64" ? "64-bit (x86_64)" : "32-bit (x86)") +
-    "</b> in v86 &nbsp; <a href='?'>64-bit</a> | <a href='?arch=x86'>32-bit</a> | <a href='?graphics_adapter=virtio_gpu'>virtio-gpu</a> &nbsp; (timer starts when the page loads)";
+    "</b> in v86 &nbsp; <a href='?'>64-bit</a> | <a href='?arch=x86'>32-bit</a> | <a href='?graphics_adapter=virtio_gpu'>virtio-gpu</a> | <a href='?gpu3d=1'>virtio-gpu 3D (WebGPU)</a> &nbsp; (timer starts when the page loads)";
 
 const t0 = performance.now();
 
@@ -83,6 +85,14 @@ const options = {
 };
 // ?graphics_adapter=virtio_gpu (or vmware_svga, bochs_vga): a display adapter plugin instead of v86's own VGA
 // (virtio_gpu: virtio-vga, Linux's virtio_gpu driver; 2D, or 3D where the page has the WebGPU renderer)
+// ?gpu3d=1: virtio_gpu, 1 GiB of RAM and the Mesa repository (gpu-repo.tar, tools/alpine_repo.mjs) as the first hard disk
+if(param("gpu3d") !== null)
+{
+    options.graphics_adapter = "virtio_gpu";
+    options.memory_size = 1024 * 1024 * 1024;
+    options.hda = { url: "gpu-repo.tar" };
+    delete options.vga_memory_size;
+}
 if(param("graphics_adapter"))
 {
     options.graphics_adapter = param("graphics_adapter");
