@@ -55,8 +55,14 @@ struct Block {
     user: bool,
     index: u16,
     epoch: u32,
-    /// bit per page offset: basic block starts the module can be entered at
+    /// bit per page offset: basic block starts the module can be entered at (for the page's first
+    /// module: those of all its modules)
     served: [u64; 64],
+    /// the entries of this module itself
+    own: [u64; 64],
+    /// the page's first module: the keys of the modules compiled later for entries it did not serve
+    /// (Gen: incremental compiles; they do not recompile what the page has)
+    parts: Vec<u64>,
     /// an instruction continues into the next physical page (valid only while the next virtual page maps there)
     straddle: bool,
     /// bit per page offset: entries the decoder could not compile
@@ -195,6 +201,7 @@ pub static mut STAT_FAILED: u32 = 0;
 pub static mut STAT_DECODED: u32 = 0;
 pub static mut STAT_BLOCKS: u32 = 0;
 pub static mut STAT_BYTES: u32 = 0;
+static mut GEN_RECOMPILE: bool = false;
 pub static mut CAT_BYTES: [u32; 16] = [0; 16];
 pub static mut KIND_BYTES: [u32; 32] = [0; 32];
 pub static mut KIND_COUNT: [u32; 32] = [0; 32];
@@ -3690,7 +3697,7 @@ fn bswap32(b: &mut WasmBuilder, v: &WasmLocalI64) {
     }
 }
 
-unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds: &[u16], spec: &[u16]) -> Option<u32> {
+unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds: &[u16], spec: &[u16], stop: &[u64; 64]) -> Option<u32> {
     use std::collections::{BTreeMap, BTreeSet};
 
     // discover the reachable instructions
@@ -3714,6 +3721,10 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     while let Some(mut off) = work.pop() {
         loop {
             if decoded.contains_key(&off) || decoded.len() >= MAX_INSTRUCTIONS as usize || off >= code.len() {
+                break;
+            }
+            // (an entry another module of the page serves: left to it)
+            if bit(stop, off) && !seeds.contains(&(off as u16)) {
                 break;
             }
             let decoded_insn = decode(&code[off..], rip.wrapping_add(off as u64)).or_else(|| {
@@ -4185,6 +4196,7 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
     b.free_local_i64(fl_r);
     let size = b.finish();
     STAT_BYTES = STAT_BYTES.wrapping_add(size as u32);
+    if GEN_RECOMPILE { CAT_BYTES[15] = CAT_BYTES[15].wrapping_add(size as u32) }
     Some(total)
 }
 
@@ -4832,8 +4844,8 @@ unsafe fn try_run_block() -> bool {
             true
         },
         SLOT_PENDING => {
-            match st.blocks.get(&slot.key) {
-                Some(b) if b.index == slot.index => {
+            match st.by_index.get(&slot.index).and_then(|k| st.blocks.get(k)) {
+                Some(b) if b.index == slot.index && INDEX_GEN[b.index as usize] == slot.gen => {
                     if b.state == BlockState::Ready {
                         slot.state = SLOT_READY;
                         slot.epoch = epoch(slot.user).wrapping_sub(1);
@@ -4976,6 +4988,13 @@ unsafe fn refill_slot(r: u64, key: u64, off: usize) {
     if !bit(&b.served, off) {
         return;
     }
+    // the module that serves off: the page's first one or one of its parts
+    let b = if bit(&b.own, off) { b } else {
+        match b.parts.iter().filter_map(|k| st.blocks.get(k)).find(|p| bit(&p.own, off)) {
+            Some(p) => p,
+            None => return,
+        }
+    };
     slot.phys_page = b.phys_page;
     slot.user = b.user;
     slot.index = b.index;
@@ -4992,6 +5011,83 @@ unsafe fn refill_slot(r: u64, key: u64, off: usize) {
 
 unsafe fn probe_fetch(r: u64, user: bool) -> Option<u32> { crate::cpu::long_mem::probe_fetch(r, user) }
 
+/// incremental compiles: a page whose module does not serve an entry gets another module for the
+/// entries noted since (discovery stops at the entries the page's modules serve), up to MAX_PARTS of
+/// them; then the page compiles again as a whole
+static mut INCREMENTAL: bool = true;
+const MAX_PARTS: usize = 8;
+const PART_MASK: u64 = (1 << 40) - 1;
+
+unsafe fn compile_part(r: u64, user: bool, phys: u32, key: u64, code: &[u8], ext: &[u8]) {
+    let st = state();
+    let page = phys >> 12;
+    let offset = (phys & 0xFFF) as usize;
+    let page_rip = r & !0xFFF;
+    let b = &st.blocks[&key];
+    let union = b.served;
+    let part_key = key | (b.parts.iter().map(|k| k >> 40).max().unwrap_or(0) + 1) << 40;
+    let mut seeds = vec![offset as u16];
+    if let Some(more) = st.pending_seeds.remove(&key) {
+        for o in more {
+            if !seeds.contains(&o) && !bit(&union, o as usize) {
+                seeds.push(o);
+            }
+        }
+    }
+    GEN_RECOMPILE = true;
+    GEN_PAGE = page;
+    GEN_STRADDLE = false;
+    let registered = jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, ext, &seeds, &[], &union), |index| {
+        STAT_COMPILED += 1;
+        if GEN_RMW { st.rmw.insert(index); } else { st.rmw.remove(&index); }
+        let mut served = [0u64; 64];
+        for &o in GEN_STARTS.iter() {
+            bit_set(&mut served, o as usize);
+        }
+        let mut covered = [0u64; 64];
+        for &o in GEN_COVERED.iter() {
+            bit_set(&mut covered, o as usize);
+        }
+        st.blocks.insert(part_key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: 0, served, own: served, parts: vec![], covered, failed: [0; 64], seeds: seeds.clone(), compiles: 1, misses: 0, heuristic: false, straddle: GEN_STRADDLE });
+        if GEN_STRADDLE {
+            let list = st.page_blocks.entry(page + 1).or_default();
+            if !list.contains(&part_key) {
+                list.push(part_key);
+            }
+            jit::maybe_has_code_set(Page::of_u32(page + 1));
+            crate::cpu::cpu::tlb_set_has_code(Page::of_u32(page + 1), true);
+        }
+        st.by_index.insert(index, part_key);
+        let list = st.page_blocks.entry(page).or_default();
+        if !list.contains(&part_key) {
+            list.push(part_key);
+        }
+        // (the page's first module can be gone: a table full of modules drops some)
+        let Some(base) = st.blocks.get_mut(&key) else { return };
+        for i in 0..64 {
+            base.served[i] |= served[i];
+            base.covered[i] |= covered[i];
+        }
+        base.parts.push(part_key);
+        for &o in seeds.iter() {
+            if !base.seeds.contains(&o) {
+                base.seeds.push(o);
+            }
+        }
+        base.compiles += 1;
+        if !bit(&served, offset) {
+            bit_set(&mut base.failed, offset);
+        }
+    });
+    if registered.is_none() {
+        STAT_FAILED += 1;
+        if let Some(b) = st.blocks.get_mut(&key) {
+            bit_set(&mut b.failed, offset);
+            b.compiles += 1;
+        }
+    }
+}
+
 unsafe fn compile(r: u64, user: bool) {
     let Some(phys) = probe_fetch(r, user) else { return };
     let page = phys >> 12;
@@ -5003,6 +5099,14 @@ unsafe fn compile(r: u64, user: bool) {
     let ext_len = if (phys & !0xFFF) as u64 + 0x1000 + 16 <= *memory_size as u64 { 0x1000 + 16 } else { 0x1000 };
     let ext = std::slice::from_raw_parts(crate::cpu::memory::mem8.offset((phys & !0xFFF) as isize), ext_len);
     let st = state();
+    if INCREMENTAL && r >= RANGE_LO && r < RANGE_HI {
+        if let Some(b) = st.blocks.get(&key) {
+            if b.state != BlockState::Failed && b.parts.len() < MAX_PARTS {
+                compile_part(r, user, phys, key, code, ext);
+                return;
+            }
+        }
+    }
     let (mut seeds, compiles, mut failed, heuristic) = match st.blocks.get(&key) {
         Some(b) => (b.seeds.clone(), b.compiles, b.failed, b.heuristic),
         None => (vec![], 0, [0u64; 64], false),
@@ -5029,11 +5133,12 @@ unsafe fn compile(r: u64, user: bool) {
             }
         }
     }
+    GEN_RECOMPILE = st.blocks.get(&key).map_or(false, |b| b.state != BlockState::Failed);
     let out_of_range = r < RANGE_LO || r >= RANGE_HI;
     GEN_PAGE = page;
     GEN_STRADDLE = false;
     let mut old = None;
-    let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, ext, &seeds, &spec), |index| {
+    let registered = if out_of_range { None } else { jit::jit64_compile(phys & !0xFFF, |builder| generate(builder, page_rip, code, ext, &seeds, &spec, &[0; 64]), |index| {
         // registered before the module is handed to the host, which may finish synchronously
         if (STAT_COMPILED as usize) < 64 { COMPILED_RIPS[STAT_COMPILED as usize] = r as u32 }
         STAT_COMPILED += 1;
@@ -5049,8 +5154,8 @@ unsafe fn compile(r: u64, user: bool) {
         if !bit(&served, offset) {
             bit_set(&mut failed, offset);
         }
-        old = st.blocks.remove(&key).map(|b| (b.state, b.index));
-        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: 0, served, covered, failed, seeds: seeds.clone(), compiles: compiles + 1, misses: 0, heuristic: HEURISTIC_SEEDS || heuristic, straddle: GEN_STRADDLE });
+        old = st.blocks.remove(&key).map(|b| (b.state, b.index, b.parts));
+        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: 0, served, own: served, parts: vec![], covered, failed, seeds: seeds.clone(), compiles: compiles + 1, misses: 0, heuristic: HEURISTIC_SEEDS || heuristic, straddle: GEN_STRADDLE });
         if GEN_STRADDLE {
             // writes to the next page invalidate this module as well
             let list = st.page_blocks.entry(page + 1).or_default();
@@ -5068,15 +5173,30 @@ unsafe fn compile(r: u64, user: bool) {
         jit::maybe_has_code_set(Page::of_u32(page));
         crate::cpu::cpu::tlb_set_has_code(Page::of_u32(page), true);
     }) };
-    if let Some((state_before, index)) = old {
+    if let Some((state_before, index, parts)) = old {
         // the module this one replaces: slots that point to it notice on their next visit
         if RETIRE_BUMPS { bump_epochs() }
-        retire_index(index);
-        st.by_index.remove(&index);
-        match state_before {
-            BlockState::Pending => { st.zombies.insert(index); },
-            BlockState::Ready => jit::jit64_free_index(index),
-            BlockState::Failed => {},
+        let mut retired = vec![(state_before, index)];
+        // (and the parts: the new module has their entries)
+        for k in parts {
+            if let Some(b) = st.blocks.remove(&k) {
+                retired.push((b.state, b.index));
+                for pg in [page, page + 1] {
+                    if let Some(list) = st.page_blocks.get_mut(&pg) {
+                        list.retain(|&x| x != k);
+                    }
+                }
+            }
+        }
+        for (state_before, index) in retired {
+            if state_before == BlockState::Failed { continue }
+            retire_index(index);
+            st.by_index.remove(&index);
+            match state_before {
+                BlockState::Pending => { st.zombies.insert(index); },
+                BlockState::Ready => jit::jit64_free_index(index),
+                BlockState::Failed => {},
+            }
         }
     }
     if registered.is_none() {
@@ -5090,7 +5210,7 @@ unsafe fn compile(r: u64, user: bool) {
             None => {
                 let mut failed = [0u64; 64];
                 bit_set(&mut failed, offset);
-                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: 0, served: [0; 64], covered: [0; 64], failed, seeds: vec![], compiles: 1, misses: 0, heuristic: false, straddle: false });
+                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: 0, served: [0; 64], own: [0; 64], parts: vec![], covered: [0; 64], failed, seeds: vec![], compiles: 1, misses: 0, heuristic: false, straddle: false });
                 let list = st.page_blocks.entry(page).or_default();
                 if !list.contains(&key) {
                     list.push(key);
@@ -5144,6 +5264,24 @@ pub unsafe fn dirty_page(ctx: &mut jit::JitState, page: Page) -> bool {
         }
         let n = st.invalidations.entry(p as u64).or_insert(0);
         *n = n.saturating_add(1);
+        for &r in list.iter() {
+            if r >> 40 != 0 {
+                // a part whose page's first module stays (it continued into this page): that one no
+                // longer serves its entries
+                if let Some(base) = st.blocks.get_mut(&(r & PART_MASK)) {
+                    base.parts.retain(|&k| k != r);
+                    base.served = base.own;
+                }
+                let parts = st.blocks.get(&(r & PART_MASK)).map(|b| b.parts.clone()).unwrap_or_default();
+                for k in parts {
+                    if k == r { continue }
+                    if let Some(own) = st.blocks.get(&k).map(|b| b.own) {
+                        let base = st.blocks.get_mut(&(r & PART_MASK)).unwrap();
+                        for i in 0..64 { base.served[i] |= own[i] }
+                    }
+                }
+            }
+        }
         for r in list {
             if let Some(b) = st.blocks.remove(&r) {
                 STAT_INVALIDATED += 1;
