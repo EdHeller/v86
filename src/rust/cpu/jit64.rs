@@ -105,7 +105,20 @@ struct Slot {
 /// Per module index: steps when the module of the index is replaced or dropped (a slot that points
 /// to it is valid while its generation is the current one, checked without the module map)
 static mut INDEX_GEN: [u32; 65536] = [0; 65536];
-unsafe fn retire_index(index: u16) { INDEX_GEN[index as usize] = INDEX_GEN[index as usize].wrapping_add(1) }
+unsafe fn retire_index(index: u16) {
+    INDEX_GEN[index as usize] = INDEX_GEN[index as usize].wrapping_add(1);
+    if !RETIRE_BUMPS {
+        // chain entries to the module go (slots check the generation)
+        #[allow(static_mut_refs)]
+        for e in CHAIN.iter_mut() {
+            if e.meta & 0xFFFF == index as u32 {
+                e.rip = u64::MAX;
+            }
+        }
+    }
+}
+/// a retired module steps the epochs (all slots and chain entries revalidate) instead
+static mut RETIRE_BUMPS: bool = false;
 const SLOT_COUNTING: u8 = 0;
 const SLOT_PENDING: u8 = 1;
 const SLOT_READY: u8 = 2;
@@ -4789,7 +4802,7 @@ unsafe fn try_run_block() -> bool {
             if slot.user != user {
                 return false;
             }
-            if slot.epoch != epoch(user) {
+            if slot.epoch != epoch(user) || INDEX_GEN[slot.index as usize] != slot.gen {
                 // mappings may have changed or blocks were invalidated: check that rip still
                 // maps to the block of this slot
                 // (the module is still the one of the slot when its index has the same generation)
@@ -5057,7 +5070,7 @@ unsafe fn compile(r: u64, user: bool) {
     }) };
     if let Some((state_before, index)) = old {
         // the module this one replaces: slots that point to it notice on their next visit
-        bump_epochs();
+        if RETIRE_BUMPS { bump_epochs() }
         retire_index(index);
         st.by_index.remove(&index);
         match state_before {
@@ -5122,7 +5135,7 @@ pub unsafe fn dirty_page(ctx: &mut jit::JitState, page: Page) -> bool {
             FLAGS[SMC] = 1;
         }
         // slots that point to these blocks notice that their block is gone on their next visit
-        bump_epochs();
+        if RETIRE_BUMPS { bump_epochs() }
         if HIST_ON {
             let e = &mut INVAL_LOG[(p as usize ^ (p >> 16) as usize) & 1023];
             if e.0 != p as u64 { *e = (p as u64, 0, list.first().map_or(false, |k| k >> 32 != 0)) }
