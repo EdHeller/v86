@@ -2625,6 +2625,27 @@ impl<'a> Gen<'a> {
                 self.set_previous_ip();
                 self.ea_to_local(&dst);
                 let Count::Imm(c) = count else {
+                    if !self.cur_live_out && matches!(op, 4 | 5 | 6 | 7) {
+                        // count in cl, flags not needed: inline (a zero count leaves the value as it is)
+                        self.read_opd_saved(&dst, bits);
+                        if op == 7 && bits < 64 {
+                            self.b.const_i64(64 - bits as i64);
+                            self.b.shl_i64();
+                            self.b.const_i64(64 - bits as i64);
+                            self.b.shr_s_i64();
+                        }
+                        self.get_reg(1, 8, true);
+                        self.b.const_i64(if bits == 64 { 63 } else { 31 });
+                        self.b.and_i64();
+                        match op {
+                            5 => self.b.shr_u_i64(),
+                            7 => self.b.shr_s_i64(),
+                            _ => self.b.shl_i64(),
+                        }
+                        self.mask_result(bits);
+                        self.write_opd_saved(&dst, bits);
+                        return;
+                    }
                     // count in cl: flags and result come from the helper (a zero count changes nothing)
                     self.materialize();
                     self.b.const_i32(16 + op as i32);
