@@ -66,6 +66,8 @@ struct Block {
     /// page offsets the discovery started from
     seeds: Vec<u16>,
     compiles: u32,
+    /// visits of entries the module does not serve (the module compiles again with them at MISS_LIMIT)
+    misses: u32,
     /// the page was compiled with the guessed function starts (every later compile guesses again)
     heuristic: bool,
 }
@@ -330,6 +332,44 @@ static mut SSE_SRC: [u64; 2] = [0; 2];
 
 /// dword lane operations on xmm register `x` with SSE_SRC (Insn::SseLane)
 unsafe fn sse_lane(op: i32, x: u8, imm: u8) {
+    if op >= 6 {
+        // whole register operations
+        let p = crate::cpu::global_pointers::reg_xmm.offset(x as isize) as *mut u128;
+        let d = p.read_unaligned();
+        let s = SSE_SRC[0] as u128 | (SSE_SRC[1] as u128) << 64;
+        let lanes = |f: &dyn Fn(u64) -> u64| f(d as u64) as u128 | (f((d >> 64) as u64) as u128) << 64;
+        let r: u128 = match op {
+            6 => if imm > 63 { 0 } else { lanes(&|v| v >> imm) },
+            7 => if imm > 63 { 0 } else { lanes(&|v| v << imm) },
+            8 => if imm > 15 { 0 } else { d >> (imm as u32 * 8) },
+            9 => if imm > 15 { 0 } else { d << (imm as u32 * 8) },
+            10 => {
+                let db = d.to_le_bytes();
+                let sb = s.to_le_bytes();
+                let mut r = [0u8; 16];
+                for i in 0..16 {
+                    r[i] = if sb[i] & 0x80 != 0 { 0 } else { db[(sb[i] & 15) as usize] };
+                }
+                u128::from_le_bytes(r)
+            },
+            12 => {
+                let mut r = 0u128;
+                for i in 0..4 {
+                    r |= (((d >> (32 * i)) as u32).wrapping_sub((s >> (32 * i)) as u32) as u128) << (32 * i);
+                }
+                r
+            },
+            13 => (d as u64).wrapping_add(s as u64) as u128 | (((d >> 64) as u64).wrapping_add((s >> 64) as u64) as u128) << 64,
+            14 => (d as u64).wrapping_sub(s as u64) as u128 | (((d >> 64) as u64).wrapping_sub((s >> 64) as u64) as u128) << 64,
+            _ => {
+                // palignr: (dst:src) >> imm bytes
+                let sh = imm as u32 * 8;
+                if sh >= 256 { 0 } else if sh >= 128 { d >> (sh - 128) } else if sh == 0 { s } else { s >> sh | d << (128 - sh) }
+            },
+        };
+        p.write_unaligned(r);
+        return;
+    }
     let d = crate::cpu::global_pointers::reg_xmm.offset(x as isize) as *mut u32;
     let dst: [u32; 4] = [*d, *d.add(1), *d.add(2), *d.add(3)];
     let s: [u32; 4] = [SSE_SRC[0] as u32, (SSE_SRC[0] >> 32) as u32, SSE_SRC[1] as u32, (SSE_SRC[1] >> 32) as u32];
@@ -1112,6 +1152,36 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                     let m = modrm(&mut c, &p)?;
                     let imm = c.u8()?;
                     Insn::SseLane { op: 5, x: m.reg, rm: m.rm, imm }
+                },
+                0xFA | 0xD4 | 0xFB if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseLane { op: match op2 { 0xFA => 12, 0xD4 => 13, _ => 14 }, x: m.reg, rm: m.rm, imm: 0 }
+                },
+                0x73 if p.osz16 && rep == 0 => {
+                    let m = modrm(&mut c, &p)?;
+                    let imm = c.u8()?;
+                    match (m.reg & 7, m.rm) {
+                        (2, Opd::Reg(n, _)) => Insn::SseLane { op: 6, x: n, rm: m.rm, imm },
+                        (6, Opd::Reg(n, _)) => Insn::SseLane { op: 7, x: n, rm: m.rm, imm },
+                        (3, Opd::Reg(n, _)) => Insn::SseLane { op: 8, x: n, rm: m.rm, imm },
+                        (7, Opd::Reg(n, _)) => Insn::SseLane { op: 9, x: n, rm: m.rm, imm },
+                        _ => return None,
+                    }
+                },
+                0x38 if p.osz16 && rep == 0 => {
+                    if c.u8()? != 0x00 {
+                        return None;
+                    }
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseLane { op: 10, x: m.reg, rm: m.rm, imm: 0 }
+                },
+                0x3A if p.osz16 && rep == 0 => {
+                    if c.u8()? != 0x0F {
+                        return None;
+                    }
+                    let m = modrm(&mut c, &p)?;
+                    let imm = c.u8()?;
+                    Insn::SseLane { op: 11, x: m.reg, rm: m.rm, imm }
                 },
                 0x72 if p.osz16 && rep == 0 => {
                     let m = modrm(&mut c, &p)?;
@@ -4489,6 +4559,8 @@ static mut GEN_STRADDLE: bool = false;
 static mut PENDING_SEEDS: bool = true;
 /// visits of such an entry before it is noted
 static mut PENDING_AFTER: u32 = 8;
+static mut MISS_LIMIT: u32 = 0;
+static mut MISS_BACKOFF_MAX: u32 = 4;
 /// noted entries of a page that make it compile again right away (0: only at the threshold)
 static mut PENDING_BATCH: usize = 0;
 /// warm entries of a page without a module that make it compile (0: only at the threshold)
@@ -4739,6 +4811,31 @@ unsafe fn try_run_block() -> bool {
                     *m.entry(block_key(phys & !0xFFF, user)).or_insert(0) += 1;
                 }
             }
+            if MISS_LIMIT != 0 {
+                // v64's rule: a module whose page is entered where it does not serve compiles again
+                // with those entries after MISS_LIMIT such visits
+                if let Some(phys) = probe_fetch(r, user) {
+                    let key = block_key(phys & !0xFFF, user);
+                    let off = (phys & 0xFFF) as usize;
+                    if let Some(b) = st.blocks.get_mut(&key) {
+                        if b.state == BlockState::Ready && !bit(&b.served, off) && !bit(&b.failed, off) {
+                            b.misses += 1;
+                            let limit = MISS_LIMIT << (b.compiles.saturating_sub(1)).min(MISS_BACKOFF_MAX);
+                            let v = st.pending_seeds.entry(key).or_default();
+                            if v.len() < 256 && !v.contains(&(off as u16)) {
+                                v.push(off as u16);
+                            }
+                            if b.misses >= limit {
+                                slot.count = 0;
+                                slot.limit = 0;
+                                compile(r, user);
+                                refill_slot(r, key, off);
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
             if slot.count == PENDING_AFTER && PENDING_SEEDS {
                 // (visited a few times: worth an entry when the page is compiled next)
                 if let Some(phys) = probe_fetch(r, user) {
@@ -4905,7 +5002,7 @@ unsafe fn compile(r: u64, user: bool) {
             bit_set(&mut failed, offset);
         }
         old = st.blocks.remove(&key).map(|b| (b.state, b.index));
-        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: 0, served, covered, failed, seeds: seeds.clone(), compiles: compiles + 1, heuristic: HEURISTIC_SEEDS || heuristic, straddle: GEN_STRADDLE });
+        st.blocks.insert(key, Block { state: BlockState::Pending, phys_page: page, user, index, epoch: 0, served, covered, failed, seeds: seeds.clone(), compiles: compiles + 1, misses: 0, heuristic: HEURISTIC_SEEDS || heuristic, straddle: GEN_STRADDLE });
         if GEN_STRADDLE {
             // writes to the next page invalidate this module as well
             let list = st.page_blocks.entry(page + 1).or_default();
@@ -4945,7 +5042,7 @@ unsafe fn compile(r: u64, user: bool) {
             None => {
                 let mut failed = [0u64; 64];
                 bit_set(&mut failed, offset);
-                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: 0, served: [0; 64], covered: [0; 64], failed, seeds: vec![], compiles: 1, heuristic: false, straddle: false });
+                st.blocks.insert(key, Block { state: BlockState::Failed, phys_page: page, user, index: 0, epoch: 0, served: [0; 64], covered: [0; 64], failed, seeds: vec![], compiles: 1, misses: 0, heuristic: false, straddle: false });
                 let list = st.page_blocks.entry(page).or_default();
                 if !list.contains(&key) {
                     list.push(key);

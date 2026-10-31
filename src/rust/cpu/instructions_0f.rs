@@ -3314,6 +3314,10 @@ pub unsafe fn instr_0FA2() {
             // initial APIC id, cpu count, clflush size
             ebx = (crate::cpu::apic::CURRENT_CORE as i32) << 24 | cores << 16 | 8 << 8;
             ecx = 1 << 0 | 1 << 13 | 1 << 23 | 1 << 26 | 1 << 30; // sse3, cx16, popcnt, xsave, rdrand
+            if *efer & EFER_LMA != 0 {
+                // ssse3, sse4.1, sse4.2 (in long mode: a 32-bit Alpine kernel does not boot with them yet)
+                ecx |= 1 << 9 | 1 << 19 | 1 << 20;
+            }
             if *cr.offset(4) & CR4_OSXSAVE != 0 {
                 ecx |= 1 << 27; // osxsave
             }
