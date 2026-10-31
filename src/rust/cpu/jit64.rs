@@ -1765,7 +1765,7 @@ impl<'a> Gen<'a> {
     /// the slow branch of a memory access.
     fn retry_exit(&mut self) {
         let saved = self.pending;
-        self.materialize();
+        self.materialize_cold();
         let (cur, n) = (self.cur, self.n);
         self.rip_val(cur);
         self.exit_stack_rip(n - 1, 3);
@@ -2271,6 +2271,23 @@ impl<'a> Gen<'a> {
     fn materialize(&mut self) {
         let m0 = self.b.body_len();
         self.materialize_inner();
+        unsafe { CAT_BYTES[6] = CAT_BYTES[6].wrapping_add((self.b.body_len() - m0) as u32) }
+    }
+
+    /// stores the pending flags into memory on a path that rarely runs: through the helper (small code)
+    fn materialize_cold(&mut self) {
+        let m0 = self.b.body_len();
+        match self.pending {
+            Some(p) if !p.keep_cf => {
+                self.pending = None;
+                self.b.const_i32((p.kind as i32) << 8 | p.bits as i32);
+                self.b.get_local_i64(&self.fl_a);
+                self.b.get_local_i64(&self.fl_b);
+                self.b.get_local_i64(&self.fl_r);
+                self.b.call_fn4_i32_i64_i64_i64("j64_flags");
+            },
+            _ => self.materialize_inner(),
+        }
         unsafe { CAT_BYTES[6] = CAT_BYTES[6].wrapping_add((self.b.body_len() - m0) as u32) }
     }
 
