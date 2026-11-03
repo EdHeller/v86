@@ -198,6 +198,7 @@ What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's 
 - 2026-11-03:
   - SSE3/SSSE3/SSE4 in every x86 mode (task 2): the 32-bit JIT passes the prefixes of 0F 38 / 0F 3A to the
     interpreter; CPUID advertises them everywhere; `tests/x64/jit/16_sse4_prefix_x86.asm`.
+  - kmscube on 32-bit Alpine (virgl on WebGPU, Chromium): `tools/cube_disk.mjs --arch x86`, `?arch=x86&gpu3d=1`.
   - The JS split per architecture: libv86.js (x86), libv64.js (x86_64), libv86-arm.js (the ARM machine through
     new V86()); docs/architectures.md. cpu_workers without isolation runs one core. Worker cores: the function
     table fix (they crashed once the JIT used slots above 5000).
