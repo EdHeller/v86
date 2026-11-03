@@ -60,7 +60,7 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
      VGA BIOS as expansion ROM and shared-memory capabilities; `src/virtio_devices.js` is v64's adapter handle.
      `tests/virtio_gpu.mjs [x86_64|x86]`: Linux's virtio_gpu binds, fbcon on virtio_gpudrmfb, tty1's text on the
      scanout. `examples/alpine64.html?graphics_adapter=virtio_gpu` shows the console in Chromium.
-   - [ ] Step 1b, 2D on arm64: over virtio-mmio first (no PCIe needed), over virtio-pci once task 3 lands.
+   - [ ] Step 1b, 2D on arm64: over virtio-mmio first (no PCIe needed), over virtio-pci once task 4 lands.
    - [x] Step 2a, virgl on x86 (2026-10-31): with the page's WebGPU renderer the device declares virgl
      (level virgl43-hostmem); Alpine 3.23's Mesa virgl driver reports "virgl (v86 GX on WebGPU)" and kmscube's cube
      is on the screen (`tests/virtio_gpu_3d.mjs`: headless Chromium, SwiftShader's WebGPU; the Mesa repository from
@@ -86,14 +86,26 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
      "v2 package integrity error"). Compiled code now hands the prefixes over (`needs_prefixes` in
      `gen/x86_table.js`, `jit_interpreter_prefixes`), CPUID reports SSSE3/SSE4.1/SSE4.2 in every mode, 32-bit Alpine
      boots with them, and `tests/x64/jit/16_sse4_prefix_x86.asm` fails on the old core and passes now.
-3. [ ] **PCIe on the arm64 `virt` board.** `src/arm/virt/pcie.js` has the host (ECAM, windows, INTx) and a
+3. [ ] **Full instruction coverage on x86: 16-bit, 32-bit and x86_64** (user's request 2026-11-03).
+   - List every instruction in the Intel SDM opcode maps (one-byte, 0F, 0F 38, 0F 3A, x87, the VEX-free SSE through
+     SSE4.2, the system instructions) for real mode, 16-bit and 32-bit protected mode, vm86 and long mode, and mark
+     each as implemented, stubbed (#UD, a no-op, or partial) or missing in v86/v64 (`gen/x86_table.js`, `instr_*`,
+     `src/rust/cpu/sse_0f38.rs`, jit64); write it into `tests/nasm/Readme.md` and `tests/x64/Readme.md`
+     (`tools/opcode_coverage.mjs`).
+   - Implement what is missing or stubbed (for example operand-size and address-size variants that only 16-bit code
+     uses, the 0F 38 / 0F 3A forms, x87 corner cases, CPUID-advertised features without an instruction behind them).
+   - Test each one against the host CPU or QEMU: the nasm tests in 16-bit, 32-bit and 64-bit code, the x64 fuzzer
+     widened to SSE and x87, interpreted and compiled (JIT and jit64).
+   - Then: the coverage tables list nothing missing; `make nasmtests`, `node tests/x64/run.js` and the fuzzers are
+     clean.
+4. [ ] **PCIe on the arm64 `virt` board.** `src/arm/virt/pcie.js` has the host (ECAM, windows, INTx) and a
    virtio-pci transport. Still to do: wire it into the machine (`virtio_transport: "pci"`), boot Alpine with
    virtio-blk-pci both by direct kernel boot and through UEFI, and add that to `make a64-boot-tests`. Android and
    virtio-gpu-pci need it.
-4. [ ] **Android on ARM.** See "Plan: Android" below.
-5. [ ] **Apple targets: Darwin up through Mac OS X 10.14 Mojave.** See "Plan: Apple" below.
-6. [ ] **The rest of v64 parity.** See "Plan: v64 parity" below.
-7. [ ] **Buildroot images for the new machine features** (`tools/buildroot/build.sh`, user's request 2026-10-31):
+5. [ ] **Android on ARM.** See "Plan: Android" below.
+6. [ ] **Apple targets: Darwin up through Mac OS X 10.14 Mojave.** See "Plan: Apple" below.
+7. [ ] **The rest of v64 parity.** See "Plan: v64 parity" below.
+8. [ ] **Buildroot images for the new machine features** (`tools/buildroot/build.sh`, user's request 2026-10-31):
    offer an x86_64 build (64-bit kernel and userland, the x86_64 toolchain) next to the 32-bit one, and what
    multicore needs: ACPI (CONFIG_ACPI, the MADT for the APs), SMP with the local APIC and I/O APIC
    (CONFIG_SMP, CONFIG_X86_LOCAL_APIC/IO_APIC, NR_CPUS of 8), the HPET and the TSC as clocksources, and
@@ -104,7 +116,7 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
      every image, sudo (the user is in group sudo), the openssl command and the CA certificates;
      a default user `student` (password `student`, `DEFAULT_USER=` to rename it, `root` for the
      old behaviour) with home `/home/student` and a `readme.txt` there, logged in on tty1 and the serial port.
-8. [ ] **x86 follow-up (low priority).** Cut the lazy-compile cost, for example with smaller modules or by
+9. [ ] **x86 follow-up (low priority).** Cut the lazy-compile cost, for example with smaller modules or by
    compiling off the main thread.
 
 ## Plan: Android
@@ -112,7 +124,7 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
 Follows v64's `docs/arm64-virt-android16-plan.md` and `docs/android-images-plan.md`. v64 runs Android 16 on the
 `virt` board with Cuttlefish's arm64-only phone images, so its path, not `ranchu`, is the one to port first.
 
-- A1. Device groundwork: PCIe and virtio-pci (task 3), virtio-console with several ports, virtio-input (keyboard,
+- A1. Device groundwork: PCIe and virtio-pci (task 4), virtio-console with several ports, virtio-input (keyboard,
   tablet, multi-touch), virtio-vsock (adbd), more than 2 GiB of RAM (the core has `extended.rs`; the machine
   refuses more than 2 GiB today).
 - A2. The GKI kernel (android16-6.12) with Alpine's initramfs on our `virt` board: the kernel's own features
@@ -181,7 +193,7 @@ ARM track (after Android): v64's iPhone 4 plan on our AArch32 core, as a new `s5
 
 What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's docs):
 
-- ARM: PCIe/virtio-pci (task 3); virtio-gpu 2D/virgl/Venus (task 1); virtio-console, -input, -vsock, -snd;
+- ARM: PCIe/virtio-pci (task 4); virtio-gpu 2D/virgl/Venus (task 1); virtio-console, -input, -vsock, -snd;
   snapshots; RAM above 2 GiB; Android (Cuttlefish images and tooling, `ranchu`); the iPhone 4 machine (v64 has it
   only as a plan and tooling).
 - x86 devices: AHCI/SATA, e1000, SMBIOS, PCIe root ports, ICH9 TCO/SMBus; virtio-gpu and virtio-vsock.
