@@ -1,27 +1,31 @@
-Use the corresponding `make` target in the root directory to run a test. The
-following list is roughtly sorted from most interesting/useful to least.
+# Tests
 
-- [nasm](nasm/): Small unit tests written in assembly, which are run using gdb
-  on the host.
-- [qemu](qemu/): Based on tests from qemu. Builds a Linux binary, which tests
-  many CPU features, which are then compared to a run on qemu.
-- [kvm-unit-test](kvm-unit-test/): Based on tests from the KVM project, tests
-  various CPU features.
-- [full](full/): Starts several OSes and checks if they boot correctly.
-- [x64](x64/): Tests for stubbed-out instructions, open issues and the planned
-  x86_64 (long mode) support. Known failures are marked `xfail`.
-- [jit-paging](jit-paging/): Tests jit and paging interaction.
-- [api](api/): Tests for several API functions of v86.
-- [devices](devices/): Device tests.
-- [rust](rust/): Rust unit test helpers.
-- [expect](expect/): Expect tests for the jit output. Contains a set of
-  asm+wasm files, where the jit is expected to produce the wasm file given the
-  asm file.
+Run a suite with its `make` target in the root directory. The instruction tests have a Readme per architecture,
+each with a table of every opcode and the tests that cover it (`node tools/opcode_coverage.mjs` regenerates them):
 
-The following environmental variables are respected by most tests if applicable:
+| Architecture | Core | Instruction tests |
+|---|---|---|
+| x86 (32-bit) | `v86.wasm` | [nasm/Readme.md](nasm/Readme.md): generated tests for every encoding, run on the host CPU and in v86 |
+| x86_64 | `v64.wasm` | [x64/Readme.md](x64/Readme.md): long mode, jit64, formerly stubbed instructions, several cores, a differential fuzzer |
+| ARM (AArch64) | `v86-arm64.wasm` | [a64/Readme.md](a64/Readme.md): Linux and UEFI boot tests, the core's unit tests, the encoding classes |
 
-- `TEST_RELEASE_BUILD=1`: Test the release build (libv86.js, v86.wasm) instead of the
-  debug build (source files with v86-debug.wasm)
-- `MAX_PARALLEL_TESTS=n`: Maximum number of tests to run in parallel. Defaults
-  to the number of cores in your system or less.
-- `TEST_NAME="…"`: Run only the specified test (only expect, full, nasm)
+The other suites, roughly from the most useful:
+
+| Suite | What it tests | `make` |
+|---|---|---|
+| [qemu](qemu/) | QEMU's `test-i386`: many CPU features, compared with a run in QEMU | `qemutests` |
+| [kvm-unit-tests](kvm-unit-tests/) | tests from the KVM project: task switches, real mode, PAT, NX | `kvm-unit-test` |
+| [full](full/) | boots several OSes and checks that they come up | `tests` |
+| [jit-paging](jit-paging/) | the JIT with paging and self-modifying code | `jitpagingtests` |
+| [api](api/) | the V86 API | `api-tests` |
+| [devices](devices/) | devices | `devices-test` |
+| [expect](expect/) | the code the JIT generates: each asm file and the wasm it must produce | `expect-tests` |
+| [rust](rust/) | Rust unit test helpers | `rust-test` |
+| `*.mjs` here | machines and devices: UEFI (`uefi.mjs`), Q35 (`q35.mjs`), TPM (`tpm.mjs`), USB (`usb.mjs`), graphics adapters (`graphics_adapter.mjs`), virtio-gpu 2D (`virtio_gpu.mjs`) and 3D on WebGPU (`virtio_gpu_3d.mjs`) | `node tests/<file>` |
+
+Most tests respect these environment variables:
+
+- `TEST_RELEASE_BUILD=1`: the release build (libv86.mjs and the release cores) instead of the source files and the
+  debug cores
+- `MAX_PARALLEL_TESTS=n`: at most n tests at once (default: the number of host cores or less)
+- `TEST_NAME="…"`: only the matching tests (expect, full, nasm, x64)

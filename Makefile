@@ -522,8 +522,8 @@ nasmtests-force-jit: build/v86-debug.wasm
 	$(NASM_TEST_DIR)/gen_fixtures.js
 	$(NASM_TEST_DIR)/run.js --force-jit
 
-# Tests for stubbed-out instructions, open issues and the planned x86_64 mode.
-# Most are expected to fail today (EXPECT: xfail); the run only fails on regressions or when an xfail starts passing.
+# The x86_64 tests (long mode, jit64, formerly stubbed instructions, open issues, several cores; tests/x64/Readme.md).
+# Known failures are EXPECT: xfail; the run fails on regressions and when an xfail starts passing.
 x64tests: build/v86-debug.wasm
 	./tests/x64/run.js
 	./tests/x64/fuzz.js --seed 1 --count 3000
