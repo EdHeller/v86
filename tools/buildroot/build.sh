@@ -151,6 +151,9 @@
 #   USE_CCACHE=1              compiler cache in $WORK/ccache (default on; 0 turns it off).
 #                             The first build fills it; later fresh builds reuse it.
 #   USER_OVERLAY=~/test/overlay   extra files copied into the image, if the folder exists
+#   DEFAULT_USER=student      the user the text console (tty1) and the serial port log in as,
+#                             with its home /home/<name> and a readme.txt there; its password is
+#                             its name. DEFAULT_USER=root: log in as root, as before
 #   BR_SRC=<dir>              use an existing Buildroot 2026.08 tree
 #   DL_RETRIES=6              download retries (DNS failures, flaky mirrors)
 #   ALLOW_ROOT=1              allow building as root
@@ -258,7 +261,7 @@ while (($#)); do
         -j)               JOBS=${2:?-j needs a number}; shift ;;
         -j*)              JOBS=${1#-j} ;;
         -h|--help)        usage; exit 0 ;;
-        [A-Z_]*=*)        [[ "${1%%=*}" =~ ^(WORK|IMAGE_DIR|IMAGE_URL|ART_DIR|DL_DIR|USE_CCACHE|HOST_CACHE|HOST_CACHE_DIR|USER_OVERLAY|BR_SRC|DL_RETRIES|ALLOW_ROOT|JOBS)$ ]] \
+        [A-Z_]*=*)        [[ "${1%%=*}" =~ ^(WORK|IMAGE_DIR|IMAGE_URL|ART_DIR|DL_DIR|USE_CCACHE|HOST_CACHE|HOST_CACHE_DIR|USER_OVERLAY|BR_SRC|DL_RETRIES|ALLOW_ROOT|JOBS|DEFAULT_USER)$ ]] \
                               || die "unknown setting: ${1%%=*}"
                           declare -g "${1%%=*}=${1#*=}" ;;
         *)                die "unknown option: $1 (try --help)" ;;
@@ -388,6 +391,11 @@ WORK=$(readlink -m "${WORK:-$HOME/test}")
 DL_DIR=$(readlink -m "${DL_DIR:-$SCRIPT_DIR/downloads}")
 BR_SRC=$(readlink -m "${BR_SRC:-$WORK/buildroot-$BR_VER}")
 USER_OVERLAY=$(readlink -m "${USER_OVERLAY:-$WORK/overlay}")
+DEFAULT_USER=${DEFAULT_USER:-student}
+if ! [[ "$DEFAULT_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo "DEFAULT_USER: a user name (lower case letters, digits, _ and -), got '$DEFAULT_USER'" >&2
+    exit 1
+fi
 HOST_CACHE_DIR=$(readlink -m "${HOST_CACHE_DIR:-$WORK/host-cache}")
 if [[ -z "$IMAGE_DIR" ]]; then
     if [[ -d /mnt/c ]]; then IMAGE_DIR=/mnt/c/Projects; else IMAGE_DIR=$SCRIPT_DIR/images; fi
@@ -2005,8 +2013,11 @@ write_overlay() {
 EOF
         if ((GUI)); then
             echo 'tty1::respawn:/usr/bin/xstart'
-        else
+        elif [[ "$DEFAULT_USER" == root ]]; then
             echo 'tty1::respawn:-/bin/bash'
+        else
+            # (the default user's login on the text console, as on the serial port)
+            echo 'tty1::respawn:/sbin/getty -L -n -l /usr/bin/autologin tty1 0 linux'
         fi
         cat <<'EOF'
 tty2::respawn:/sbin/getty -L tty2 0 linux
@@ -2015,14 +2026,37 @@ ttyS0::respawn:/sbin/getty -L -n -l /usr/bin/autologin ttyS0 115200 vt100
 EOF
     } | put "$OVL/etc/inittab"
 
-    # COM1 (the page's serial console) logs in as root by itself: getty -n -l runs this
-    # instead of asking for a name. login -f skips the password and still shows /etc/motd.
-    putx "$OVL/usr/bin/autologin" <<'EOF'
-#!/bin/sh
-exec /bin/login -f root
-EOF
+    # COM1 (the page's serial console) and the text console log in as the default user by
+    # themselves: getty -n -l runs this instead of asking for a name. login -f skips the
+    # password and still shows /etc/motd.
+    printf '#!/bin/sh\nexec /bin/login -f %s\n' "$DEFAULT_USER" | putx "$OVL/usr/bin/autologin"
     # root's password is "root" (BR2_TARGET_GENERIC_ROOT_PASSWD): say so after each login
-    printf '%s\n' "v86 $NAME" 'The root password is "root" (change it with: passwd)' '' | put "$OVL/etc/motd"
+    {
+        printf '%s\n' "v86 $NAME" 'The root password is "root" (change it with: passwd)'
+        [[ "$DEFAULT_USER" == root ]] || printf 'You are "%s" (password "%s"); su - gives a root shell\n' "$DEFAULT_USER" "$DEFAULT_USER"
+        echo
+    } | put "$OVL/etc/motd"
+
+    # The default user (BR2_ROOTFS_USERS_TABLES, Buildroot's makeusers): its home is
+    # /home/<name>, which makeusers creates and gives to it, with what the overlay puts there
+    if [[ "$DEFAULT_USER" != root ]]; then
+        printf '%s -1 %s -1 =%s /home/%s /bin/bash audio,video %s\n' \
+            "$DEFAULT_USER" "$DEFAULT_USER" "$DEFAULT_USER" "$DEFAULT_USER" "$DEFAULT_USER" | put "$EXT/users.txt"
+        put "$OVL/home/$DEFAULT_USER/readme.txt" <<EOF
+Welcome to v86 $NAME.
+
+You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
+/home/$DEFAULT_USER, is your home: your files go here.
+
+  neofetch          show the system
+  curl <url>        fetch a web page or file (needs v86's networking on the page)
+  tput cols         the terminal's width; colours: tput setaf 2; echo green; tput sgr0
+  nano <file>       edit a file
+  su -              become root (password: root)
+EOF
+    else
+        : | put "$EXT/users.txt"
+    fi
 
     put "$OVL/etc/profile.d/v86.sh" <<'EOF'
 case ":$PATH:" in *:/usr/local/bin:*) ;; *) PATH="$PATH:/usr/local/bin" ;; esac
@@ -3748,6 +3782,7 @@ BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 # for real hardware. Nothing in a v86 guest needs it; also drops the host-eudev build.
 # BR2_PACKAGE_EUDEV_ENABLE_HWDB is not set
 BR2_ROOTFS_OVERLAY="$overlays"
+BR2_ROOTFS_USERS_TABLES="\$(BR2_EXTERNAL_V86_PATH)/users.txt"
 BR2_ROOTFS_POST_BUILD_SCRIPT="\$(BR2_EXTERNAL_V86_PATH)/post-build.sh"
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_LATEST_VERSION=y
@@ -3767,6 +3802,15 @@ BR2_PACKAGE_NANO=y
 # --no-gcc images drop just its 10 MB magic database and the file command (post-build)
 BR2_PACKAGE_FILE=y
 BR2_PACKAGE_NCURSES_WCHAR=y
+# tput, clear, reset, tset (ncurses' programs)
+BR2_PACKAGE_NCURSES_TARGET_PROGS=y
+BR2_PACKAGE_NEOFETCH=y
+# curl, with TLS and the CA certificates for https
+BR2_PACKAGE_LIBCURL=y
+BR2_PACKAGE_LIBCURL_CURL=y
+BR2_PACKAGE_OPENSSL=y
+BR2_PACKAGE_LIBOPENSSL=y
+BR2_PACKAGE_CA_CERTIFICATES=y
 # glibc has no built-in C.UTF-8: generate it (LANG=C.UTF-8 in every image)
 BR2_GENERATE_LOCALE="C.UTF-8"
 BR2_PACKAGE_ALSA_LIB=y
