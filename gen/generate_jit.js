@@ -226,6 +226,13 @@ function gen_instruction_body_after_fixed_g(encoding, size)
 
     const instruction_prefix = [];
 
+    if(encoding.needs_prefixes)
+    {
+        // (the interpreter function decodes the rest itself: the prefixes the compiled code has seen)
+        instruction_prefix.push(gen_call("codegen::gen_set_prefixes", ["ctx"]));
+        instruction_postfix.push(gen_call("codegen::gen_clear_prefixes", ["ctx"]));
+    }
+
     if(encoding.task_switch_test || encoding.sse)
     {
         instruction_prefix.push(

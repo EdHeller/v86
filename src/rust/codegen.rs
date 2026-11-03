@@ -449,6 +449,13 @@ pub fn sign_extend_i16(builder: &mut WasmBuilder) {
 }
 
 pub fn gen_fn0_const(builder: &mut WasmBuilder, name: &str) { builder.call_fn0(name) }
+
+/// The prefixes of the instruction being compiled, for an interpreter function that decodes the rest of the
+/// instruction itself (0F 38, 0F 3A: mandatory 66/F2/F3, address size and segment prefixes)
+pub fn gen_set_prefixes(ctx: &mut JitContext) {
+    gen_fn1_const(ctx.builder, "jit_interpreter_prefixes", ctx.cpu.prefixes as u32);
+}
+pub fn gen_clear_prefixes(ctx: &mut JitContext) { gen_fn0_const(ctx.builder, "jit_interpreter_prefixes_done"); }
 pub fn gen_fn1_const(builder: &mut WasmBuilder, name: &str, arg0: u32) {
     builder.const_i32(arg0 as i32);
     builder.call_fn1(name);

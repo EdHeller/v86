@@ -54,6 +54,7 @@ const TESTS_ASSUME_INTEL = false;
 // custom: will callback jit to generate custom code
 // block_boundary: may change eip in a way not handled by the jit
 // no_next_instruction: jit will stop analysing after instruction (e.g., unconditional jump, ret)
+// needs_prefixes: the compiled code stores the instruction's prefixes for the interpreter function it calls
 const encodings = [
     { opcode: 0x06, os: 1, custom: 1 },
     { opcode: 0x07, os: 1, skip: 1, block_boundary: 1 }, // pop es: block_boundary since it uses non-raising cpu exceptions
@@ -403,9 +404,10 @@ const encodings = [
     { opcode: 0x0F37, skip: 1, block_boundary: 1 }, // getsec
 
     // ssse3+
-    { opcode: 0x0F38, skip: 1, block_boundary: 1 },
+    // (needs_prefixes: run by the interpreter, which reads the 66/F2/F3, address size and segment prefixes itself)
+    { opcode: 0x0F38, skip: 1, block_boundary: 1, needs_prefixes: 1 },
     { opcode: 0x0F39, skip: 1, block_boundary: 1 },
-    { opcode: 0x0F3A, skip: 1, block_boundary: 1 },
+    { opcode: 0x0F3A, skip: 1, block_boundary: 1, needs_prefixes: 1 },
     { opcode: 0x0F3B, skip: 1, block_boundary: 1 },
     { opcode: 0x0F3C, skip: 1, block_boundary: 1 },
     { opcode: 0x0F3D, skip: 1, block_boundary: 1 },

@@ -15,12 +15,12 @@ ours about 40 s, v64 44.5 s; shell loop (40000 iterations): ours 2.4 s, v64 2.9-
   module drops its chain entries instead of stepping the epochs.
 - MOV CR3 visits only the TLB indices of non-global translations (the jit TLB is 4096 entries now).
 - Shorter inline accesses (one compare for page and crossing; entries hold the address delta).
-- SSSE3/SSE4.1/SSE4.2 advertised in long mode (the kernel then does about 11 % less work, like on v64),
+- SSSE3/SSE4.1/SSE4.2 advertised (first in long mode only; the kernel then does about 11 % less work, like on v64),
   with pshufb, palignr, psrldq/pslldq, psrlq/psllq, psubd, paddq and psubq compiled.
 
 Still open: V8 compiles each module lazily with Liftoff on its first call (about 1-3 s of the main thread
-per boot; `--no-wasm-lazy-compilation` moves it to background threads in Node); a 32-bit Alpine kernel
-does not boot with SSE4 advertised (so it is advertised in long mode only).
+per boot; `--no-wasm-lazy-compilation` moves it to background threads in Node). (SSSE3/SSE4 are now
+advertised in every mode: the 32-bit JIT lost the prefixes of 0F 38 / 0F 3A, which is why a 32-bit kernel failed.)
 
 The notes below are from before these changes.
 

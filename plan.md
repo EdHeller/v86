@@ -32,8 +32,6 @@
   `/v64/` and upstream v86 at `/v86/` (EdHeller/v86 master, labelled by commit and author date, e.g. "v86 315b2b0
   (Oct 30, 2026 21:24 GMT)"; 32-bit only). Packages are recorded in `docs/releases.md`.
 - **Known issues:**
-  - A 32-bit Alpine kernel hangs at boot when SSSE3/SSE4 are advertised, so they are advertised in long mode only
-    (`instr_0FA2`).
   - V8 compiles each jit64 module lazily with Liftoff on its first call. That costs 1-3 s of the main thread per
     boot.
 
@@ -73,7 +71,7 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
      old adapter) and nothing else breaks.
    - Checks: Alpine x86_64 and aarch64 show their console on it (`tests/virtio_gpu.mjs`, `tests/a64/virtio_gpu.mjs`,
      a screenshot that has the login prompt); with WebGPU in headless Chrome, kmscube or a GL test runs on virgl.
-2. [ ] **SSE3, SSSE3 and SSE4 on x86, in every mode.**
+2. [x] **SSE3, SSSE3 and SSE4 on x86, in every mode.**
    - Today SSSE3/SSE4.1/SSE4.2 are advertised only in long mode (`instr_0FA2`), because a 32-bit Alpine kernel hangs
      at boot when they are advertised. Find which instruction is wrong (most likely one that only the 32-bit
      kernel's code paths use, e.g. in the raid6/crc32c/memcpy alternatives or a 32-bit operand-size encoding), fix it,
@@ -83,6 +81,11 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
    - Then: 32-bit Alpine boots with SSE4 advertised; `node tests/x64/run.js` and the fuzzers stay clean.
    - The Apple targets below need this: Mac OS X needs SSE3 from 10.4, SSSE3 from 10.7, and later releases
      use SSE4.1/4.2.
+   - Done 2026-11-03: the 32-bit JIT ran 0F 38 / 0F 3A through the interpreter without storing the instruction's
+     prefixes, so `66 0F 38 00` ran as the MMX pshufb (OpenSSL's SSSE3 SHA code got wrong hashes and apk failed with
+     "v2 package integrity error"). Compiled code now hands the prefixes over (`needs_prefixes` in
+     `gen/x86_table.js`, `jit_interpreter_prefixes`), CPUID reports SSSE3/SSE4.1/SSE4.2 in every mode, 32-bit Alpine
+     boots with them, and `tests/x64/jit/16_sse4_prefix_x86.asm` fails on the old core and passes now.
 3. [ ] **PCIe on the arm64 `virt` board.** `src/arm/virt/pcie.js` has the host (ECAM, windows, INTx) and a
    virtio-pci transport. Still to do: wire it into the machine (`virtio_transport: "pci"`), boot Alpine with
    virtio-blk-pci both by direct kernel boot and through UEFI, and add that to `make a64-boot-tests`. Android and
@@ -193,6 +196,8 @@ What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's 
 ## Done
 
 - 2026-11-03:
+  - SSE3/SSSE3/SSE4 in every x86 mode (task 2): the 32-bit JIT passes the prefixes of 0F 38 / 0F 3A to the
+    interpreter; CPUID advertises them everywhere; `tests/x64/jit/16_sse4_prefix_x86.asm`.
   - The JS split per architecture: libv86.js (x86), libv64.js (x86_64), libv86-arm.js (the ARM machine through
     new V86()); docs/architectures.md. cpu_workers without isolation runs one core. Worker cores: the function
     table fix (they crashed once the JIT used slots above 5000).

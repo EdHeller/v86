@@ -2749,6 +2749,26 @@ pub unsafe fn read_imm32s() -> OrPageFault<i32> {
     };
 }
 
+/// Compiled code calls an interpreter instruction function that decodes the rest of the instruction itself
+/// (0F 38, 0F 3A): it reads the prefixes, which only the interpreter keeps in `prefixes` (the interpreter resets
+/// them before every instruction, so a page fault in the call leaves nothing stale)
+#[no_mangle]
+pub unsafe fn jit_interpreter_prefixes(p: i32) {
+    *prefixes = p as u8;
+    #[cfg(debug_assertions)]
+    {
+        in_jit = false;
+    }
+}
+#[no_mangle]
+pub unsafe fn jit_interpreter_prefixes_done() {
+    *prefixes = 0;
+    #[cfg(debug_assertions)]
+    {
+        in_jit = true;
+    }
+}
+
 pub unsafe fn is_osize_32() -> bool {
     dbg_assert!(!in_jit);
     return *is_32 != (*prefixes & prefix::PREFIX_MASK_OPSIZE == prefix::PREFIX_MASK_OPSIZE);
