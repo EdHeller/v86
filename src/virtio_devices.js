@@ -332,7 +332,13 @@ VirtioDevice.prototype.request = function(queue, chain)
 VirtioDevice.prototype.flush = function(queue_id)
 {
     const queue = this.get_queue(queue_id);
-    if(queue.is_configured() && queue.num_staged_replies) queue.flush_replies();
+    if(queue.is_configured() && queue.num_staged_replies)
+    {
+        queue.flush_replies();
+        // (answers that come later than the request, from a renderer or another thread: the CPU may be idle
+        // waiting for them, until its next timer otherwise)
+        this.cpu.stop_idling();
+    }
 };
 
 /**
