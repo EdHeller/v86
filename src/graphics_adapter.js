@@ -55,16 +55,22 @@ export async function load_graphics_adapter(name, path)
         }
         else
         {
-            // from the source tree its entry module, from the bundle the
-            // plugin file beside it
-            try
+            // from the bundle (a classic script: BUNDLE_URL) the plugin file
+            // beside it, from the source tree its entry module
+            if(BUNDLE_URL)
             {
-                await import("./graphics_adapters/" + name + "/plugin.js");
+                await import_plugin(new URL(file, BUNDLE_URL).href);
             }
-            catch(e)
+            else
             {
-                await import_plugin(BUNDLE_URL ? new URL(file, BUNDLE_URL).href :
-                    typeof __dirname === "string" ? __dirname + "/" + file : "build/" + file);
+                try
+                {
+                    await import("./graphics_adapters/" + name + "/plugin.js");
+                }
+                catch(e)
+                {
+                    await import_plugin(typeof __dirname === "string" ? __dirname + "/" + file : "build/" + file);
+                }
             }
         }
     }
