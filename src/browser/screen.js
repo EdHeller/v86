@@ -52,7 +52,9 @@ export function ScreenAdapter(options, screen_fill_buffer)
 
     // the on-screen frame counter (options.show_fps, show_fps()): frames per second whose pixels changed, as the
     // display adapter delivers them (with a WebGPU renderer, the frames it read back)
-    let fps_element = null, fps_timer = 0, fps_frames = 0, fps_since = 0;
+    // (a layer with a `frame` number, from virtio-gpu: updates of one frame count once, and updates without one, the
+    // cursor's, not at all)
+    let fps_element = null, fps_timer = 0, fps_frames = 0, fps_since = 0, fps_tagged = false, fps_last = -1;
 
     var
         /** @type {number} */
@@ -945,7 +947,15 @@ export function ScreenAdapter(options, screen_fill_buffer)
 
     this.update_buffer = function(layers)
     {
-        if(layers.length) fps_frames++;
+        let frame = -1;
+        for(const layer of layers) if(typeof layer.frame === "number" && layer.frame > frame) frame = layer.frame;
+        if(frame >= 0)
+        {
+            fps_tagged = true;
+            if(frame !== fps_last) fps_frames++;
+            fps_last = frame;
+        }
+        else if(layers.length && !fps_tagged) fps_frames++;
 
         if(DEBUG_SCREEN_LAYERS)
         {

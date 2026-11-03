@@ -119,7 +119,8 @@ GraphicsDisplay.prototype.clear_text_state = function()
 
 /**
  * Each layer is { pixels: { data, width, height }, screen_x, screen_y,
- * buffer_x, buffer_y, buffer_width, buffer_height }, as DisplaySink takes it
+ * buffer_x, buffer_y, buffer_width, buffer_height } and optionally frame (the
+ * frame counter counts a frame number once), as DisplaySink takes it
  * @param {!Array<!Object>} layers
  */
 GraphicsDisplay.prototype.update_buffer = function(layers)
@@ -136,6 +137,7 @@ GraphicsDisplay.prototype.update_buffer = function(layers)
         "buffer_y": layer.buffer_y,
         "buffer_width": layer.buffer_width,
         "buffer_height": layer.buffer_height,
+        "frame": layer.frame,
     })));
 };
 
