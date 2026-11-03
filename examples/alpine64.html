@@ -42,8 +42,10 @@
 <script>
 // query parameters: also tolerates a second "?" instead of "&" (?arch=x86?cores=4)
 const param = name => { const m = new RegExp("[?&]" + name + "(?:=([^&?#]*))?(?:[&?#]|$)").exec(location.search); return m ? (m[1] === undefined ? "" : decodeURIComponent(m[1])) : null; };
-// ?coi=1 registers a service worker that makes the page cross-origin isolated (COOP/COEP) on hosts that cannot send the headers
-if(param("coi")) document.write('<script src="coi-serviceworker.js"><\/script>');
+// gzuidhof/coi-serviceworker (MIT, coi-serviceworker.LICENSE): makes the page cross-origin isolated (COOP/COEP), which worker
+// cores need, also where the server cannot send the headers (localhost with any static server; it reloads the page once).
+// It does nothing when the server already sends them (serve.py); ?coi=0 leaves it out.
+if(param("coi") !== "0") document.write('<script src="coi-serviceworker.js"><\/script>');
 // ?gpu3d=1: virtio-gpu with 3D (virgl) through the WebGPU renderer, when the browser has WebGPU
 if(param("gpu3d") !== null) document.write('<script src="../build/glbridge/libv86-webgpu.js"><\/script>');
 </script>
