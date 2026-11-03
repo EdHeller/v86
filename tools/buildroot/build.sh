@@ -2045,9 +2045,10 @@ EOF
             # (the default user's login on the text console, as on the serial port)
             echo 'tty1::respawn:/sbin/getty -L -n -l /usr/bin/autologin tty1 0 linux'
         fi
+        # (the serial port is the page's xterm.js: TERM=xterm-256color, not vt100's 8 colors)
         cat <<'EOF'
 tty2::respawn:/sbin/getty -L tty2 0 linux
-ttyS0::respawn:/sbin/getty -L -n -l /usr/bin/autologin ttyS0 115200 vt100
+ttyS0::respawn:/sbin/getty -L -n -l /usr/bin/autologin ttyS0 115200 xterm-256color
 ::shutdown:/bin/umount -a -r
 EOF
     } | put "$OVL/etc/inittab"
