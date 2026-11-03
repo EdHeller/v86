@@ -353,8 +353,11 @@ V86.prototype.continue_init = async function(emulator, options)
 
     if(screen_options.container)
     {
+        // (show_fps: true, or screen: { show_fps: true }: the frame counter in the screen's corner)
+        if(options.show_fps) screen_options.show_fps = true;
         this.screen_adapter = new ScreenAdapter(screen_options, () => this.v86.cpu.devices.display ? this.v86.cpu.devices.display.request_frame(false) :
             this.v86.cpu.devices.vga && this.v86.cpu.devices.vga.screen_fill_buffer());
+        if(screen_options.show_fps) this.screen_adapter.show_fps(true);
     }
     else if(screen_options.ansi)
     {
@@ -1372,6 +1375,16 @@ V86.prototype.screen_make_screenshot = function()
  * @param {number} sx
  * @param {number} sy
  */
+/**
+ * Show or hide the frames-per-second counter on the screen (the frames whose pixels changed: with virtio_gpu or
+ * vmware_svga and a WebGPU renderer, the guest's 3D frames)
+ * @param {boolean} on
+ */
+V86.prototype.screen_show_fps = function(on)
+{
+    this.screen_adapter && this.screen_adapter.show_fps && this.screen_adapter.show_fps(on);
+};
+
 V86.prototype.screen_set_scale = function(sx, sy)
 {
     if(this.screen_adapter)
