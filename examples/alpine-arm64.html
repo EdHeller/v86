@@ -69,7 +69,6 @@ try
         container.style.display = "inline-block";
         const screen = new ScreenAdapter({ container },
             () => window.machine && window.machine.devices.display.request_frame(false));
-        if(param("fps") !== null) screen.show_fps(true);
         graphics_adapter = { descriptor: globalThis["V86GraphicsAdapters"]["virtio_gpu"], screen };
         if(boot.cmdline) boot.cmdline = "console=tty0 " + boot.cmdline;
     }

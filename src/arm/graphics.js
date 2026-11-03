@@ -115,7 +115,6 @@ A64Graphics.prototype.create_handle = function()
                 buffer_y: layer["buffer_y"],
                 buffer_width: layer["buffer_width"],
                 buffer_height: layer["buffer_height"],
-                frame: layer["frame"],
             }))),
             "time_since_vblank": now => hub.time_since_vblank(now),
             "add_source": source => hub.add_source(new PluginDisplaySource(source)),

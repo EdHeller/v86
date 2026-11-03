@@ -283,9 +283,6 @@ function Scanout(index)
     /** the resource the renderer shows itself (SURFACE_PRESENT), 0 when the
      * picture is the device's: `rgba` is then behind the GPU's */
     this.direct = 0;
-    /** RESOURCE_FLUSHes shown on it: the frame counter counts these, not the
-     * updates (a 3D picture's readback can arrive over several of them) */
-    this.frame = 0;
 }
 
 Scanout.prototype.add_dirty = function(x0, y0, x1, y1)
@@ -1278,11 +1275,7 @@ VirtioGPU.prototype.flush = function(id, x, y, width, height)
         // the rectangle, in the scanout's coordinates
         const x0 = Math.max(x - scanout.x, 0), y0 = Math.max(y - scanout.y, 0);
         const x1 = Math.min(x + width - scanout.x, scanout.width), y1 = Math.min(y + height - scanout.y, scanout.height);
-        if(x0 < x1 && y0 < y1)
-        {
-            scanout.frame++;
-            this.present(scanout, resource, x0, y0, x1 - x0, y1 - y0);
-        }
+        if(x0 < x1 && y0 < y1) this.present(scanout, resource, x0, y0, x1 - x0, y1 - y0);
     }
     return this.ok();
 };
@@ -1852,8 +1845,7 @@ VirtioGPU.prototype.render = function()
         s.dirty = null;
         if(!d) return;
         layers.push({ pixels: { data: s.rgba, width: s.width, height: s.height }, screen_x: bx + d[0], screen_y: by + d[1],
-            buffer_x: d[0], buffer_y: d[1], buffer_width: d[2] - d[0], buffer_height: d[3] - d[1],
-            frame: s.index * 0x10000000 + s.frame });
+            buffer_x: d[0], buffer_y: d[1], buffer_width: d[2] - d[0], buffer_height: d[3] - d[1] });
     });
     // the cursor, over whatever display it is on
     const at = (px, py) => {

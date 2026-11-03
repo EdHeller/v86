@@ -99,12 +99,9 @@ if(param("gpu3d") !== null)
     options.graphics_adapter = "virtio_gpu";
     options.memory_size = 1024 * 1024 * 1024;
     options.hda = { url: tag === "x86" ? "cube-disk-x86.img" : "cube-disk.img" };   // (32-bit Alpine: its own)
-    options.show_fps = true;                // the frame counter in the screen's corner
     options.cmdline = cmdline.replace("modules=loop,squashfs,sd-mod", "modules=loop,squashfs,sd-mod,ext4") + " apkovl=/dev/sda:ext4:cube.apkovl.tar.gz";
     delete options.vga_memory_size;
 }
-// ?fps=1: the frames-per-second counter on the screen (on by default with ?gpu3d=1)
-if(param("fps") !== null) options.show_fps = true;
 if(param("graphics_adapter"))
 {
     options.graphics_adapter = param("graphics_adapter");

@@ -50,12 +50,6 @@ export function ScreenAdapter(options, screen_fill_buffer)
 
     const cursor_element = document.createElement("div");
 
-    // the on-screen frame counter (options.show_fps, show_fps()): frames per second whose pixels changed, as the
-    // display adapter delivers them (with a WebGPU renderer, the frames it read back)
-    // (a layer with a `frame` number, from virtio-gpu: updates of one frame count once, and updates without one, the
-    // cursor's, not at all)
-    let fps_element = null, fps_timer = 0, fps_frames = 0, fps_since = 0, fps_tagged = false, fps_last = -1;
-
     var
         /** @type {number} */
         cursor_row,
@@ -498,42 +492,8 @@ export function ScreenAdapter(options, screen_fill_buffer)
         }
     };
 
-    /**
-     * Show or hide the frames-per-second counter in the screen's top right corner
-     * @param {boolean} on
-     */
-    this.show_fps = function(on)
-    {
-        if(on && !fps_element)
-        {
-            fps_element = document.createElement("div");
-            fps_element.className = "v86-fps";
-            fps_element.style.cssText = "position: absolute; top: 4px; right: 4px; z-index: 10; padding: 2px 6px; " +
-                "font: bold 12px monospace; color: #0f0; background: rgba(0, 0, 0, 0.6); pointer-events: none;";
-            if(getComputedStyle(screen_container).position === "static") screen_container.style.position = "relative";
-            screen_container.appendChild(fps_element);
-            fps_frames = 0;
-            fps_since = performance.now();
-            const tick = () => {
-                const now = performance.now();
-                fps_element.textContent = (fps_frames * 1000 / (now - fps_since)).toFixed(0) + " FPS";
-                fps_frames = 0;
-                fps_since = now;
-            };
-            tick();
-            fps_timer = setInterval(tick, 1000);
-        }
-        else if(!on && fps_element)
-        {
-            clearInterval(fps_timer);
-            fps_element.remove();
-            fps_element = null;
-        }
-    };
-
     this.destroy = function()
     {
-        this.show_fps(false);
         if(timer_id)
         {
             cancelAnimationFrame(timer_id);
@@ -947,16 +907,6 @@ export function ScreenAdapter(options, screen_fill_buffer)
 
     this.update_buffer = function(layers)
     {
-        let frame = -1;
-        for(const layer of layers) if(typeof layer.frame === "number" && layer.frame > frame) frame = layer.frame;
-        if(frame >= 0)
-        {
-            fps_tagged = true;
-            if(frame !== fps_last) fps_frames++;
-            fps_last = frame;
-        }
-        else if(layers.length && !fps_tagged) fps_frames++;
-
         if(DEBUG_SCREEN_LAYERS)
         {
             // For each visible layer that would've been drawn, draw a
