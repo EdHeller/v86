@@ -2,6 +2,7 @@
 
 import * as C from "./control.js";
 import { image_size, PAGE_SIZE } from "./relocate.js";
+import { WASM_TABLE_OFFSET, WASM_TABLE_SIZE } from "../const.js";
 
 export class ParallelMachine
 {
@@ -32,7 +33,8 @@ export class ParallelMachine
         const memory = cpu.wasm_memory;
         this.exports["machine_set_parallel"](1);
         const time_origin = typeof performance.timeOrigin === "number" ? performance.timeOrigin : Date.now() - performance.now();
-        const table_size = 1024 + 5000;
+        // (the same as the machine thread's table: the jit's slots go up to WASM_TABLE_SIZE)
+        const table_size = WASM_TABLE_OFFSET + WASM_TABLE_SIZE;
         for(let core = 1; core < this.cores; core++)
         {
             const data = {
