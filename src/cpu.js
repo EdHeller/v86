@@ -1117,7 +1117,16 @@ CPU.prototype.init = function(settings, device_bus)
     this.acpi_enabled[0] = +settings.acpi;
 
     // cores that take turns on this thread (src/rust/cpu/smp.rs); they need the APIC, so the ACPI tables
-    const cores = settings.acpi ? Math.max(1, Math.min(8, settings.cpu_cores | 0 || 1)) : 1;
+    let cores = settings.acpi ? Math.max(1, Math.min(8, settings.cpu_cores | 0 || 1)) : 1;
+    // cpu_workers asked for, but no workers possible here (not cross-origin isolated, so no
+    // SharedArrayBuffer, or not the parallel build): one core, as plain v86, rather than cores
+    // that take turns on this thread
+    const workers_possible = typeof SharedArrayBuffer !== "undefined" && this.wasm_memory.buffer instanceof SharedArrayBuffer && !!settings.wasm_source;
+    if(cores > 1 && settings.cpu_workers && !workers_possible)
+    {
+        console.warn("cpu_workers: Web Workers need a cross-origin isolated page and the parallel build (v86-parallel.wasm): running one core");
+        cores = 1;
+    }
     this.cpu_cores = cores;
     this.wm.exports["smp_init"](cores);
     this.reset_cpu();
@@ -1142,7 +1151,7 @@ CPU.prototype.init = function(settings, device_bus)
     this.bios.main = settings.bios;
     this.bios.vga = settings.vga_bios;
     this.firmware = settings.firmware_code ? { code: settings.firmware_code, vars: settings.firmware_vars || null, code_region: -1, vars_region: -1,
-        cores: settings.cpu_cores || 1, acpi: !!settings.acpi } : null;
+        cores: cores, acpi: !!settings.acpi } : null;
     this.graphics_adapter_plugin = settings.graphics_adapter_plugin;
     /** "i440fx" (v86's PC) or "q35" */
     this.machine_type = settings.machine_type === "q35" ? "q35" : "i440fx";
@@ -1151,7 +1160,7 @@ CPU.prototype.init = function(settings, device_bus)
     // Q35 (SeaBIOS builds v86's PC tables itself); both firmwares put the PM block at 0x600
     if(settings.acpi && (this.firmware || this.machine_type === "q35"))
     {
-        const platform = create_platform({ cores: settings.cpu_cores || 1, memory_size: this.memory_size[0], tpm: !!settings.tpm_plugin,
+        const platform = create_platform({ cores: cores, memory_size: this.memory_size[0], tpm: !!settings.tpm_plugin,
             machine: this.machine_type, uefi: !!this.firmware });
         const acpi = build_acpi_tables(platform, 0x600);
         this.option_roms.push(
@@ -1921,7 +1930,7 @@ CPU.prototype.fill_cmos = function(rtc, settings)
 
     rtc.cmos_write(CMOS_EQUIPMENT_INFO, 0x2F);
 
-    rtc.cmos_write(CMOS_BIOS_SMP_COUNT, Math.max(1, Math.min(8, settings.cpu_cores | 0 || 1)) - 1);
+    rtc.cmos_write(CMOS_BIOS_SMP_COUNT, (this.cpu_cores || 1) - 1);
 
     // Used by bochs BIOS to skip the boot menu delay.
     if(settings.fastboot) rtc.cmos_write(0x3f, 0x01);
