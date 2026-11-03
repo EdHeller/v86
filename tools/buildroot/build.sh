@@ -19,8 +19,8 @@
 #                         no font antialiasing anywhere, 1 workspace
 #
 # Named builds (shortcuts; the same options spelled out get the same short name):
-#   --dev-env             --min --SDL3-net --man --no-shellcheck --upx --gdb -> v86-dev-env-*
-#   --bash-env            --min --no-SDL3 --man --tcc --wincc         -> v86-bash-env-*
+#   --dev-env             --min --SDL3-net --man --no-shellcheck --upx --gdb --smp -> v86-dev-env-*
+#   --bash-env            --min --no-SDL3 --man --tcc --wincc --smp   -> v86-bash-env-*
 #                         With --release: v86-dev-env-release-*, v86-bash-env-release-*.
 #                         Other options added after one change the build and give it the
 #                         usual long name, e.g. --dev-env --xz -> min-sdl3net-...-xz
@@ -101,11 +101,16 @@
 #                         the classic 8259 PIC and the PIT timer (like DSL's 2.4 kernel). Also
 #                         drops the perf "msr" probe of MSR 0x64e, which v86's debug build stops on.
 #   --apic                keep the local/IO APIC (undoes the default --no-apic)
+#   --smp                 a kernel for several cores: SMP (up to 8 CPUs), ACPI, the local and
+#                         I/O APIC, the HPET (implies --apic). Run it with acpi: true and
+#                         cpu_cores: N (and cpu_workers for Web Workers). Part of --dev-env and
+#                         --bash-env. One core still works: the kernel runs on the one it finds.
+#   --no-smp              single-CPU kernel without ACPI (the default otherwise)
 #   Last one wins: --no-SDL3 also drops SDL3_net, --SDL3-net brings SDL3 back.
 #   These add a suffix to the image name (e.g. v86-qemu-sdl3net-release-*); man pages
 #   only when not the default: v86-min-man-*, v86-qemu-noman-*; -nogcc for --no-gcc,
 #   -nomlterm for --no-mlterm, -noadie for --no-adie, -noshellcheck for --no-shellcheck, -tcc for --tcc, -wincc for --wincc, -upx for --upx,
-#   -xz for --xz, -apic for --apic.
+#   -xz for --xz, -apic for --apic, -smp for --smp.
 #   Smallest image: --no-gui --no-SDL3 --no-man --no-gcc --no-shellcheck --release --xz
 #
 # Caches (kept between runs; downloads are always kept unless you clean them)
@@ -183,7 +188,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -215,8 +220,8 @@ while (($#)); do
         --vesa=*)         set_mode vesa; parse_vesa "${1#*=}" ;;
         --min)            set_mode vesa; parse_vesa 800x600x16; MIN=1 ;;
         # named builds: the options they stand for, in their place (later options still apply)
-        --dev-env)        shift; set -- --min --SDL3-net --man --no-shellcheck --upx --gdb "$@"; continue ;;
-        --bash-env)       shift; set -- --min --no-SDL3 --man --tcc --wincc --bash-dev "$@"; continue ;;
+        --dev-env)        shift; set -- --min --SDL3-net --man --no-shellcheck --upx --gdb --smp "$@"; continue ;;
+        --bash-env)       shift; set -- --min --no-SDL3 --man --tcc --wincc --bash-dev --smp "$@"; continue ;;
         --smoke)          set_mode smoke ;;
         --all)            ALL=1 ;;
         --no-SDL3|--no-sdl3)   SDL=0 SDLNET=0 ;;   # last one wins
@@ -252,6 +257,8 @@ while (($#)); do
         --zstd)           XZ=0 ;;
         --no-apic)        APIC=0 ;;
         --apic)           APIC=1 ;;
+        --smp)            SMP=1 ;;
+        --no-smp)         SMP=0 ;;
         --dry-run)        DRY=1 ;;
         --no-cache)       HOST_CACHE=0 USE_CCACHE=0 ;;
         --clean)          ((CLEAN)) || CLEAN=1 ;;
@@ -340,6 +347,7 @@ fi
 [[ -n "$MODE" ]] || { usage; die "pick an environment: --no-gui, --qemu, --vesa WxHxBPP, --min or --all"; }
 
 GUI=1; [[ "$MODE" == nogui || "$MODE" == smoke ]] && GUI=0
+((SMP)) && APIC=1     # (several cores need the local and I/O APIC)
 case "$MODE" in
     nogui) NAME=nogui ;;
     smoke) NAME=smoke ;;
@@ -366,15 +374,16 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((BASHDB)) && NAME+="-bashdb"
     ((GDB)) && NAME+="-gdb"
     ((MAN == MAN_DEFAULT)) || NAME+=$( ((MAN)) && echo "-man" || echo "-noman")
+    ((SMP)) && NAME+="-smp"
     ((RELEASE)) && NAME+="-release"
     ((XZ)) && NAME+="-xz"
-    ((APIC)) && NAME+="-apic"
+    ((APIC && !SMP)) && NAME+="-apic"
     # named builds: exactly these options (with --dev-env / --bash-env or spelled out) get a
     # short name, debug or --release (then -release on the end, so the two never overwrite
     # each other's images); anything else added gives the usual long name
     case "${NAME%-release}" in
-        min-sdl3net-noshellcheck-upx-gdb-man) NAME=dev-env${NAME#min-sdl3net-noshellcheck-upx-gdb-man} ;;
-        min-nosdl3-tcc-wincc-bashdev-man)     NAME=bash-env${NAME#min-nosdl3-tcc-wincc-bashdev-man} ;;
+        min-sdl3net-noshellcheck-upx-gdb-man-smp) NAME=dev-env${NAME#min-sdl3net-noshellcheck-upx-gdb-man-smp} ;;
+        min-nosdl3-tcc-wincc-bashdev-man-smp)     NAME=bash-env${NAME#min-nosdl3-tcc-wincc-bashdev-man-smp} ;;
     esac
 fi
 [[ "$MODE" == smoke ]] && XZ=0
@@ -478,7 +487,7 @@ show_settings() {
     else cc="off - compiler cache disabled"; fi
     msg "environment   $NAME: $what"
     msg "run           $run, JOBS=$JOBS (${SET_BY[JOBS]})"
-    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo "on (--upx)" || echo off), compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off)"
+    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo "on (--upx)" || echo off), compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
     printf '%s[cache]%s DL_DIR        %s  - download cache: %s files, %s (%s)\n' "$C1" "$C0" "$DL_DIR" "$files" "${size:-0}" "${SET_BY[DL_DIR]}"
     printf '%s[cache]%s ccache        %s (USE_CCACHE=%s, %s)\n' "$C1" "$C0" "$cc" "$USE_CCACHE" "${SET_BY[USE_CCACHE]}"
     local hc="off - host-tool cache disabled"
@@ -1731,8 +1740,6 @@ CONFIG_CMDLINE_OVERRIDE=y
 EOF
         cat <<'EOF'
 # ── trim what v86 doesn't have ──
-# CONFIG_SMP is not set
-# CONFIG_ACPI is not set
 # CONFIG_HYPERVISOR_GUEST is not set
 # CONFIG_MODULES is not set
 # CONFIG_SUSPEND is not set
@@ -1989,6 +1996,25 @@ EOF
 # CONFIG_PCI_MSI is not set
 # CONFIG_X86_UP_APIC is not set
 EOF
+        fi
+        # --smp: several cores (v86's cpu_cores with acpi: true; cpu_workers for Web Workers).
+        # ACPI's MADT lists the cores and the I/O APIC, the MP table is the fallback; the HPET
+        # and the TSC are the clocksources. One core still boots: the kernel uses what it finds.
+        if ((SMP)); then cat <<'EOF'
+# ── SMP + ACPI ──
+CONFIG_SMP=y
+CONFIG_NR_CPUS=8
+CONFIG_X86_LOCAL_APIC=y
+CONFIG_X86_IO_APIC=y
+CONFIG_X86_MPPARSE=y
+CONFIG_ACPI=y
+CONFIG_ACPI_PROCESSOR=y
+CONFIG_ACPI_BUTTON=y
+CONFIG_HPET_TIMER=y
+CONFIG_HPET_EMULATE_RTC=y
+CONFIG_SCHED_SMT=y
+EOF
+        else printf '%s\n' '# CONFIG_SMP is not set' '# CONFIG_ACPI is not set'
         fi
     } | put "$EXT/linux.fragment"
 }
@@ -3841,8 +3867,7 @@ EOF
             BR2_PACKAGE_BASH_COMPLETION=y BR2_PACKAGE_STRACE=y BR2_PACKAGE_LTRACE=y BR2_PACKAGE_JQ=y \
             BR2_PACKAGE_BATS_CORE=y BR2_PACKAGE_BATS_SUPPORT=y BR2_PACKAGE_BATS_ASSERT=y BR2_PACKAGE_BATS_FILE=y \
             BR2_PACKAGE_TREE=y BR2_PACKAGE_BC=y BR2_PACKAGE_NETCAT=y BR2_PACKAGE_LSOF=y BR2_PACKAGE_PROCPS_NG=y \
-            BR2_PACKAGE_TIME=y BR2_PACKAGE_TMUX=y BR2_PACKAGE_LIBCURL=y BR2_PACKAGE_LIBCURL_CURL=y \
-            BR2_PACKAGE_OPENSSL=y BR2_PACKAGE_LIBOPENSSL=y BR2_PACKAGE_CA_CERTIFICATES=y BR2_PACKAGE_SHFMT=y; fi
+            BR2_PACKAGE_TIME=y BR2_PACKAGE_TMUX=y BR2_PACKAGE_SHFMT=y; fi   # (curl, OpenSSL: every image)
         if ((GCC)); then printf '%s\n' 'BR2_PACKAGE_GCC_TARGET=y' 'BR2_PACKAGE_PKGCONF=y'; fi
         if ((MAN)); then printf '%s\n' 'BR2_PACKAGE_MANDOC=y' 'BR2_PACKAGE_MAN_PAGES=y' 'BR2_PACKAGE_LESS=y'; fi
         if ((GUI && MLTERM)); then echo 'BR2_PACKAGE_MLTERM=y'; fi   # brings cairo + HarfBuzz
@@ -4098,7 +4123,11 @@ verify_kernel() {
         grep -q "u16 mode = $VID_MODE;" "$(dirname "$kc")/arch/x86/boot/video.c" \
             || die "kernel boot code was not patched to VESA mode $VID_MODE"
     fi
-    grep -qx 'CONFIG_SMP=y' "$kc" && warn "CONFIG_SMP=y — v86 is single-CPU"
+    if ((SMP)); then
+        for s in SMP ACPI X86_LOCAL_APIC X86_IO_APIC; do grep -qx "CONFIG_$s=y" "$kc" || die "--smp, but the kernel has no CONFIG_$s"; done
+    else
+        grep -qx 'CONFIG_SMP=y' "$kc" && warn "CONFIG_SMP=y without --smp"
+    fi
     msg "kernel config OK"
 }
 
@@ -4342,7 +4371,12 @@ deliver() {
     echo
     cat <<EOF
       var emulator = window.emulator = new V86({
-          wasm_path: "/v86.wasm",
+$( ((SMP)) && printf '%s\n' \
+'          // --smp: cores in Web Workers on a cross-origin isolated page, else one core as plain v86' \
+'          wasm_path: self.crossOriginIsolated ? "/v86-parallel.wasm" : "/v86.wasm",' \
+'          cpu_workers: true, vcpu_worker_url: "/vcpu-worker.js",' \
+'          acpi: true,' \
+'          cpu_cores: 4,' || echo '          wasm_path: "/v86.wasm",')
           memory_size: $mem * 1024 * 1024,      // suggested from the image size; more for big programs
           vga_memory_size: $vram * 1024 * 1024,      //8-16MB
           screen_container: document.getElementById("screen_container"),
