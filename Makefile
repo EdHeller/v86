@@ -164,7 +164,8 @@ build/v86-virtio-gpu.js: $(CLOSURE) src/*.js src/graphics_adapters/*.js src/grap
 # (src/browser/architectures.js); -debug: DEBUG on, readable. The ARM code (from v64) is not written for
 # Closure's type checks: its bundle is compiled without them
 ARCH_COMMON=src/cjs.js src/browser/architectures.js
-ARM_FILES=$(shell find src/arm -name '*.js' ! -path 'src/arm/parallel/vcpu_*')
+# (src/arm/graphics.js: the display hub and what it imports)
+ARM_FILES=$(shell find src/arm -name '*.js' ! -path 'src/arm/parallel/vcpu_*') src/display.js src/bus.js src/log.js src/const.js src/lib.js
 build/libv64.js: $(CLOSURE) src/arch/x86_64.js src/browser/architectures.js
 	mkdir -p build
 	java -jar $(CLOSURE) --js_output_file $@ --define=DEBUG=false --define=ARCH_PLUGINS=true $(CLOSURE_FLAGS) \
