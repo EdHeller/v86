@@ -98,7 +98,8 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
    the worker build for `workers=1`). Optionally virtio_gpu/virtio-pci drivers and Mesa's virgl for the
    GPU tests. Check: an image boots to its shell with `nproc` = the configured cores.
    - Done 2026-11-03: neofetch, tput (ncurses' programs) and curl (with OpenSSL and the CA certificates) in
-     every image; a default user `student` (password `student`, `DEFAULT_USER=` to rename it, `root` for the
+     every image, sudo (the user is in group sudo), the openssl command and the CA certificates;
+     a default user `student` (password `student`, `DEFAULT_USER=` to rename it, `root` for the
      old behaviour) with home `/home/student` and a `readme.txt` there, logged in on tty1 and the serial port.
 8. [ ] **x86 follow-up (low priority).** Cut the lazy-compile cost, for example with smaller modules or by
    compiling off the main thread.

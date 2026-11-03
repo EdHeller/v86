@@ -2033,14 +2033,14 @@ EOF
     # root's password is "root" (BR2_TARGET_GENERIC_ROOT_PASSWD): say so after each login
     {
         printf '%s\n' "v86 $NAME" 'The root password is "root" (change it with: passwd)'
-        [[ "$DEFAULT_USER" == root ]] || printf 'You are "%s" (password "%s"); su - gives a root shell\n' "$DEFAULT_USER" "$DEFAULT_USER"
+        [[ "$DEFAULT_USER" == root ]] || printf 'You are "%s" (password "%s"); sudo runs a command as root, su - gives a root shell\n' "$DEFAULT_USER" "$DEFAULT_USER"
         echo
     } | put "$OVL/etc/motd"
 
     # The default user (BR2_ROOTFS_USERS_TABLES, Buildroot's makeusers): its home is
     # /home/<name>, which makeusers creates and gives to it, with what the overlay puts there
     if [[ "$DEFAULT_USER" != root ]]; then
-        printf '%s -1 %s -1 =%s /home/%s /bin/bash audio,video %s\n' \
+        printf '%s -1 %s -1 =%s /home/%s /bin/bash audio,video,sudo %s\n' \
             "$DEFAULT_USER" "$DEFAULT_USER" "$DEFAULT_USER" "$DEFAULT_USER" "$DEFAULT_USER" | put "$EXT/users.txt"
         put "$OVL/home/$DEFAULT_USER/readme.txt" <<EOF
 Welcome to v86 $NAME.
@@ -2052,7 +2052,9 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
   curl <url>        fetch a web page or file (needs v86's networking on the page)
   tput cols         the terminal's width; colours: tput setaf 2; echo green; tput sgr0
   nano <file>       edit a file
+  sudo <command>    run a command as root (your password: $DEFAULT_USER)
   su -              become root (password: root)
+  openssl version   OpenSSL; https works with the CA certificates in /etc/ssl/certs
 EOF
     else
         : | put "$EXT/users.txt"
@@ -3808,9 +3810,14 @@ BR2_PACKAGE_NEOFETCH=y
 # curl, with TLS and the CA certificates for https
 BR2_PACKAGE_LIBCURL=y
 BR2_PACKAGE_LIBCURL_CURL=y
+# OpenSSL: the library and the openssl command; the CA certificates are Mozilla's bundle as
+# Buildroot packages it (ca-certificates 20260223 in Buildroot 2026.08)
 BR2_PACKAGE_OPENSSL=y
 BR2_PACKAGE_LIBOPENSSL=y
+BR2_PACKAGE_LIBOPENSSL_BIN=y
 BR2_PACKAGE_CA_CERTIFICATES=y
+# sudo: the default user is in the group sudo, which Buildroot's sudoers lets run anything
+BR2_PACKAGE_SUDO=y
 # glibc has no built-in C.UTF-8: generate it (LANG=C.UTF-8 in every image)
 BR2_GENERATE_LOCALE="C.UTF-8"
 BR2_PACKAGE_ALSA_LIB=y
