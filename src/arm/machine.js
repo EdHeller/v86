@@ -22,6 +22,7 @@ import {
     A64_PROFILES, ARM32_PROFILE, VIRT_MMIO, VIRT_MMIO_COUNT, VIRT_MMIO_SIZE, VIRT_PCIE_ECAM_HIGH, VIRT_PCIE_ECAM_SIZE, VIRT_RAM_BASE, virt_machine,
 } from "./virt/platform.js";
 import { VirtioMmioBlk, VirtioMmioNet, VirtioMmioRng } from "./virtio_mmio.js";
+import { A64Graphics } from "./graphics.js";
 import { ParallelMachine } from "./parallel/machine.js";
 import { instantiate_v86 } from "./parallel/relocate.js";
 import { COMMAND_RELOAD, COMMAND_RESET } from "./parallel/control.js";
@@ -86,6 +87,7 @@ export function A64Machine(options)
  *   kernel, initrd: ArrayBuffers; cmdline: string
  *   memory_size (default 512 MiB), cpu_cores (default 1), a64_profile ("v2" default)
  *   disks: [{ buffer: ArrayBuffer, readonly: boolean }] on virtio-mmio, virtio_rng: boolean
+ *   graphics_adapter: { descriptor, screen, renderer }: a display adapter plugin (virtio_gpu) on virtio-mmio
  *   firmware: { code, vars } (ArrayBuffers: bios/aavmf-code.fd and a copy of bios/aavmf-vars.fd) boots UEFI firmware
  *     from the flash instead of a kernel; the variable store is written in place (firmware.vars)
  *   ir_sync_publication: compile page functions synchronously
@@ -306,6 +308,9 @@ A64Machine.prototype.init = function(options)
     // (net_device: { mac }: the frames are net0-send and net0-receive events on machine.bus)
     if(options.net_device) add((slot, intid) => new VirtioMmioNet(this, intid, options.net_device));
     if(options.virtio_rng) add((slot, intid) => new VirtioMmioRng(this, intid));
+    // graphics_adapter: { descriptor, screen, renderer }: a display adapter plugin (virtio_gpu) on the next slot, its
+    // pictures on a display hub (src/arm/graphics.js)
+    if(options.graphics_adapter) this.devices.display = new A64Graphics(this, options.graphics_adapter, add);
     if(firmware)
     {
         this.boot_files = { firmware: true, dtb: options.dtb, cores };
@@ -479,7 +484,8 @@ A64Machine.prototype.run_machine_core = function()
 {
     const exports = this.wm.exports;
     if(!this.booted) return 100;
-    const devices = this.devices["pl031"].timer();
+    const display = this.devices.display ? this.devices.display.timer() : 100;
+    const devices = Math.min(this.devices["pl031"].timer(), display);
     const next = Math.min(exports["a64_run_slice"](this.clock.now()), devices);
     if(exports["a64_take_reset_request"]())
     {

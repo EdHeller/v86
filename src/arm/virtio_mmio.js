@@ -50,7 +50,7 @@ VirtioMmio.prototype.reset = function()
     this.queues = [];
     for(let i = 0; i < this.queue_count; i++)
     {
-        this.queues.push({ num: QUEUE_SIZE, ready: false, desc: 0, avail: 0, used: 0, last_avail: 0 });
+        this.queues.push({ num: this.queue_max(i), ready: false, desc: 0, avail: 0, used: 0, last_avail: 0 });
     }
     this.machine.set_irq(this.intid, false);
 };
@@ -72,7 +72,7 @@ VirtioMmio.prototype.read = function(offset, width)
         case 0x008: return this.device_id;
         case 0x00C: return VENDOR;
         case 0x010: return Number(BigInt.asUintN(32, this.features >> BigInt(32 * this.device_features_sel)));
-        case 0x034: return q ? QUEUE_SIZE : 0;
+        case 0x034: return q ? this.queue_max(this.queue_sel) : 0;
         case 0x044: return q && q.ready ? 1 : 0;
         case 0x060: return this.interrupt_status;
         case 0x070: return this.status;
@@ -101,7 +101,7 @@ VirtioMmio.prototype.write = function(offset, width, value)
             break;
         case 0x024: this.driver_features_sel = value; break;
         case 0x030: this.queue_sel = value; break;
-        case 0x038: if(q) q.num = Math.min(value, QUEUE_SIZE) || QUEUE_SIZE; break;
+        case 0x038: if(q) q.num = Math.min(value, this.queue_max(this.queue_sel)) || this.queue_max(this.queue_sel); break;
         case 0x044:
             if(q)
             {
@@ -126,6 +126,12 @@ VirtioMmio.prototype.write = function(offset, width, value)
         case 0x0A4: if(q) q.used = q.used % 0x100000000 + value * 0x100000000; break;
         default: break;
     }
+};
+
+/** The largest size of queue `index` the device takes */
+VirtioMmio.prototype.queue_max = function(index)
+{
+    return QUEUE_SIZE;
 };
 
 VirtioMmio.prototype.mem = function(address, length)
@@ -404,4 +410,244 @@ VirtioMmioNet.prototype.reset = function()
     VirtioMmio.prototype.reset.call(this);
     this.waiting = [];
     this.pending = [];
+};
+
+const STATUS_NEEDS_RESET = 0x40;
+
+/**
+ * A device plugin's virtio function (a display adapter's: virtio-gpu, src/graphics_adapters/virtio_gpu) on a
+ * virtio-mmio slot. The descriptor is the one the plugin gives create_virtio (src/virtio_devices.js takes the same one
+ * for virtio-pci on x86); this is the handle it gets back: requests it pops and completes, guest RAM, the config.
+ * No shared memory regions (host visible memory) yet: the SHM registers say there is none.
+ * @constructor
+ * @param {Object} machine
+ * @param {number} intid
+ * @param {!Object} descriptor
+ */
+export function VirtioMmioPlugin(machine, intid, descriptor)
+{
+    const features = (descriptor["features"] || []).slice();
+    if(!features.includes(VIRTIO_F_VERSION_1)) features.push(VIRTIO_F_VERSION_1);
+    this.descriptor = descriptor;
+    this.sizes = descriptor["queues"].map(queue => Math.min(queue["size"] || QUEUE_SIZE, QUEUE_SIZE));
+    /** @type {!Array<{bytes: number, name: string, read: function():number, write: (function(number)|undefined), offset: number}>} */
+    this.fields = [];
+    let offset = 0;
+    for(const field of descriptor["config"] || [])
+    {
+        this.fields.push({ bytes: field["bytes"], name: field["name"], read: field["read"], write: field["write"], offset });
+        offset += field["bytes"];
+    }
+    /** bumped by resets: requests popped before one do not complete into the new rings */
+    this.generation = 0;
+    /** @type {!Array<!Array<{request: !Object, written: number}>>} completed requests, by queue, until flush */
+    this.staged = [];
+    this.initialized = false;
+    // (the descriptor has the PCI device ID of a modern virtio function, 0x1040 + the virtio device ID)
+    const id = descriptor["device_id"];
+    VirtioMmio.call(this, machine, intid, id >= 0x1040 ? id - 0x1040 : id, this.sizes.length, features, offset);
+    this.shm_sel = 0;
+    this.handle = this.create_handle();
+    this.initialized = true;
+    const init = descriptor["init"];
+    init && init(this.handle);
+}
+VirtioMmioPlugin.prototype = Object.create(VirtioMmio.prototype);
+
+VirtioMmioPlugin.prototype.queue_max = function(index)
+{
+    return this.sizes ? this.sizes[index] : QUEUE_SIZE;
+};
+
+VirtioMmioPlugin.prototype.reset = function()
+{
+    VirtioMmio.prototype.reset.call(this);
+    this.generation = (this.generation || 0) + 1;
+    this.staged = [];
+    for(let i = 0; i < this.queue_count; i++) this.staged.push([]);
+    const reset = this.descriptor["reset"];
+    if(this.initialized && reset) reset();
+};
+
+VirtioMmioPlugin.prototype.read = function(offset, width)
+{
+    if(offset >= 0x100)
+    {
+        // the config: the descriptor's fields, read whole and cut to the access
+        const at = offset - 0x100;
+        let value = 0;
+        for(let i = 0; i < width; i++)
+        {
+            const field = this.fields.find(f => at + i >= f.offset && at + i < f.offset + f.bytes);
+            if(!field) continue;
+            value |= (field.read() >>> (8 * (at + i - field.offset)) & 0xFF) << (8 * i);
+        }
+        return value >>> 0;
+    }
+    switch(offset)
+    {
+        // (no shared memory region: a length of all ones, virtio 1.2 section 4.2.2)
+        case 0x0B0: case 0x0B4: case 0x0B8: case 0x0BC: return 0xFFFFFFFF;
+        case 0x0AC: return this.shm_sel;
+    }
+    return VirtioMmio.prototype.read.call(this, offset, width);
+};
+
+VirtioMmioPlugin.prototype.write = function(offset, width, value)
+{
+    if(offset >= 0x100)
+    {
+        const at = offset - 0x100;
+        const field = this.fields.find(f => f.offset === at);
+        if(field && field.write) field.write(Number(value) >>> 0);
+        return;
+    }
+    if(offset === 0x0AC)
+    {
+        this.shm_sel = Number(value) >>> 0;
+        return;
+    }
+    VirtioMmio.prototype.write.call(this, offset, width, value);
+};
+
+/** The driver has set DRIVER_OK, and neither side has given up */
+VirtioMmioPlugin.prototype.is_ready = function()
+{
+    return (this.status & (STATUS_DRIVER_OK | STATUS_NEEDS_RESET | STATUS_FAILED)) === STATUS_DRIVER_OK;
+};
+
+VirtioMmioPlugin.prototype.notify = function(index)
+{
+    if(!this.is_ready() || index >= this.queue_count) return;
+    try
+    {
+        this.descriptor["notify"](index);
+    }
+    catch(error)
+    {
+        if(!(error instanceof RangeError)) console.error("virtio-mmio " + this.descriptor["name"] + ":", error);
+        this.needs_reset();
+    }
+};
+
+VirtioMmioPlugin.prototype.needs_reset = function()
+{
+    this.status |= STATUS_NEEDS_RESET;
+    if(this.status & STATUS_DRIVER_OK) this.config_interrupt();
+};
+
+VirtioMmioPlugin.prototype.config_interrupt = function()
+{
+    this.config_generation = this.config_generation + 1 >>> 0;
+    this.interrupt_status |= 2;
+    this.machine.set_irq(this.intid, true);
+};
+
+/** A popped request as the plugin sees it (src/virtio_devices.js's) */
+VirtioMmioPlugin.prototype.request = function(index, popped)
+{
+    const readable = popped.buffers.filter(b => !b.write), writable = popped.buffers.filter(b => b.write);
+    const generation = this.generation;
+    let read_at = 0, write_at = 0, written = 0, completed = false;
+    // (a position in a list of buffers: the buffer and the offset in it)
+    const locate = (buffers, position) => {
+        for(let i = 0; i < buffers.length; i++)
+        {
+            if(position < buffers[i].length) return [i, position];
+            position -= buffers[i].length;
+        }
+        return [buffers.length, 0];
+    };
+    return {
+        "head": popped.head,
+        "readable": readable.reduce((n, b) => n + b.length, 0),
+        "writable": writable.reduce((n, b) => n + b.length, 0),
+        "read": () =>
+        {
+            const total = readable.reduce((n, b) => n + b.length, 0);
+            const bytes = new Uint8Array(total - read_at);
+            let [i, offset] = locate(readable, read_at), at = 0;
+            for(; i < readable.length && at < bytes.length; i++, offset = 0)
+            {
+                const count = readable[i].length - offset;
+                bytes.set(this.mem(readable[i].address + offset, count), at);
+                at += count;
+            }
+            read_at = total;
+            return bytes;
+        },
+        "write": bytes =>
+        {
+            if(generation !== this.generation) return 0;
+            let [i, offset] = locate(writable, write_at), at = 0;
+            for(; i < writable.length && at < bytes.length; i++, offset = 0)
+            {
+                const count = Math.min(writable[i].length - offset, bytes.length - at);
+                const address = writable[i].address + offset;
+                this.mem(address, count).set(bytes.subarray(at, at + count));
+                this.machine.ram_written(address, count);
+                at += count;
+            }
+            write_at += at;
+            written = Math.max(written, write_at);
+            return at;
+        },
+        // (staged until flush)
+        "complete": () =>
+        {
+            if(completed || generation !== this.generation) return;
+            completed = true;
+            this.staged[index].push({ request: popped, written });
+        },
+    };
+};
+
+VirtioMmioPlugin.prototype.create_handle = function()
+{
+    const check = index => { if(!(index >= 0 && index < this.queue_count)) throw new Error("virtio device " + this.descriptor["name"] + " has no queue " + index); };
+    const has_request = index => {
+        check(index);
+        const q = this.queues[index];
+        if(!this.is_ready() || !q.ready) return false;
+        const avail = this.machine.ram(q.avail, 4 + 2 * q.num);
+        if(!avail) { this.needs_reset(); return false; }
+        return q.last_avail !== (avail[2] | avail[3] << 8);
+    };
+    return {
+        "name": this.descriptor["name"],
+        "is_ready": () => this.is_ready(),
+        "has_request": has_request,
+        "pop_request": index => {
+            if(!has_request(index)) return null;
+            let popped;
+            try { popped = this.pop(index); }
+            catch(error) { if(!(error instanceof RangeError)) throw error; this.needs_reset(); return null; }
+            if(!popped) return null;
+            if(popped.buffers.some(b => b.length && !this.machine.ram(b.address, b.length))) { this.needs_reset(); return null; }
+            return this.request(index, popped);
+        },
+        // (snapshots: not on the ARM machine yet)
+        "request_at": () => null,
+        "flush": index => {
+            check(index);
+            const staged = this.staged[index];
+            if(!staged.length || !this.queues[index].ready) return;
+            for(const { request, written } of staged) this.push(index, request, written);
+            this.staged[index] = [];
+            this.interrupt();
+        },
+        "is_ram": (address, length) => !!this.machine.ram(address, length),
+        "read_memory": (address, length) => this.mem(address, length),
+        "write_memory": (bytes, address) => {
+            if(!bytes.length) return;
+            this.mem(address, bytes.length).set(bytes);
+            this.machine.ram_written(address, bytes.length);
+        },
+        "is_feature_negotiated": bit => (this.driver_features >> BigInt(bit) & BigInt(1)) === BigInt(1),
+        "needs_reset": () => this.needs_reset(),
+        "config_changed": () => { if(this.is_ready()) this.config_interrupt(); },
+        "transport": () => null,
+        "set_transport": () => {},
+        "reset": () => this.reset(),
+    };
 };

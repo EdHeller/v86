@@ -60,7 +60,10 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
      VGA BIOS as expansion ROM and shared-memory capabilities; `src/virtio_devices.js` is v64's adapter handle.
      `tests/virtio_gpu.mjs [x86_64|x86]`: Linux's virtio_gpu binds, fbcon on virtio_gpudrmfb, tty1's text on the
      scanout. `examples/alpine64.html?graphics_adapter=virtio_gpu` shows the console in Chromium.
-   - [ ] Step 1b, 2D on arm64: over virtio-mmio first (no PCIe needed), over virtio-pci once task 4 lands.
+   - [x] Step 1b, 2D on arm64 over virtio-mmio (2026-11-03): the x86 build's plugin on a virtio-mmio slot
+     (`src/arm/graphics.js`: the plugin's machine handle and a display hub; `VirtioMmioPlugin` in
+     `src/arm/virtio_mmio.js`). `tests/a64/virtio_gpu.mjs`: virtio_gpu binds, fbcon on virtio_gpudrmfb, tty1 on the
+     scanout; `examples/alpine-arm64.html?gpu=1` shows it in Chromium. Still to do: virtio-pci (after task 4), 3D.
    - [x] Step 2a, virgl on x86 (2026-10-31): with the page's WebGPU renderer the device declares virgl
      (level virgl43-hostmem); Alpine 3.23's Mesa virgl driver reports "virgl (v86 GX on WebGPU)" and kmscube's cube
      is on the screen (`tests/virtio_gpu_3d.mjs`: headless Chromium, SwiftShader's WebGPU; the Mesa repository from
@@ -208,6 +211,7 @@ What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's 
 ## Done
 
 - 2026-11-03:
+  - virtio-gpu 2D on arm64 over virtio-mmio (task 1, step 1b): `tests/a64/virtio_gpu.mjs`, `alpine-arm64.html?gpu=1`.
   - SSE3/SSSE3/SSE4 in every x86 mode (task 2): the 32-bit JIT passes the prefixes of 0F 38 / 0F 3A to the
     interpreter; CPUID advertises them everywhere; `tests/x64/jit/16_sse4_prefix_x86.asm`.
   - kmscube on 32-bit Alpine (virgl on WebGPU, Chromium): `tools/cube_disk.mjs --arch x86`, `?arch=x86&gpu3d=1`.

@@ -8,18 +8,26 @@
     #terminal { margin-top: 8px; background: #000; display: inline-block; }
     #serialpre { font: 12px monospace; white-space: pre-wrap; background: #000; height: 24em; overflow: auto; margin-top: 8px; display: none; width: 60em; }
     a { color: #8cf; }
+    #screen_container { display: none; background: #000; margin-top: 8px; }
+    #screen_container canvas { image-rendering: pixelated; }
 </style>
 <p>Alpine Linux <b>aarch64</b> 3.24.3 on the ARM core (an AArch64 CPU for QEMU's virt board, taken from the v64 project): the kernel and
 initramfs of the official virt ISO, the ISO on a virtio-mmio disk, the serial console on the PL011.
-&nbsp; <a href="?">1 core</a> | <a href="?cores=2">2</a> | <a href="?cores=4">4</a> | <a href="?cores=2&workers=1">2 in workers</a> | <a href="?jit=0">no JIT</a> | <a href="?uefi=1">UEFI</a>
-(<code>?uefi=1</code>: the ISO booted by edk2's UEFI firmware and the ISO's GRUB, no direct kernel boot)</p>
+&nbsp; <a href="?">1 core</a> | <a href="?cores=2">2</a> | <a href="?cores=4">4</a> | <a href="?cores=2&workers=1">2 in workers</a> | <a href="?jit=0">no JIT</a> | <a href="?uefi=1">UEFI</a> | <a href="?gpu=1">virtio-gpu</a>
+(<code>?uefi=1</code>: the ISO booted by edk2's UEFI firmware and the ISO's GRUB, no direct kernel boot;
+<code>?gpu=1</code>: a virtio-gpu on virtio-mmio with tty1 on it, 2D)</p>
 <div id="log"></div>
+<div id="screen_container">
+    <div style="white-space: pre; font: 14px monospace; line-height: 14px"></div>
+    <canvas style="display: none"></canvas>
+</div>
 <div id="terminal"></div>
 <div id="serialpre"></div>
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" crossorigin="anonymous"></script>
 <script type="module">
 import { A64Machine } from "../src/arm/machine.js";
 import { iso_files } from "../src/arm/iso.js";
+import { ScreenAdapter } from "../src/browser/screen.js";
 
 const param = name => { const m = new RegExp("[?&]" + name + "(?:=([^&?#]*))?(?:[&?#]|$)").exec(location.search); return m ? (m[1] === undefined ? "" : decodeURIComponent(m[1])) : null; };
 const t0 = performance.now();
@@ -51,12 +59,27 @@ try
         { firmware: { code: await get("../bios/aavmf-code.fd"), vars: new Uint8Array(await get("../bios/aavmf-vars.fd")) } } :
         { kernel: take("BOOT/VMLINUZ_VIRT"), initrd: take("BOOT/INITRAMFS_VIRT"),
           cmdline: "console=ttyAMA0 modules=loop,squashfs,sd-mod,virtio-blk,virtio-mmio,virtio_blk,virtio_mmio,isofs" };
+    // ?gpu=1: virtio-gpu (the x86 build's plugin, src/graphics_adapters/virtio_gpu) on virtio-mmio, its picture on
+    // the page's screen; the kernel's console on it too (tty0)
+    let graphics_adapter;
+    if(param("gpu") === "1")
+    {
+        await import("../src/graphics_adapters/virtio_gpu/plugin.js");
+        const container = document.getElementById("screen_container");
+        container.style.display = "inline-block";
+        const screen = new ScreenAdapter({ container },
+            () => window.machine && window.machine.devices.display.request_frame(false));
+        if(param("fps") !== null) screen.show_fps(true);
+        graphics_adapter = { descriptor: globalThis["V86GraphicsAdapters"]["virtio_gpu"], screen };
+        if(boot.cmdline) boot.cmdline = "console=tty0 " + boot.cmdline;
+    }
     const machine = await A64Machine.create({
         wasm: workers ? new Uint8Array(wasm) : wasm,
         parallel: workers ? { worker_url: new URL("../src/arm/parallel/vcpu_worker_entry.js", location.href) } : undefined,
         ...boot,
         memory_size: 512 << 20, cpu_cores: cores, disks: [{ buffer: image, readonly: true }], virtio_rng: true,
         jit_switches: param("jit") === "0" ? { a64_page: 0 } : {},
+        graphics_adapter,
     });
     window.machine = machine;
     let serial = "";
