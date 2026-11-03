@@ -119,8 +119,12 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
      every image, sudo (the user is in group sudo), the openssl command and the CA certificates;
      a default user `student` (password `student`, `DEFAULT_USER=` to rename it, `root` for the
      old behaviour) with home `/home/student` and a `readme.txt` there, logged in on tty1 and the serial port.
-9. [ ] **x86 follow-up (low priority).** Cut the lazy-compile cost, for example with smaller modules or by
-   compiling off the main thread.
+9. [ ] **x86 follow-up.** 32-bit speed against upstream v86 (315b2b0), measured 2026-11-03 (Node,
+   4-core host, 32-bit Alpine 3.24, three alternating runs each, means): login 66.6 s vs 64.2 s, a 20000-step shell
+   loop 4.56 s vs 4.16 s, sha256 of 64 MiB 11.9 s vs 11.3 s, gzip round trip of 8 MiB 13.3 s vs 11.8 s: ours is
+   4-12 % slower. Bisect which change costs it (candidates: the SMP/APIC checks in the main loop, the access cache,
+   the x86_64 split) and get back to upstream's speed or better. Also cut the lazy-compile cost, for example with
+   smaller modules or by compiling off the main thread.
 10. [ ] **Speed ideas from copy/v86#924** (user's request 2026-11-03; copy's comment of 2023-09-19, "Some concrete
     ideas"). Profile first, as copy suggests there: the Firefox profiler (https://profiler.firefox.com/docs/) for a
     sampling profile; `make debug-with-profiler` for the stats at the bottom of debug.html (much slower); the wasm and
