@@ -11,6 +11,8 @@ parallel = []
 # The parallel build for hosts with a weaker memory order than x86's (arm64): every aligned guest RAM access of the
 # interpreter and the generated code is a sequentially consistent atomic, an unaligned one is followed by a fence
 seqcst = ["parallel"]
+# x86_64 (long mode, the 64-bit interpreter and JIT): build/v64.wasm; without it build/v86.wasm is a 32-bit x86
+x86_64 = []
 
 [lib]
 crate-type = ["cdylib"]

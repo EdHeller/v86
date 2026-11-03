@@ -21,7 +21,7 @@ endif
 WASM_OPT ?= false
 
 default: build/v86-debug.wasm
-all: build/v86_all.js build/libv86.js build/libv86.mjs build/v86.wasm
+all: build/v86_all.js build/libv86.js build/libv86.mjs build/v86.wasm build/v64.wasm
 all-debug: build/libv86-debug.js build/libv86-debug.mjs build/v86-debug.wasm
 browser: build/v86_all.js
 
@@ -345,6 +345,42 @@ build/v86-fallback.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Carg
 	mkdir -p build/
 	cargo rustc --release $(CARGO_FLAGS_SAFE)
 	cp build/wasm32-unknown-unknown/release/v86.wasm build/v86-fallback.wasm || true
+
+# x86_64 cores (feature x86_64: long mode, the 64-bit interpreter and jit64), beside the 32-bit ones above;
+# libv64.js makes cpu_type "x86_64" load them (src/browser/architectures.js)
+build/v64.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
+	mkdir -p build/
+	CARGO_TARGET_DIR=build/x64 cargo rustc --release --features x86_64 $(CARGO_FLAGS)
+	cp build/x64/wasm32-unknown-unknown/release/v86.wasm build/v64.wasm
+	-$(WASM_OPT) && wasm-opt -O2 --strip-debug build/v64.wasm -o build/v64.wasm
+	BLOCK_SIZE=K ls -l build/v64.wasm
+
+build/v64-debug.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
+	mkdir -p build/
+	CARGO_TARGET_DIR=build/x64 cargo rustc --features x86_64 $(CARGO_FLAGS)
+	cp build/x64/wasm32-unknown-unknown/debug/v86.wasm build/v64-debug.wasm
+
+build/v64-fallback.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
+	mkdir -p build/
+	CARGO_TARGET_DIR=build/x64 cargo rustc --release --features x86_64 $(CARGO_FLAGS_SAFE)
+	cp build/x64/wasm32-unknown-unknown/release/v86.wasm build/v64-fallback.wasm || true
+
+build/v64-parallel.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml tools/parallel_wasm.mjs
+	mkdir -p build/
+	CARGO_TARGET_DIR=build/parallel64 cargo rustc --release --features parallel,x86_64 $(CARGO_FLAGS_PARALLEL)
+	./tools/parallel_wasm.mjs build/parallel64/wasm32-unknown-unknown/release/v86.wasm build/v64-parallel.wasm
+
+build/v64-parallel-seqcst.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml tools/parallel_wasm.mjs
+	mkdir -p build/
+	CARGO_TARGET_DIR=build/parallel64-seqcst cargo rustc --release --features seqcst,x86_64 $(CARGO_FLAGS_PARALLEL)
+	./tools/parallel_wasm.mjs build/parallel64-seqcst/wasm32-unknown-unknown/release/v86.wasm build/v64-parallel-seqcst.wasm
+
+build/v64-parallel-debug.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml tools/parallel_wasm.mjs
+	mkdir -p build/
+	CARGO_TARGET_DIR=build/parallel64 cargo rustc --features parallel,x86_64 $(CARGO_FLAGS_PARALLEL)
+	./tools/parallel_wasm.mjs build/parallel64/wasm32-unknown-unknown/debug/v86.wasm build/v64-parallel-debug.wasm
+
+cores: build/v86.wasm build/v86-parallel.wasm build/v86-parallel-seqcst.wasm build/v64.wasm build/v64-parallel.wasm build/v64-parallel-seqcst.wasm
 
 debug-with-profiler: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
 	mkdir -p build/

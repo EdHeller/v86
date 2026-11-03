@@ -314,6 +314,9 @@ pub static mut JIT_LOOP_LIMIT: i32 = LOOP_COUNTER;
 pub const TSC_RATE: f64 = 1_000_000.0;
 
 pub static mut cpuid_level: u32 = 0x16;
+/// The core's architecture: x86_64 (build/v64.wasm, feature "x86_64") or 32-bit x86 (build/v86.wasm). Without it,
+/// long mode cannot be entered and the 64-bit code (the interpreter, jit64) is not in the module.
+pub const LONG_MODE: bool = cfg!(feature = "x86_64");
 /// Whether CPUID reports long mode (x86_64): libv86.js alone is a 32-bit x86 (cpu_type "x86"),
 /// libv64.js adds x86_64 (src/browser/architectures.js)
 pub static mut long_mode_supported: bool = true;
@@ -834,7 +837,7 @@ pub unsafe fn call_interrupt_vector(
     is_software_int: bool,
     error_code: Option<i32>,
 ) {
-    if *efer & EFER_LMA != 0 {
+    if LONG_MODE && *efer & EFER_LMA != 0 {
         super::long_mode::call_interrupt_vector_64(interrupt_nr, is_software_int, error_code);
         handle_irqs();
         return;
@@ -3086,7 +3089,7 @@ pub unsafe fn set_cr0(cr0: i32) {
         panic!("cannot load PG without PE");
     }
 
-    if old_cr0 & CR0_PG == 0 && cr0 & CR0_PG != 0 && *efer & EFER_LME != 0 {
+    if LONG_MODE && old_cr0 & CR0_PG == 0 && cr0 & CR0_PG != 0 && *efer & EFER_LME != 0 {
         // enabling paging with EFER.LME activates long mode
         if *cr.offset(4) & CR4_PAE == 0 {
             dbg_log!("#gp: enabling paging with EFER.LME and CR4.PAE=0");
@@ -3188,7 +3191,7 @@ pub unsafe fn update_cs_mode(d: &SegmentDescriptor) {
 
 #[inline(never)]
 pub unsafe fn test_privileges_for_io(port: i32, size: i32) -> bool {
-    if *efer & EFER_LMA != 0 {
+    if LONG_MODE && *efer & EFER_LMA != 0 {
         return super::long_mode::test_privileges_for_io_64(port, size);
     }
     if *protected_mode && (*cpl > getiopl() as u8 || (*flags & FLAG_VM != 0)) {
@@ -3326,7 +3329,7 @@ pub static mut IN_SHADOW_STEP: bool = false;
 /// Executes exactly one instruction, bypassing the jit
 unsafe fn single_step_one() {
     *previous_ip = *instruction_pointer;
-    if *is_64 {
+    if LONG_MODE && *is_64 {
         super::long_mode::step64();
     }
     else {
@@ -3393,7 +3396,7 @@ pub unsafe fn cycle_internal() {
         return;
     }
 
-    if *is_64 {
+    if LONG_MODE && *is_64 {
         // 64-bit code is run by jit64 (hot blocks) and the 64-bit interpreter
         super::jit64::run();
         return;
@@ -5147,4 +5150,7 @@ pub unsafe fn reset_cpu() {
 #[no_mangle]
 pub unsafe fn set_cpuid_level(level: u32) { cpuid_level = level }
 #[no_mangle]
-pub unsafe fn set_long_mode_supported(supported: bool) { long_mode_supported = supported }
+pub unsafe fn set_long_mode_supported(supported: bool) { long_mode_supported = supported && LONG_MODE }
+/// Whether this core is the x86_64 one (build/v64.wasm)
+#[no_mangle]
+pub fn core_has_long_mode() -> bool { LONG_MODE }

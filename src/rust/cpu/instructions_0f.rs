@@ -1227,7 +1227,9 @@ pub unsafe fn instr_0F30() {
         MSR_EFER => {
             let value = (high as u64) << 32 | (low as u32) as u64;
             // LMA is read-only, set by the cpu when paging is enabled with LME set
-            if value & !(EFER_SCE | EFER_LME | EFER_LMA | EFER_NXE) != 0 {
+            // (the 32-bit core, build/v86.wasm: no long mode, LME is reserved)
+            let lme = if LONG_MODE { EFER_LME } else { 0 };
+            if value & !(EFER_SCE | lme | EFER_LMA | EFER_NXE) != 0 {
                 dbg_log!("#gp: wrmsr EFER with reserved bits: {:#x}", value);
                 trigger_gp(0);
                 return;
@@ -3418,7 +3420,7 @@ pub unsafe fn instr_0FA2() {
                 vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
                 1 << 8 | 1 << 13 | 1 << 15 | 1 << 20 | // cx8, pge, cmov, nx
                 1 << 23 | 1 << 24 | // mmx, fxsr
-                if long_mode_supported { 1 << 11 | 1 << 29 } else { 0 }; // syscall, long mode
+                if LONG_MODE && long_mode_supported { 1 << 11 | 1 << 29 } else { 0 }; // syscall, long mode
         },
 
         0x40000000 => {

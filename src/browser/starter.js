@@ -159,6 +159,13 @@ export function V86(options)
                     v86_bin = "build/" + v86_bin;
                     v86_bin_fallback = "build/" + v86_bin_fallback;
                 }
+                // x86_64 runs on the 64-bit core: v86*.wasm -> v64*.wasm beside it (v86.wasm is a 32-bit x86)
+                if(this.cpu_type === "x86_64")
+                {
+                    const to_64 = path => path.replace(/(^|\/)v86((?:-[\w-]+)?\.wasm)$/, "$1v64$2");
+                    v86_bin = to_64(v86_bin);
+                    v86_bin_fallback = to_64(v86_bin_fallback);
+                }
 
                 load_file(v86_bin, {
                     done: async bytes =>
@@ -200,6 +207,10 @@ export function V86(options)
     wasm_fn({ "env": wasm_shared_funcs })
         .then((exports) => {
             wasm_memory = exports.memory;
+            if(this.cpu_type === "x86_64" && !(exports["core_has_long_mode"] && exports["core_has_long_mode"]()))
+            {
+                throw new Error("cpu_type \"x86_64\" needs the 64-bit core v64.wasm; wasm_path names a 32-bit one");
+            }
             exports["rust_init"]();
 
             const emulator = this.v86 = new v86(this.emulator_bus, { exports, wasm_table });

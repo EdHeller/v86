@@ -437,7 +437,7 @@ unsafe fn sse_lane(op: i32, x: u8, imm: u8) {
     }
 }
 
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_alu(op: i32, a: i64, b: i64, bits: i32) -> i64 {
     INTERP_WHY[16] = INTERP_WHY[16].wrapping_add(1);
     ALU_OPS[op as usize & 63] = ALU_OPS[op as usize & 63].wrapping_add(1);
@@ -449,7 +449,7 @@ pub unsafe fn j64_alu(op: i32, a: i64, b: i64, bits: i32) -> i64 {
     long_mode::jit_alu(op as u8, a as u64, b as u64, bits) as i64
 }
 
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_read(addr: i64, bits: i32) -> i64 {
     crate::cpu::long_mem::count_slow_access(addr as u64, bits as u32, false, *cpl == 3);
     match mem_read(addr as u64, bits as u32) {
@@ -461,7 +461,7 @@ pub unsafe fn j64_read(addr: i64, bits: i32) -> i64 {
     }
 }
 
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_write(addr: i64, v: i64, bits: i32) {
     if UNDO_ON {
         if let Ok(old) = mem_read(addr as u64, bits as u32) {
@@ -546,37 +546,37 @@ unsafe fn step_profile_record_in(second: bool) {
     }
 }
 
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn step_profile_enable(on: i32) { STEP_PROFILE_ON = on != 0 }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe fn step_profile_len() -> i32 { STEP_COUNTS.len() as i32 }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe fn interp_profile_len() -> i32 { INTERP_COUNTS.len() as i32 }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe fn interp_profile_key(i: i32) -> i32 { INTERP_COUNTS.get(i as usize).map_or(0, |e| e.0 as i32) }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe fn interp_profile_bytes(i: i32, hi: i32) -> i32 { INTERP_BYTES.get(i as usize).map_or(0, |b| if hi != 0 { (*b >> 32) as i32 } else { *b as i32 }) }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe fn interp_profile_count(i: i32) -> i32 { INTERP_COUNTS.get(i as usize).map_or(0, |e| e.1 as i32) }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe fn step_profile_key(i: i32) -> i32 { STEP_COUNTS.get(i as usize).map_or(0, |e| e.0 as i32) }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe fn step_profile_count(i: i32) -> i32 { STEP_COUNTS.get(i as usize).map_or(0, |e| e.1 as i32) }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe fn step_profile_reset() { STEP_COUNTS.clear() }
 
 /// Runs the one instruction at rip in the interpreter (an Insn::Interp of a block) and tells
 /// whether the block has to be left: 1 when rip is not `next` (exception, jump, mode switch), when
 /// interrupts were just enabled, the cpu halted or the mode changed.
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_interp1(next: i64, _unused: i32) -> i32 {
     INTERP_WHY[17] = INTERP_WHY[17].wrapping_add(1);
     RMW_HIT = true;
@@ -595,7 +595,7 @@ pub unsafe fn j64_interp1(next: i64, _unused: i32) -> i32 {
     !stay as i32
 }
 
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_set_rip(target: i64, _unused: i32) {
     if long_mode::jit_set_rip(target as u64).is_err() {
         FLAGS[FAULT] = 1;
@@ -604,7 +604,7 @@ pub unsafe fn j64_set_rip(target: i64, _unused: i32) {
 
 /// Computes the flags of an add (kind 0), logic operation (kind 1) or sub / cmp (kind 2) from the
 /// operands and the result (all masked to `bits`)
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_flags(kind_bits: i32, a: i64, b: i64, r: i64) {
     INTERP_WHY[18] = INTERP_WHY[18].wrapping_add(1);
     let bits = (kind_bits & 0xFF) as u32;
@@ -634,7 +634,7 @@ pub unsafe fn j64_flags(kind_bits: i32, a: i64, b: i64, r: i64) {
 }
 
 /// string instructions that are not compiled inline (rep prefix, compares)
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_str(code: i32, info: i32) {
     RMW_HIT = true;
     let opcode = (code & 0xFF) as u8;
@@ -648,7 +648,7 @@ pub unsafe fn j64_str(code: i32, info: i32) {
 }
 
 /// flags computed lazily by 16/32 bit code may still be pending when 64-bit code is entered
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_materialize_flags() {
     INTERP_WHY[19] = INTERP_WHY[19].wrapping_add(1);
     let f = get_eflags();
@@ -4585,21 +4585,21 @@ unsafe fn jt_lookup(addr: i64, tab: i32, bytes: u32) -> Option<*mut u8> {
     let phys = (*(e.add(JTLB_ENTRY_PHYS as usize) as *const u32)).wrapping_add(a as u32);
     Some(crate::cpu::memory::mem8.add(phys as usize))
 }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_rd8(addr: i64, tab: i32) -> i64 { match jt_lookup(addr, tab, 1) { Some(p) => *p as i64, None => 0 } }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_rd16(addr: i64, tab: i32) -> i64 { match jt_lookup(addr, tab, 2) { Some(p) => (p as *const u16).read_unaligned() as i64, None => 0 } }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_rd32(addr: i64, tab: i32) -> i64 { match jt_lookup(addr, tab, 4) { Some(p) => (p as *const u32).read_unaligned() as i64, None => 0 } }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_rd64(addr: i64, tab: i32) -> i64 { match jt_lookup(addr, tab, 8) { Some(p) => (p as *const i64).read_unaligned(), None => 0 } }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_wr8(addr: i64, v: i64, tab: i32) { if let Some(p) = jt_lookup(addr, tab, 1) { *p = v as u8 } }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_wr16(addr: i64, v: i64, tab: i32) { if let Some(p) = jt_lookup(addr, tab, 2) { (p as *mut u16).write_unaligned(v as u16) } }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_wr32(addr: i64, v: i64, tab: i32) { if let Some(p) = jt_lookup(addr, tab, 4) { (p as *mut u32).write_unaligned(v as u32) } }
-#[no_mangle]
+#[cfg_attr(feature = "x86_64", no_mangle)]
 pub unsafe fn j64_wr64(addr: i64, v: i64, tab: i32) { if let Some(p) = jt_lookup(addr, tab, 8) { (p as *mut i64).write_unaligned(v) } }
 /// instructions without a template are interpreted inside the module (else it leaves for them)
 static mut INPLACE_STEP: bool = true;
