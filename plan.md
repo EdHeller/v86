@@ -121,6 +121,27 @@ Order set by the user on 2026-10-31: virtio-gpu with WebGPU first, then SSE3/SSE
      old behaviour) with home `/home/student` and a `readme.txt` there, logged in on tty1 and the serial port.
 9. [ ] **x86 follow-up (low priority).** Cut the lazy-compile cost, for example with smaller modules or by
    compiling off the main thread.
+10. [ ] **Speed ideas from copy/v86#924** (user's request 2026-11-03; copy's comment of 2023-09-19, "Some concrete
+    ideas"). Profile first, as copy suggests there: the Firefox profiler (https://profiler.firefox.com/docs/) for a
+    sampling profile; `make debug-with-profiler` for the stats at the bottom of debug.html (much slower); the wasm and
+    x86 code the JIT makes can be dumped from dev tools or with the flag in `src/cpu.js` (`docs/profiling.md`).
+    State of each idea in this tree:
+    - [ ] Instruction analysis of the registers and flags each instruction reads and writes, to omit flag computation
+      and fuse cmp+jcc more often (copy/v86#466). Partly: jit64 (64-bit mode) drops dead flags with page-local
+      liveness (`flag_liveness`); the 32-bit JIT still computes lazy flags for every flag writer. Needs the fuzzer
+      widened first (task 3).
+    - [ ] Function boundaries: one big br_table of entries is slow in wasm JITs; call/ret as wasm calls with a runtime
+      check of the return eip and a call-depth limit. Partly: jit64 compiles a page into one function with a
+      dispatch loop; call/ret/indirect jumps still return to Rust (`docs/jit64-performance.md` idea 3, tail calls).
+      The 32-bit JIT is as upstream.
+    - [ ] VGA memory writes through the memory fast path (e.g. when the page is already marked dirty; copy/v86#301).
+      Not done.
+    - [ ] The CPU in a Web Worker (copy/v86#534, #219). Partly: with cpu_workers the cores other than the first run
+      in workers; the boot core and the devices still run on the page's thread.
+    - [x] PIC and APIC in Rust (more of the main loop in Rust). Done upstream (`src/rust/cpu/pic.rs`, `apic.rs`,
+      `ioapic.rs`); ours adds `smp.rs`.
+    - [ ] Stack accesses: when ESP's access size is known statically, translate ESP to physical once per block, with
+      a slow path when an access crosses a page. Not done.
 
 ## Plan: Android
 
