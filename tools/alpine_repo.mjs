@@ -77,7 +77,7 @@ export const CUBE_PACKAGES = ["alpine-base", "openssl", "ssl_client", "kmscube",
 /** The virt ISO's live system: its world besides alpine-base */
 const LIVE_WORLD = ["openssl", "ssl_client"];
 /** Where a set's repository and image go */
-export const output_directory = arch => path.join(ROOT, arch === "aarch64" || arch === "armv7" ? "build/a64-linux" : "build/x64-linux");
+export const output_directory = arch => path.join(ROOT, arch === "aarch64" || arch === "armv7" ? "build/a64-linux" : arch === "x86" ? "build/x86-linux" : "build/x64-linux");
 
 /** Extract the APKINDEX member of a gzipped tar */
 export function apkindex(tar_gz)
@@ -251,7 +251,7 @@ if(process.argv[1] && path.resolve(process.argv[1]) === url.fileURLToPath(import
     const option = (name, fallback) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : fallback; };
     const arch = option("--arch", "x86_64");
     const set = option("--set", "gpu");
-    if(!["x86_64", "aarch64", "armv7"].includes(arch)) throw new Error("--arch: x86_64, aarch64 or armv7");
+    if(!["x86_64", "x86", "aarch64", "armv7"].includes(arch)) throw new Error("--arch: x86_64, x86, aarch64 or armv7");
     if(!["gpu", "jit", "sys", "kbuild", "aarch32", "cube"].includes(set)) throw new Error("--set: gpu, jit, sys, kbuild, aarch32 or cube");
     if((arch === "armv7") !== (set === "aarch32")) throw new Error("--set aarch32 is --arch armv7's, and its only one");
     const out = path.join(output_directory(arch), set + "-repo");
