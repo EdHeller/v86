@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>v86 core test</title>
+<!-- ?coi=1: make the page cross-origin isolated with a service worker, where the server cannot send the headers -->
+<script>if(/[?&]coi=1/.test(location.search)) document.write('<script src="/js/coi-serviceworker.min.js"><\/script>');</script>
+<link rel="stylesheet" href="/css/xterm.min.css">
+<style>
+    body { font: 14px sans-serif; margin: 12px; background: #222; color: #ddd; }
+    a { color: #8cf; }
+    #screen_container { display: inline-block; background: #000; vertical-align: top; }
+    #side { display: inline-block; vertical-align: top; margin-left: 12px; }
+    #log { font: 12px monospace; white-space: pre; background: #111; padding: 8px; min-width: 40em; min-height: 10em; }
+    #status { font: 12px monospace; margin: 6px 0; }
+    #serial_terminal { margin-top: 8px; }
+    .bad { color: #f88; } .good { color: #8f8; }
+</style>
+</head>
+<body>
+<p>
+    Guest: <a href="?guest=alpine64">Alpine x86_64</a> | <a href="?guest=alpine32">Alpine x86 (32-bit)</a> | <a href="?guest=templeos">TempleOS (x86_64)</a>
+    &nbsp; Cores: <a id="c1">1</a> | <a id="c2">2</a> | <a id="c4">4</a> &nbsp; Workers: <a id="won">on</a> | <a id="woff">off</a>
+</p>
+<p id="title"></p>
+<p><button id="bench">shell-loop benchmark (Alpine)</button> <button id="nproc">nproc (Alpine)</button> <button id="copy">copy log</button></p>
+<div id="screen_container"><div style="white-space: pre; font: 14px monospace; line-height: 14px"></div><canvas style="display: none"></canvas></div>
+<div id="side"><div id="log"></div><div id="status"></div><div id="serial_terminal"></div></div>
+
+<script src="/js/libv86.js"></script>
+<script src="/js/libv64.js"></script>
+<script src="/js/xterm.min.js"></script>
+<script src="/js/addon-unicode-graphemes.js"></script>
+<script src="/js/v86-grapheme-terminal.js"></script>
+<script>
+"use strict";
+// The core test: which core runs (v86.wasm 32-bit, v64.wasm x86_64), how many cores, in Web Workers or not.
+//   ?guest=alpine64|alpine32|templeos   ?cores=1|2|4   ?workers=1|0   ?coi=1
+// Cores in workers need a cross-origin isolated page (python3 serve.py sends COOP/COEP); without it v86 runs one core.
+const q = new URLSearchParams(location.search);
+const guest = q.get("guest") || "alpine64";
+const cores = +q.get("cores") || 1;
+const workers = q.get("workers") !== "0" && cores > 1;
+const link = (id, key, value) => { const u = new URLSearchParams(location.search); u.set(key, value); document.getElementById(id).href = "?" + u; };
+link("c1", "cores", 1); link("c2", "cores", 2); link("c4", "cores", 4); link("won", "workers", 1); link("woff", "workers", 0);
+
+const isolated = self.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined";
+// hosts with a weaker memory order than x86's (Apple silicon, phones) take the seqcst parallel build
+const arm_host = /arm|aarch64|Android|iPhone|iPad/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const use_workers = workers && isolated;
+// (v86 maps v86*.wasm to v64*.wasm itself for x86_64)
+const wasm_path = use_workers ? (arm_host ? "/v86-parallel-seqcst.wasm" : "/v86-parallel.wasm") : "/v86.wasm";
+
+const GUESTS = {
+    alpine64: { cpu_type: "x86_64", bzimage: "/images/vmlinuz-virt-x86_64", initrd: "/images/initramfs-virt-x86_64", cdrom: "/images/alpine-virt-3.24.3-x86_64.iso" },
+    alpine32: { cpu_type: "x86", bzimage: "/images/vmlinuz-virt-x86", initrd: "/images/initramfs-virt-x86", cdrom: "/images/alpine-virt-3.24.3-x86.iso" },
+    templeos: { cpu_type: "x86_64", cdrom: "/images/TempleOS.ISO" },
+};
+const g = GUESTS[guest] || GUESTS.alpine64;
+const options = {
+    wasm_path,
+    cpu_type: g.cpu_type,
+    cpu_cores: cores,
+    cpu_workers: workers,                       // asked for; without isolation v86 runs one core
+    vcpu_worker_url: "/js/vcpu-worker.js",
+    acpi: cores > 1,
+    memory_size: 512 * 1024 * 1024,
+    vga_memory_size: 16 * 1024 * 1024,
+    screen_container: document.getElementById("screen_container"),
+    bios: { url: "/bios/seabios.bin" },
+    vga_bios: { url: "/bios/vgabios.bin" },
+    cdrom: { url: g.cdrom },
+    serial_console: { type: "xtermjs", container: document.getElementById("serial_terminal"), xterm_lib: V86GraphemeTerminal },
+    autostart: true,
+};
+if(g.bzimage)
+{
+    options.bzimage = { url: g.bzimage };
+    options.initrd = { url: g.initrd };
+    options.cmdline = "modules=loop,squashfs,sd-mod quiet console=tty1 console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on";
+}
+
+document.getElementById("title").innerHTML = "<b>" + guest + "</b> (cpu_type " + g.cpu_type + "), " + cores + " core(s) asked, workers " +
+    (workers ? "asked" : "off") + "; page cross-origin isolated: <b class='" + (isolated ? "good'>yes" : "bad'>no") + "</b>";
+
+const t0 = performance.now();
+const lines = [];
+const log = text => { lines.push(((performance.now() - t0) / 1000).toFixed(1).padStart(7) + " s  " + text); document.getElementById("log").textContent = lines.join("\n"); };
+
+const emulator = window.emulator = new V86(options);
+let serial = "";
+emulator.add_listener("serial0-output-byte", b => { serial += String.fromCharCode(b); if(serial.length > 20000) serial = serial.slice(-10000); });
+emulator.add_listener("emulator-loaded", () => {
+    const cpu = emulator.v86.cpu;
+    const core = cpu.wm.exports["core_has_long_mode"] && cpu.wm.exports["core_has_long_mode"]() ? "v64 (x86_64)" : "v86 (32-bit x86)";
+    log("loaded: core " + core + ", wasm " + wasm_path.replace("v86", g.cpu_type === "x86_64" ? "v64" : "v86") +
+        ", running " + cpu.cpu_cores + " core(s)" + (cpu.parallel ? " (" + (cpu.cpu_cores - 1) + " in Web Workers)" : cpu.cpu_cores > 1 ? " taking turns" : ""));
+});
+
+const seen = {};
+setInterval(() => {
+    if(!seen.kernel && /Linux version/.test(serial)) { seen.kernel = true; log("kernel is up"); }
+    if(!seen.login && /login:/.test(serial)) { seen.login = true; log("LOGIN PROMPT (boot time)"); emulator.serial0_send("root\n"); }
+    const r = serial.match(/real\s+\S+(?:[ \t]+[\d.]+s)?/g) || [];
+    if(r.length > (seen.bench || 0)) { seen.bench = r.length; log("benchmark: " + r[r.length - 1].replace(/\s+/g, " ")); }
+    const n = /NPROC=(\d+)/.exec(serial);
+    if(n && seen.nproc !== n[1]) { seen.nproc = n[1]; log("nproc in the guest: " + n[1]); }
+}, 300);
+
+// instructions per second
+let last = 0, last_t = performance.now();
+setInterval(() => {
+    if(!emulator.v86) return;
+    const n = emulator.get_instruction_counter(), t = performance.now();
+    document.getElementById("status").textContent = "now " + (((n - last) >>> 0) / ((t - last_t) * 1000)).toFixed(1) + " MIPS (core 0)";
+    last = n; last_t = t;
+}, 1000);
+
+document.getElementById("bench").onclick = () => { log("benchmark started"); emulator.serial0_send("time sh -c 'i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done'\n"); };
+document.getElementById("nproc").onclick = () => emulator.serial0_send("echo NPROC=$(nproc)\n");
+document.getElementById("copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText(document.getElementById("title").textContent + "\n" + lines.join("\n"));
+</script>
+</body>
+</html>

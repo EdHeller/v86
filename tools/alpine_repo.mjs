@@ -71,6 +71,9 @@ export const KBUILD_PACKAGES = ["build-base", "bash", "bison", "flex", "gawk", "
  * --arch armv7): BusyBox and musl's dynamic linker, OpenSSL (NEON and the
  * crypto instructions), Lua, xz, SQLite */
 export const AARCH32_PACKAGES = ["busybox", "musl-utils", "openssl", "lua5.4", "xz", "sqlite"];
+/** The cube demo's disk (tools/cube_disk.mjs): what the live system installs at boot with Mesa's virgl driver
+ * (Alpine 3.23's, under v3.23/) and kmscube already there, from the mirror's index alone */
+export const CUBE_PACKAGES = ["alpine-base", "openssl", "ssl_client", "kmscube", "mesa-utils"];
 /** The virt ISO's live system: its world besides alpine-base */
 const LIVE_WORLD = ["openssl", "ssl_client"];
 /** Where a set's repository and image go */
@@ -249,16 +252,16 @@ if(process.argv[1] && path.resolve(process.argv[1]) === url.fileURLToPath(import
     const arch = option("--arch", "x86_64");
     const set = option("--set", "gpu");
     if(!["x86_64", "aarch64", "armv7"].includes(arch)) throw new Error("--arch: x86_64, aarch64 or armv7");
-    if(!["gpu", "jit", "sys", "kbuild", "aarch32"].includes(set)) throw new Error("--set: gpu, jit, sys, kbuild or aarch32");
+    if(!["gpu", "jit", "sys", "kbuild", "aarch32", "cube"].includes(set)) throw new Error("--set: gpu, jit, sys, kbuild, aarch32 or cube");
     if((arch === "armv7") !== (set === "aarch32")) throw new Error("--set aarch32 is --arch armv7's, and its only one");
     const out = path.join(output_directory(arch), set + "-repo");
-    await build_repo("v3.24", out, { gpu: PACKAGES, jit: JIT_PACKAGES, sys: SYS_PACKAGES, kbuild: KBUILD_PACKAGES, aarch32: AARCH32_PACKAGES }[set], arch);
-    if(set === "gpu") await build_repo("v3.23", path.join(out, "v3.23"), VIRGL_PACKAGES, arch);
+    await build_repo("v3.24", out, { gpu: PACKAGES, jit: JIT_PACKAGES, sys: SYS_PACKAGES, kbuild: KBUILD_PACKAGES, aarch32: AARCH32_PACKAGES, cube: CUBE_PACKAGES }[set], arch);
+    if(set === "gpu" || set === "cube") await build_repo("v3.23", path.join(out, "v3.23"), VIRGL_PACKAGES, arch);
 
     // A ustar image on the disk (as for tests/x64/linux_boot.mjs's probes):
     // the guest unpacks it with `tar -xf /dev/sda`, names intact
     const image = out + ".tar";
-    const members = [...REPOS, ...(set === "gpu" ? ["v3.23"] : [])];
+    const members = [...REPOS, ...(set === "gpu" || set === "cube" ? ["v3.23"] : [])];
     let result = spawnSync("bsdtar", ["--format", "ustar", "--no-xattrs", "--no-mac-metadata", "--uid", "0", "--gid", "0",
         "-cf", image, "-C", out, ...members], { encoding: "utf8" });
     // (without bsdtar: GNU tar)

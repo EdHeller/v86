@@ -88,12 +88,14 @@ const options = {
 };
 // ?graphics_adapter=virtio_gpu (or vmware_svga, bochs_vga): a display adapter plugin instead of v86's own VGA
 // (virtio_gpu: virtio-vga, Linux's virtio_gpu driver; 2D, or 3D where the page has the WebGPU renderer)
-// ?gpu3d=1: virtio_gpu, 1 GiB of RAM and the Mesa repository (gpu-repo.tar, tools/alpine_repo.mjs) as the first hard disk
+// ?gpu3d=1: virtio_gpu, 1 GiB of RAM and the cube disk (cube-disk.img, tools/cube_disk.mjs) as the first hard
+// disk: Alpine's boot installs Mesa's virgl driver and kmscube from it (its apkovl), so kmscube runs after the login
 if(param("gpu3d") !== null)
 {
     options.graphics_adapter = "virtio_gpu";
     options.memory_size = 1024 * 1024 * 1024;
-    options.hda = { url: "gpu-repo.tar" };
+    options.hda = { url: "cube-disk.img" };
+    options.cmdline = cmdline.replace("modules=loop,squashfs,sd-mod", "modules=loop,squashfs,sd-mod,ext4") + " apkovl=/dev/sda:ext4:cube.apkovl.tar.gz";
     delete options.vga_memory_size;
 }
 if(param("graphics_adapter"))
