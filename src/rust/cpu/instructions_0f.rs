@@ -3418,7 +3418,7 @@ pub unsafe fn instr_0FA2() {
                 vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
                 1 << 8 | 1 << 13 | 1 << 15 | 1 << 20 | // cx8, pge, cmov, nx
                 1 << 23 | 1 << 24 | // mmx, fxsr
-                1 << 11 | 1 << 29; // syscall, long mode
+                if long_mode_supported { 1 << 11 | 1 << 29 } else { 0 }; // syscall, long mode
         },
 
         0x40000000 => {

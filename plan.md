@@ -192,6 +192,11 @@ What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's 
 
 ## Done
 
+- 2026-11-03:
+  - The JS split per architecture: libv86.js (x86), libv64.js (x86_64), libv86-arm.js (the ARM machine through
+    new V86()); docs/architectures.md. cpu_workers without isolation runs one core. Worker cores: the function
+    table fix (they crashed once the JIT used slots above 5000).
+
 - 2026-10-31:
   - jit64 is faster than v64 (incremental compiles, fixes to the YIELD bug, the epochs and the TLB, and others).
   - Demo page fixes: `console=tty1` instead of `tty0`, which removed the "-sh: can't access tty; job control turned

@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Alpine Linux aarch64 through new V86() (libv86.js + libv86-arm.js)</title>
+<style>body { font: 14px sans-serif; margin: 16px; background: #222; color: #ddd; } #log { font: 12px monospace; white-space: pre; }</style>
+<p>Alpine Linux aarch64 on the ARM machine, driven by the V86 API: libv86.js with libv86-arm.js.
+&nbsp; <a href="?">direct kernel boot</a> | <a href="?uefi=1">UEFI</a></p>
+<div id="log"></div>
+<div id="serial_terminal"></div>
+<script src="../build/libv86.js"></script>
+<script src="../build/libv86-arm.js"></script>
+<script>
+"use strict";
+// the ISO next to this page (examples/alpine-aarch64.iso); its kernel and initramfs are taken out of it for a direct boot
+const uefi = new URLSearchParams(location.search).has("uefi");
+const log = text => { document.getElementById("log").textContent += text + "\n"; };
+window.serial = "";
+(async () => {
+    const iso = await (await fetch("alpine-aarch64.iso")).arrayBuffer();
+    const files = V86Architectures["arm"]["iso_files"](iso);
+    const take = name => { const [offset, length] = files.get(name); return iso.slice(offset, offset + length); };
+    const emulator = window.emulator = new V86({
+        cpu_type: "arm64",
+        wasm_path: "../build/v86-arm64.wasm",
+        memory_size: 512 * 1024 * 1024,
+        cdrom: { buffer: iso },
+        ...(uefi ? { firmware: { code: { url: "../bios/aavmf-code.fd" }, vars: { url: "../bios/aavmf-vars.fd" } } } : {
+            bzimage: { buffer: take("BOOT/VMLINUZ_VIRT") },
+            initrd: { buffer: take("BOOT/INITRAMFS_VIRT") },
+            cmdline: "console=ttyAMA0 modules=loop,squashfs,sd-mod,virtio-blk,virtio-mmio,virtio_blk,virtio_mmio,isofs",
+        }),
+        serial_container: undefined,
+        autostart: true,
+    });
+    emulator.add_listener("serial0-output-byte", b => { window.serial += String.fromCharCode(b); });
+    emulator.add_listener("emulator-loaded", () => log("emulator loaded" + (uefi ? " (UEFI)" : "")));
+    emulator.add_listener("emulator-error", e => log("error: " + e.message));
+})();
+</script>

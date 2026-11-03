@@ -2,6 +2,10 @@ if(typeof DEBUG === "undefined")
 {
     globalThis.DEBUG = true;
 }
+if(typeof ARCH_PLUGINS === "undefined")
+{
+    globalThis.ARCH_PLUGINS = false;
+}
 
 import { LOG_NAMES } from "./const.js";
 import { pad0, pads } from "./lib.js";

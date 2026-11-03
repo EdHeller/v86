@@ -1113,6 +1113,9 @@ CPU.prototype.init = function(settings, device_bus)
     }
 
     settings.cpuid_level && this.set_cpuid_level(settings.cpuid_level);
+    // cpu_type "x86" (libv86.js alone): a 32-bit CPU; "x86_64" (libv64.js, the source tree): long mode
+    this.long_mode_supported = settings.long_mode !== false;
+    this.wm.exports["set_long_mode_supported"](this.long_mode_supported);
 
     this.acpi_enabled[0] = +settings.acpi;
 

@@ -17,6 +17,7 @@ import { MouseAdapter } from "./mouse.js";
 import { ScreenAdapter } from "./screen.js";
 import { DummyScreenAdapter } from "./dummy_screen.js";
 import { load_graphics_adapter } from "../graphics_adapter.js";
+import { resolve_cpu_type, load_arm } from "./architectures.js";
 import { ANSIScreenAdapter } from "./ansi_screen.js";
 import { SerialAdapter, VirtioConsoleAdapter, SerialAdapterXtermJS, VirtioConsoleAdapterXtermJS } from "./serial.js";
 import { InBrowserNetworkAdapter } from "./inbrowser_network.js";
@@ -58,6 +59,18 @@ export function V86(options)
     const bus = Bus.create();
     this.bus = bus[0];
     this.emulator_bus = bus[1];
+
+    // the architecture (src/browser/architectures.js): x86 (libv86.js), x86_64 (libv64.js), ARM (libv86-arm.js)
+    this.cpu_type = resolve_cpu_type(options);
+    if(this.cpu_type === "arm64" || this.cpu_type === "arm32")
+    {
+        this.v86 = null;
+        this.init_arm(options).catch(error => {
+            console.error(error);
+            this.emulator_bus.send("emulator-error", error);
+        });
+        return;
+    }
 
     var cpu;
     var wasm_memory;
@@ -214,6 +227,8 @@ V86.prototype.continue_init = async function(emulator, options)
     }, this);
 
     var settings = {};
+    // (x86_64: the CPU reports long mode; x86: a 32-bit CPU, as upstream v86)
+    settings.long_mode = this.cpu_type === "x86_64";
 
     const boot_order =
         options.boot_order ? options.boot_order :
@@ -770,6 +785,90 @@ V86.prototype.continue_init = async function(emulator, options)
 };
 
 /**
+ * The ARM virt machine (cpu_type "arm64" or "arm32", libv86-arm.js): its files loaded, the machine made,
+ * the V86 API driving it. The options it uses: wasm_path (default build/v86-arm64.wasm), memory_size,
+ * cpu_cores, bzimage (an arm64 Image or EFI zboot kernel), initrd and cmdline, or firmware: { code, vars }
+ * (UEFI: bios/aavmf-code.fd, aavmf-vars.fd); cdrom, hda and hdb (virtio-blk disks), serial_console, autostart.
+ * @param {!Object} options
+ */
+V86.prototype.init_arm = async function(options)
+{
+    const arch = await load_arm();
+    const total = ["bzimage", "initrd", "cdrom", "hda", "hdb"].filter(name => options[name]).length + 1;
+    let index = 0;
+    const load = (name, file) => new Promise((resolve, reject) => {
+        if(!file) return resolve(undefined);
+        if(file.buffer) return resolve(file.buffer);
+        const file_index = index++;
+        load_file(file.url, {
+            done: resolve,
+            progress: e => this.emulator_bus.send("download-progress", {
+                file_index, file_count: total, file_name: file.url, lengthComputable: e.lengthComputable, total: e.total || file.size, loaded: e.loaded,
+            }),
+        });
+    });
+    const wasm = await load("wasm", { url: options.wasm_path || "build/v86-arm64.wasm" });
+    const kernel = await load("bzimage", options.bzimage);
+    const initrd = await load("initrd", options.initrd);
+    const disks = [];
+    for(const name of ["cdrom", "hda", "hdb"])
+    {
+        const buffer = await load(name, options[name]);
+        if(buffer) disks.push({ buffer, readonly: name === "cdrom" || !!(options[name] && options[name].readonly) });
+    }
+    let firmware;
+    if(options.firmware)
+    {
+        const code = await load("firmware", options.firmware.code);
+        const vars = await load("firmware vars", options.firmware.vars);
+        firmware = { code, vars: vars ? new Uint8Array(vars) : undefined };
+    }
+    if(!kernel && !firmware) throw new Error("cpu_type \"" + this.cpu_type + "\": give a kernel (bzimage) or firmware ({ code, vars })");
+
+    const machine = this.arm_machine = await arch["create"]({
+        wasm,
+        kernel: firmware ? undefined : kernel, initrd: firmware ? undefined : initrd, cmdline: options.cmdline || "",
+        firmware,
+        cpu_type: this.cpu_type,
+        memory_size: options.memory_size || 512 * 1024 * 1024,
+        cpu_cores: options.cpu_cores || 1,
+        disks,
+        virtio_rng: true,
+    });
+
+    // the serial port: the page's bus <-> the machine's PL011
+    machine.add_listener("serial0-output-byte", byte => this.emulator_bus.send("serial0-output-byte", byte));
+    this.emulator_bus.register("serial0-input", byte => machine.bus.send("serial0-input", byte), this);
+    machine.add_listener("emulator-stopped", () => this.emulator_bus.send("emulator-stopped"));
+    this.bus.register("emulator-stopped", () => { this.cpu_is_running = false; }, this);
+    this.bus.register("emulator-started", () => { this.cpu_is_running = true; }, this);
+
+    const serial_console = options.serial_console || (options.serial_container_xtermjs ? { type: "xtermjs", container: options.serial_container_xtermjs } :
+        options.serial_container ? { type: "textarea", container: options.serial_container } : { type: "none" });
+    if(serial_console.type === "xtermjs")
+    {
+        this.serial_adapter = new SerialAdapterXtermJS(serial_console.container, this.bus, serial_console.xterm_lib || window["Terminal"]);
+    }
+    else if(serial_console.type === "textarea")
+    {
+        this.serial_adapter = new SerialAdapter(serial_console.container, this.bus);
+    }
+
+    // what V86's methods call (run, stop, restart, destroy)
+    const bus = this.emulator_bus;
+    this.v86 = {
+        cpu: machine,
+        run: () => { machine.run(); bus.send("emulator-started"); },
+        stop: () => { machine.stop(); bus.send("emulator-stopped"); },
+        restart: () => { machine.reset(); },
+        destroy: () => { machine.stop(); },
+    };
+    bus.send("emulator-ready");
+    if(options.autostart) this.v86.run();
+    bus.send("emulator-loaded");
+};
+
+/**
  * @param {number} decompressed_size
  * @param {Uint8Array} src
  * @return {ArrayBuffer}
@@ -973,7 +1072,7 @@ V86.prototype.destroy = async function()
 {
     await this.stop();
 
-    this.v86.destroy();
+    this.v86 && this.v86.destroy();
     this.keyboard_adapter && this.keyboard_adapter.destroy();
     this.network_adapter && this.network_adapter.destroy();
     this.mouse_adapter && this.mouse_adapter.destroy();

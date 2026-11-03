@@ -49,6 +49,8 @@ if(param("gpu3d") !== null) document.write('<script src="../build/glbridge/libv8
 </script>
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js" crossorigin="anonymous"></script>
 <script src="../build/libv86.js"></script>
+<!-- x86_64: libv64.js next to libv86.js (32-bit x86 needs only libv86.js) -->
+<script src="../build/libv64.js"></script>
 <script>
 "use strict";
 
@@ -72,6 +74,7 @@ const options = {
     wasm_path: param("wasm") === "prev" ? "../build/v86-prev.wasm" : "../build/v86.wasm",
     acpi: param("acpi") !== null || +param("cores") > 1,   // ?acpi=1: ACPI + APIC/IOAPIC
     cpu_cores: +param("cores") || 1,                                                // ?cores=2: cores that take turns
+    cpu_type: tag,                                     // "x86" or "x86_64" (needs libv64.js)
     memory_size: 512 * 1024 * 1024,
     vga_memory_size: 8 * 1024 * 1024,
     screen_container: document.getElementById("screen_container"),
@@ -101,6 +104,8 @@ if(param("graphics_adapter"))
 // ?workers=1 (with ?cores=N): the cores other than the first run in Web Workers, each in its own instance of v86-parallel.wasm. Needs a
 // cross-origin isolated page (python3 serve.py); otherwise the cores take turns on one thread.
 const want_workers = param("workers") !== null && options.cpu_cores > 1;
+// (asked for, the page tells v86 even when it cannot have them: v86 then runs one core, as plain v86)
+if(want_workers) options.cpu_workers = true;
 const use_workers = want_workers && self.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined";
 if(use_workers)
 {
@@ -187,7 +192,7 @@ setInterval(() => {
         }
     }
     if(!seen.shell && /Welcome to Alpine!/.test(serial)) { seen.shell = true; log("logged in (shell)"); }
-    const results = serial.match(/real\s+\S+/g) || [];
+    const results = serial.match(/real\s+\S+(?:[ \t]+[\d.]+s)?/g) || [];
     if(results.length > bench_results) {
         bench_results = results.length;
         log("benchmark result: " + results[results.length - 1].replace(/\s+/g, " "));

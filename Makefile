@@ -95,7 +95,7 @@ LIB_FILES=9p.js filesystem.js marshall.js
 BROWSER_FILES=screen.js keyboard.js mouse.js speaker.js serial.js \
 	      network.js starter.js worker_bus.js dummy_screen.js ansi_screen.js \
 	      inbrowser_network.js fake_network.js wisp_network.js fetch_network.js \
-          print_stats.js filestorage.js modem.js
+          print_stats.js filestorage.js modem.js architectures.js
 
 RUST_FILES=$(shell find src/rust/ -name '*.rs') \
 	   src/rust/gen/interpreter.rs src/rust/gen/interpreter0f.rs \
@@ -160,6 +160,37 @@ build/v86-virtio-gpu.js: $(CLOSURE) src/*.js src/graphics_adapters/*.js src/grap
 		--js src/graphics_adapters/virtio_gpu/virtio_gpu_device.js \
 		--js src/graphics_adapters/virtio_gpu/plugin.js
 
+# The architectures beside libv86.js (x86): libv64.js adds x86_64, libv86-arm.js the ARM virt machine
+# (src/browser/architectures.js); -debug: DEBUG on, readable. The ARM code (from v64) is not written for
+# Closure's type checks: its bundle is compiled without them
+ARCH_COMMON=src/cjs.js src/browser/architectures.js
+ARM_FILES=$(shell find src/arm -name '*.js' ! -path 'src/arm/parallel/vcpu_*')
+build/libv64.js: $(CLOSURE) src/arch/x86_64.js src/browser/architectures.js
+	mkdir -p build
+	java -jar $(CLOSURE) --js_output_file $@ --define=DEBUG=false --define=ARCH_PLUGINS=true $(CLOSURE_FLAGS) \
+		--compilation_level SIMPLE --jscomp_off=missingProperties \
+		--output_wrapper ';(function(){%output%}).call(this);' \
+		--js $(ARCH_COMMON) --js src/arch/x86_64.js
+build/libv64-debug.js: $(CLOSURE) src/arch/x86_64.js src/browser/architectures.js
+	mkdir -p build
+	java -jar $(CLOSURE) --js_output_file $@ --define=DEBUG=true --define=ARCH_PLUGINS=true $(CLOSURE_FLAGS) $(CLOSURE_READABLE) \
+		--compilation_level SIMPLE --jscomp_off=missingProperties \
+		--output_wrapper ';(function(){%output%}).call(this);' \
+		--js $(ARCH_COMMON) --js src/arch/x86_64.js
+build/libv86-arm.js: $(CLOSURE) src/arch/arm.js src/browser/architectures.js $(ARM_FILES)
+	mkdir -p build
+	java -jar $(CLOSURE) --js_output_file $@ --define=DEBUG=false --define=ARCH_PLUGINS=true --language_in ECMASCRIPT_NEXT --language_out ECMASCRIPT_2020 --warning_level QUIET \
+		--compilation_level SIMPLE --jscomp_off=missingProperties \
+		--output_wrapper ';(function(){%output%}).call(this);' \
+		--js $(ARCH_COMMON) --js $(ARM_FILES) --js src/arch/arm.js
+build/libv86-arm-debug.js: $(CLOSURE) src/arch/arm.js src/browser/architectures.js $(ARM_FILES)
+	mkdir -p build
+	java -jar $(CLOSURE) --js_output_file $@ --define=DEBUG=true --define=ARCH_PLUGINS=true --language_in ECMASCRIPT_NEXT --language_out ECMASCRIPT_2020 --warning_level QUIET $(CLOSURE_READABLE) \
+		--compilation_level SIMPLE --jscomp_off=missingProperties \
+		--output_wrapper ';(function(){%output%}).call(this);' \
+		--js $(ARCH_COMMON) --js $(ARM_FILES) --js src/arch/arm.js
+architectures: build/libv64.js build/libv86-arm.js build/libv64-debug.js build/libv86-arm-debug.js
+
 CORE_FILES:=$(addprefix src/,$(CORE_FILES))
 LIB_FILES:=$(addprefix lib/,$(LIB_FILES))
 BROWSER_FILES:=$(addprefix src/browser/,$(BROWSER_FILES))
@@ -197,7 +228,7 @@ build/libv86.js: $(CLOSURE) src/*.js lib/*.js src/browser/*.js
 	-ls -lh build/libv86.js
 	java -jar $(CLOSURE) \
 		--js_output_file build/libv86.js\
-		--define=DEBUG=false\
+		--define=DEBUG=false --define=ARCH_PLUGINS=true\
 		$(CLOSURE_FLAGS)\
 		--compilation_level SIMPLE\
 		--jscomp_off=missingProperties\
@@ -212,7 +243,7 @@ build/libv86.mjs: $(CLOSURE) src/*.js lib/*.js src/browser/*.js
 	-ls -lh build/libv86.js
 	java -jar $(CLOSURE) \
 		--js_output_file build/libv86.mjs\
-		--define=DEBUG=false\
+		--define=DEBUG=false --define=ARCH_PLUGINS=true\
 		$(CLOSURE_FLAGS)\
 		--compilation_level SIMPLE\
 		--jscomp_off=missingProperties\
@@ -228,7 +259,7 @@ build/libv86-debug.js: $(CLOSURE) src/*.js lib/*.js src/browser/*.js
 	mkdir -p build
 	java -jar $(CLOSURE) \
 		--js_output_file build/libv86-debug.js\
-		--define=DEBUG=true\
+		--define=DEBUG=true --define=ARCH_PLUGINS=true\
 		$(CLOSURE_FLAGS)\
 		$(CLOSURE_READABLE)\
 		--compilation_level SIMPLE\
@@ -243,7 +274,7 @@ build/libv86-debug.mjs: $(CLOSURE) src/*.js lib/*.js src/browser/*.js
 	mkdir -p build
 	java -jar $(CLOSURE) \
 		--js_output_file build/libv86-debug.mjs\
-		--define=DEBUG=true\
+		--define=DEBUG=true --define=ARCH_PLUGINS=true\
 		$(CLOSURE_FLAGS)\
 		$(CLOSURE_READABLE)\
 		--compilation_level SIMPLE\

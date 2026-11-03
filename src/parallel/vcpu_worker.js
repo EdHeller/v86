@@ -81,6 +81,7 @@ async function start(data, post)
     const { instance } = await instantiate_relocated(new Uint8Array(bytes), { env }, memory, core);
     exports = instance.exports;
     exports["rust_init"]();
+    exports["set_long_mode_supported"]?.(data.long_mode !== false);
     exports["worker_init"](core, cores, memory_ptr, memory_size, tsc_low, tsc_high);
     exports["parallel_set_shared"](shared_ptr, core);
     // what compiled modules import: the memory, the function table and the exports of the instance

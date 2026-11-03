@@ -42,6 +42,8 @@ export class ParallelMachine
                 memory_ptr: cpu.mem8.byteOffset, memory_size: cpu.memory_size[0],
                 tsc_low: this.exports["get_tsc_offset"](0), tsc_high: this.exports["get_tsc_offset"](1),
                 time_origin, table_size, shared_ptr: this.shared_ptr,
+                // (the machine's CPUID: each instance has its own copy of the core's settings)
+                long_mode: cpu.long_mode_supported !== false,
             };
             this.workers[core] = spawn(this.worker_url, data, message => {
                 if(message.ready) this.ready++;

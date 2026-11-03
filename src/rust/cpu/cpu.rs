@@ -314,6 +314,9 @@ pub static mut JIT_LOOP_LIMIT: i32 = LOOP_COUNTER;
 pub const TSC_RATE: f64 = 1_000_000.0;
 
 pub static mut cpuid_level: u32 = 0x16;
+/// Whether CPUID reports long mode (x86_64): libv86.js alone is a 32-bit x86 (cpu_type "x86"),
+/// libv64.js adds x86_64 (src/browser/architectures.js)
+pub static mut long_mode_supported: bool = true;
 
 pub static mut jit_block_boundary: bool = false;
 
@@ -5143,3 +5146,5 @@ pub unsafe fn reset_cpu() {
 
 #[no_mangle]
 pub unsafe fn set_cpuid_level(level: u32) { cpuid_level = level }
+#[no_mangle]
+pub unsafe fn set_long_mode_supported(supported: bool) { long_mode_supported = supported }
