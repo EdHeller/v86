@@ -17,11 +17,13 @@ import { spawn } from "node:child_process";
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 
+// SCALE=n: every workload n times as long (small differences need longer runs to show)
+const SCALE = Math.max(1, +process.env.SCALE || 1);
 const TESTS = [
-    ["loop", "i=0; while [ $i -lt 100000 ]; do i=$((i+1)); done"],
-    ["gzip", "dd if=/dev/urandom bs=1M count=8 2>/dev/null | gzip -c | gunzip -c | wc -c >/dev/null"],
-    ["sha", "dd if=/dev/zero bs=1M count=64 2>/dev/null | sha256sum >/dev/null"],
-    ["fork", "i=0; while [ $i -lt 500 ]; do /bin/true; i=$((i+1)); done"],
+    ["loop", `i=0; while [ $i -lt ${100000 * SCALE} ]; do i=$((i+1)); done`],
+    ["gzip", `dd if=/dev/urandom bs=1M count=${8 * SCALE} 2>/dev/null | gzip -c | gunzip -c | wc -c >/dev/null`],
+    ["sha", `dd if=/dev/zero bs=1M count=${64 * SCALE} 2>/dev/null | sha256sum >/dev/null`],
+    ["fork", `i=0; while [ $i -lt ${500 * SCALE} ]; do /bin/true; i=$((i+1)); done`],
 ];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -79,6 +81,14 @@ if(process.argv[2] === "--child")
     {
         result.error = error.message;
     }
+    // (PROF_STATS=path/to/src/rust/profiler.rs with a profiler build, options.json "wasm": the counters by name)
+    if(process.env.PROF_STATS && e.v86.cpu.wm.exports["profiler_stat_get"])
+    {
+        const src = fs.readFileSync(process.env.PROF_STATS, "utf8");
+        const names = src.slice(src.indexOf("pub enum stat {"), src.indexOf("}", src.indexOf("pub enum stat {")))
+            .split("\n").slice(1).map(l => l.trim().replace(",", "")).filter(l => /^[A-Z_0-9]+$/.test(l));
+        names.forEach((n, i) => { const v = e.v86.cpu.wm.exports["profiler_stat_get"](i); if(v) console.error(n.padEnd(48) + v); });
+    }
     console.log(JSON.stringify(result));
     process.exit(0);
 }
@@ -93,7 +103,7 @@ const columns = ["login", ...TESTS.map(t => t[0])];
 const results = Object.fromEntries(builds.map(b => [b, []]));
 const fmt = v => v === undefined ? "    -  " : v.toFixed(2).padStart(7);
 
-console.log("v86 speed comparison: " + rounds + " rounds of " + builds.join(", ") + ", node " + process.version);
+console.log("v86 speed comparison: " + rounds + " rounds of " + builds.join(", ") + ", node " + process.version + (SCALE > 1 ? ", SCALE " + SCALE : ""));
 for(const b of builds)
 {
     const info = path.join(here, "builds", b, "VERSION.txt");
