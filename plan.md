@@ -68,9 +68,18 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
      exported (a LinkError when a compiled block used fbstp; `tests/x64/js/jit_exports.js` now checks every function
      name the code generators call), jit64's push/pop/leave with 66 and REX.W.
    - Left for later: real mode specifics (segment loads without descriptors) are covered by the hand-written tests.
-3. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
+3. ⬜ **Fewer switches between JavaScript and WebAssembly** (copy/v86#924: "Port pic+apic to Rust. Allows running
+   more of the main loop in Rust (fewer switches between Rust/JS)"; the PIC, APIC and I/O APIC are in Rust already).
+   Every pass of the main loop still calls JavaScript: `run_hardware_timers` (the PIT, RTC, HPET, ACPI timer and the
+   devices' timers), `microtick` for the clock, and port I/O to devices written in JavaScript. Move the PIT, RTC, HPET
+   and ACPI PM timer to Rust, read the clock without a call per check (`performance.now` once per slice), and run the
+   timer pass in Rust, so a slice leaves WebAssembly only for devices that need JavaScript (disks, network, screen).
+   Measure with the micro benchmarks (task 6's harness) and `tools/v86-bench`.
+4. ⬜ **The lazy-compile cost:** V8 compiles each jit64 module with Liftoff on its first call, 1-3 s of the main
+   thread per boot. Smaller modules, or compiling off the main thread.
+5. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
    persistence, the VM manager). The ARM half of v64 parity is task 8.
-4. ⬜ **Speed ideas from copy/v86#924** (copy's comment of 2023-09-19). Profile first as copy suggests: the Firefox
+6. ⬜ **Speed ideas from copy/v86#924** (copy's comment of 2023-09-19). Profile first as copy suggests: the Firefox
    profiler (https://profiler.firefox.com/docs/), `make debug-with-profiler` (stats at the bottom of debug.html), the
    generated wasm and x86 code (`docs/profiling.md`).
    - ⬜ a. Register and flag analysis, to omit flags and fuse cmp+jcc (copy/v86#466). jit64 drops dead flags
@@ -98,15 +107,6 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
        underflowing double products, conversions without flags), fixed.
      - ⬜ Next: the user's numbers for bench6; then spinlock (+28 %: xchg with memory), rep_small, interrupt; more
        SSE inline (movaps/movdqa, comparisons, shuffles, the remaining conversions, divs/sqrt).
-5. ⬜ **Fewer switches between JavaScript and WebAssembly** (copy/v86#924: "Port pic+apic to Rust. Allows running
-   more of the main loop in Rust (fewer switches between Rust/JS)"; the PIC, APIC and I/O APIC are in Rust already).
-   Every pass of the main loop still calls JavaScript: `run_hardware_timers` (the PIT, RTC, HPET, ACPI timer and the
-   devices' timers), `microtick` for the clock, and port I/O to devices written in JavaScript. Move the PIT, RTC, HPET
-   and ACPI PM timer to Rust, read the clock without a call per check (`performance.now` once per slice), and run the
-   timer pass in Rust, so a slice leaves WebAssembly only for devices that need JavaScript (disks, network, screen).
-   Measure with the micro benchmarks (task 4's harness) and `tools/v86-bench`.
-6. ⬜ **The lazy-compile cost:** V8 compiles each jit64 module with Liftoff on its first call, 1-3 s of the main
-   thread per boot. Smaller modules, or compiling off the main thread.
 7. ⬜ **virtio-gpu, the rest.**
    - ⬜ a. The ARM machine through `new V86({ cpu_type: "arm64", graphics_adapter: "virtio_gpu" })` (today only
      `examples/alpine-arm64.html?gpu=1`).
