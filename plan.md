@@ -92,8 +92,16 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
      (sha256sum; each a call into the interpreter). `set_jit_config(62, bits)` hides groups; bench8 sent to measure
      them. Then: compile the 0F 38 / 0F 3A instructions (SHA, pshufb, palignr, pclmulqdq) instead of interpreting
      them, mwait as hlt when interrupts are on, the rdtsc clock read and the JavaScript devices' port I/O.
-4. ⬜ **The lazy-compile cost:** V8 compiles each jit64 module with Liftoff on its first call, 1-3 s of the main
-   thread per boot. Smaller modules, or compiling off the main thread.
+4. ✅ **The lazy-compile cost** (measured 2026-11-04; Alpine x86_64 boot to login and the four workloads,
+   `ARCH=x86_64 JIT64_STATS=1 node tools/v86-bench/run.mjs --child <build>`, `--trace-wasm-compilation-times`).
+   - The main thread's Liftoff compiles: 3,633 functions, 45 MB of WebAssembly, **1.0 s** in a 95 s boot (about 1 %,
+     the main module's functions included), not 1-3 s. TurboFan tiers the hot ones up in background threads: 2,371
+     functions, **52 s of CPU** (no main-thread time; costs on machines with few cores).
+   - jit64 generates 48 MB per boot: memory accesses 19 MB (inline TLB checks), flags 6 MB; 3,207 modules, a third
+     of them invalidated (pages freed and reused). Smaller code costs speed: memory accesses out of line in the
+     module (`set_jit_config(63, 2)`) 39.6 MB but login 103 s instead of 75 s; a shared retry exit (`64`) only 3 %
+     smaller. A page cannot ask V8 for eager compilation (only `--no-wasm-lazy-compilation` does). Closed: nothing
+     to gain worth the speed; revisit if compiled code gets much larger.
 5. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
    persistence, the VM manager). The ARM half of v64 parity is task 8.
 6. ⬜ **Speed ideas from copy/v86#924** (copy's comment of 2023-09-19). Profile first as copy suggests: the Firefox

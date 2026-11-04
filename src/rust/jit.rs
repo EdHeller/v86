@@ -2648,6 +2648,8 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         4 => crate::cpu::jit64::set_threshold(value),
         59 => JIT_THRESHOLD_NOW = value.max(1),
         62 => crate::cpu::instructions_0f::CPUID_HIDE = value,
+        63 => crate::cpu::jit64::OUTLINE_MEM = value,
+        64 => crate::cpu::jit64::SHARED_RETRY = value != 0,
         60 => crate::cpu::sse_fp::FAST_PATHS_OFF = value != 0,
         9 => crate::cpu::jit64::set_disable_mask(value),
         41 => crate::cpu::jit64::WATCH_PAGE = value as u64,

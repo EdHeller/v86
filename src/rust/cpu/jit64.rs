@@ -4504,9 +4504,9 @@ pub static mut HEAT_LAST: u64 = 0;
 static mut HEURISTIC_SEEDS: bool = false;
 /// pending flags stay pending across memory accesses (their slow paths store them)
 static mut FLAGS_ACROSS_ACCESSES: bool = true;
-static mut SHARED_RETRY: bool = false;
+pub static mut SHARED_RETRY: bool = false;
 /// memory accesses of compiled code through the helpers below instead of inline (smaller code)
-static mut OUTLINE_MEM: u32 = 0;
+pub static mut OUTLINE_MEM: u32 = 0;
 
 /// the body of a module's access function (see Gen::read_mem): (addr i64, table i32) -> value i64,
 /// or for writes (addr i64, value i64, table i32); MEM_MISS set when the access cannot be done here
