@@ -14,7 +14,8 @@ import { spawn } from "node:child_process";
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 const root = path.join(here, "..");
 const NAMES = ["alu", "flags", "memory", "stack", "call_near", "call_far", "indirect", "string", "muldiv", "sse", "x87",
-    "pagewalk", "smc", "port", "interrupt", "pit"];
+    "pagewalk", "smc", "port", "interrupt", "pit", "call_deep", "setcc", "bitops", "unaligned", "rep_small", "scalar_fp",
+    "lock", "rdtsc", "pagefault", "tlb4k", "code16", "segment", "sysenter", "cli_sti", "spinlock", "cpuid", "memcpy_bytes"];
 
 // ---------------------------------------------------------------------------------------------------------------
 // child: every benchmark once in one build, a JSON line of seconds
