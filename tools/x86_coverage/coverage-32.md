@@ -6,7 +6,7 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 - 25116 forms probed, 4086 skipped (control flow, descriptor tables, control registers, MSR writes,
   waits: covered by the hand-written tests)
-- **256 forms of 17 mnemonics run in QEMU and are #UD in v86** (missing in v86)
+- **122 forms of 6 mnemonics run in QEMU and are #UD in v86** (missing in v86)
 - 40 forms of 6 mnemonics run in v86 and are #UD in QEMU
 - 1212 forms of 109 mnemonics are #UD in both (not on QEMU's CPU either: AMD-only,
   VMX/SVM outside a VM, encodings objdump accepts but CPUs do not)
@@ -15,22 +15,11 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 | Mnemonic | Forms | Examples |
 |---|---|---|
-| `bndcl` | 16 | `f30f1ac0` bndcl bnd0,eax<br>`f30f1a00` bndcl bnd0,[eax]<br>`f30f1ac8` bndcl bnd1,eax |
-| `bndcn` | 16 | `f20f1bc0` bndcn bnd0,eax<br>`f20f1b00` bndcn bnd0,[eax]<br>`f20f1bc8` bndcn bnd1,eax |
-| `bndcu` | 16 | `f20f1ac0` bndcu bnd0,eax<br>`f20f1a00` bndcu bnd0,[eax]<br>`f20f1ac8` bndcu bnd1,eax |
-| `bndldx` | 8 | `0f1a00` bndldx bnd0,[eax]<br>`0f1a08` bndldx bnd1,[eax]<br>`0f1a10` bndldx bnd2,[eax] |
-| `bndmk` | 8 | `f30f1b00` bndmk bnd0,[eax]<br>`f30f1b08` bndmk bnd1,[eax]<br>`f30f1b10` bndmk bnd2,[eax] |
-| `bndmov` | 32 | `660f1ac0` bndmov bnd0,bnd0<br>`660f1a00` bndmov bnd0,[eax]<br>`660f1ac8` bndmov bnd1,bnd0 |
-| `bndstx` | 8 | `0f1b00` bndstx [eax],bnd0<br>`0f1b08` bndstx [eax],bnd1<br>`0f1b10` bndstx [eax],bnd2 |
 | `extrq` | 24 | `660f78c0cccc` extrq xmm0,0xcc,0xcc<br>`660f7800` extrq (bad),0x78,0x0<br>`660f78c8cccc` extrq xmm0,0xcc,0xcc |
-| `fbld` | 4 | `df20` fbld TBYTE PTR [eax]<br>`66df20` fbld TBYTE PTR [eax]<br>`f2df20` fbld TBYTE PTR [eax] |
 | `femms` | 64 | `0f0e` femms<br>`0f0e` femms<br>`0f0e` femms |
-| `fnsavew` | 1 | `66dd30` fnsavew [eax] |
-| `frstorw` | 1 | `66dd20` frstorw [eax] |
 | `insertq` | 16 | `f20f78c0cccc` insertq xmm0,xmm0,0xcc,0xcc<br>`f20f78c8cccc` insertq xmm1,xmm0,0xcc,0xcc<br>`f20f78d0cccc` insertq xmm2,xmm0,0xcc,0xcc |
 | `movntsd` | 8 | `f20f2b00` movntsd QWORD PTR [eax],xmm0<br>`f20f2b08` movntsd QWORD PTR [eax],xmm1<br>`f20f2b10` movntsd QWORD PTR [eax],xmm2 |
 | `movntss` | 8 | `f30f2b00` movntss DWORD PTR [eax],xmm0<br>`f30f2b08` movntss DWORD PTR [eax],xmm1<br>`f30f2b10` movntss DWORD PTR [eax],xmm2 |
-| `nop` | 24 | `0f1ac0` nop eax<br>`0f1ac8` nop eax<br>`0f1ad0` nop eax |
 | `xbeginw` | 2 | `66c7f8cccc` xbeginw 0x4b1<br>`66c738cc` xbeginw (bad),0x51c |
 
 ## Accepted by v86, #UD in QEMU
@@ -50,29 +39,30 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 ## Results that differ from QEMU's
 
-Where both ran a form without an exception (22630 forms; the time stamp counter, random numbers, cpuid, port input,
+Where both ran a form without an exception (22764 forms; the time stamp counter, random numbers, cpuid, port input,
 descriptor table addresses and FPU or XSAVE state images left out): the registers, xmm0..7 and the 64 bytes of memory
 the memory forms point at.
 
-| Mnemonic | Forms | Examples (what differs) |
-|---|---|---|
-| `enterw` | 16 | `66c8c0cccc` enterw 0xccc0,0xcc: ebp<br>`66c800cccc` enterw 0xcc00,0xcc: ebp<br>`66c8c8cccc` enterw 0xccc8,0xcc: ebp |
-| `fist` | 2 | `db10` fist DWORD PTR [eax]: memory<br>`f3db10` fist DWORD PTR [eax]: memory |
-| `fistp` | 2 | `db18` fistp DWORD PTR [eax]: memory<br>`f3db18` fistp DWORD PTR [eax]: memory |
-| `fisttp` | 4 | `db08` fisttp DWORD PTR [eax]: memory<br>`dd08` fisttp QWORD PTR [eax]: memory<br>`f3db08` fisttp DWORD PTR [eax]: memory |
-| `fst` | 8 | `d910` fst DWORD PTR [eax]: memory<br>`dd10` fst QWORD PTR [eax]: memory<br>`66d910` fst DWORD PTR [eax]: memory |
-| `fstp` | 12 | `d918` fstp DWORD PTR [eax]: memory<br>`db38` fstp TBYTE PTR [eax]: memory<br>`dd18` fstp QWORD PTR [eax]: memory |
-| `mov` | 128 | `a0c0cccccc` mov al,ds:0xccccccc0: eax<br>`a000cccccc` mov al,ds:0xcccccc00: eax<br>`a0c8cccccc` mov al,ds:0xccccccc8: eax |
+| Mnemonic | Forms | Examples (what differs) | Why |
+|---|---|---|---|
+| `enterw` | 16 | `66c8c0cccc` enterw 0xccc0,0xcc: ebp<br>`66c800cccc` enterw 0xcc00,0xcc: ebp<br>`66c8c8cccc` enterw 0xccc8,0xcc: ebp | QEMU: writes all of EBP (SDM: with a 16-bit operand size only BP) |
+| `fist` | 2 | `db10` fist DWORD PTR [eax]: memory<br>`f3db10` fist DWORD PTR [eax]: memory | QEMU: no x87 stack underflow |
+| `fistp` | 2 | `db18` fistp DWORD PTR [eax]: memory<br>`f3db18` fistp DWORD PTR [eax]: memory | QEMU: no x87 stack underflow |
+| `fisttp` | 4 | `db08` fisttp DWORD PTR [eax]: memory<br>`dd08` fisttp QWORD PTR [eax]: memory<br>`f3db08` fisttp DWORD PTR [eax]: memory | QEMU: no x87 stack underflow |
+| `fnsavew` | 1 | `66dd30` fnsavew [eax]: memory | QEMU: an MMX write leaves the exponent field (SDM: bits 64..79 become all ones, as in v86) |
+| `fst` | 8 | `d910` fst DWORD PTR [eax]: memory<br>`dd10` fst QWORD PTR [eax]: memory<br>`66d910` fst DWORD PTR [eax]: memory | QEMU: no x87 stack underflow (stores an empty register's stale bits; v86 stores the indefinite, as CPUs) |
+| `fstp` | 12 | `d918` fstp DWORD PTR [eax]: memory<br>`db38` fstp TBYTE PTR [eax]: memory<br>`dd18` fstp QWORD PTR [eax]: memory | QEMU: no x87 stack underflow |
+| `mov` | 128 | `a0c0cccccc` mov al,ds:0xccccccc0: eax<br>`a000cccccc` mov al,ds:0xcccccc00: eax<br>`a0c8cccccc` mov al,ds:0xccccccc8: eax | reads beyond the end of RAM (unmapped memory reads differently) |
 
 ## Only the arithmetic flags differ
 
 (CF PF AF ZF SF OF DF; many instructions leave some of them undefined, so not every one of these is a bug)
 
-| Mnemonic | Forms | Examples (flags that differ) |
-|---|---|---|
-| `fcomi` | 2 | `dbf0` fcomi st,st(0): flags 5<br>`f3dbf0` fcomi st,st(0): flags 5 |
-| `fucomi` | 2 | `dbe8` fucomi st,st(0): flags 5<br>`f3dbe8` fucomi st,st(0): flags 5 |
-| `rcl` | 6 | `c1d0cc` rcl eax,0xcc: flags 800<br>`d310` rcl DWORD PTR [eax],cl: flags 800<br>`f2c1d0cc` rcl eax,0xcc: flags 800 |
-| `shld` | 24 | `0fa4c0cc` shld eax,eax,0xcc: flags 800<br>`0fa4c8cc` shld eax,ecx,0xcc: flags 800<br>`0fa4d0cc` shld eax,edx,0xcc: flags 800 |
-| `shrd` | 16 | `0facd0cc` shrd eax,edx,0xcc: flags 800<br>`0fac10cc` shrd DWORD PTR [eax],edx,0xcc: flags 800<br>`0fadc8` shrd eax,ecx,cl: flags 800 |
-| `tzcnt` | 16 | `f30fbcc0` tzcnt eax,eax: flags 4<br>`f30fbc00` tzcnt eax,DWORD PTR [eax]: flags 4<br>`f30fbcc8` tzcnt ecx,eax: flags 4 |
+| Mnemonic | Forms | Examples (flags that differ) | Why |
+|---|---|---|---|
+| `fcomi` | 2 | `dbf0` fcomi st,st(0): flags 5<br>`f3dbf0` fcomi st,st(0): flags 5 | QEMU: no x87 stack underflow (v86: unordered) |
+| `fucomi` | 2 | `dbe8` fucomi st,st(0): flags 5<br>`f3dbe8` fucomi st,st(0): flags 5 | QEMU: no x87 stack underflow (v86: unordered) |
+| `rcl` | 6 | `c1d0cc` rcl eax,0xcc: flags 800<br>`d310` rcl DWORD PTR [eax],cl: flags 800<br>`f2c1d0cc` rcl eax,0xcc: flags 800 | OF is undefined for counts above 1 |
+| `shld` | 24 | `0fa4c0cc` shld eax,eax,0xcc: flags 800<br>`0fa4c8cc` shld eax,ecx,0xcc: flags 800<br>`0fa4d0cc` shld eax,edx,0xcc: flags 800 | OF is undefined for counts above 1 |
+| `shrd` | 16 | `0facd0cc` shrd eax,edx,0xcc: flags 800<br>`0fac10cc` shrd DWORD PTR [eax],edx,0xcc: flags 800<br>`0fadc8` shrd eax,ecx,cl: flags 800 | OF is undefined for counts above 1 |
+| `tzcnt` | 16 | `f30fbcc0` tzcnt eax,eax: flags 4<br>`f30fbc00` tzcnt eax,DWORD PTR [eax]: flags 4<br>`f30fbcc8` tzcnt ecx,eax: flags 4 | without BMI1 (v86 does not report it) tzcnt is bsf: ZF/CF differ by design |

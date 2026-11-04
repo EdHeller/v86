@@ -765,10 +765,11 @@ pub unsafe fn instr_0F18_mem(_addr: i32, _r: i32) {
 pub unsafe fn instr_0F19_reg(_r1: i32, _r2: i32) {}
 pub unsafe fn instr_0F19_mem(_addr: i32, _r: i32) {}
 
-#[no_mangle]
-pub unsafe fn instr_0F1A() { undefined_instruction(); }
-#[no_mangle]
-pub unsafe fn instr_0F1B() { undefined_instruction(); }
+// hint NOPs (MPX's bnd* where MPX exists)
+pub unsafe fn instr_0F1A_reg(_r1: i32, _r2: i32) {}
+pub unsafe fn instr_0F1A_mem(_addr: i32, _r: i32) {}
+pub unsafe fn instr_0F1B_reg(_r1: i32, _r2: i32) {}
+pub unsafe fn instr_0F1B_mem(_addr: i32, _r: i32) {}
 
 pub unsafe fn instr_0F1C_reg(_r1: i32, _r2: i32) {}
 pub unsafe fn instr_0F1C_mem(_addr: i32, _r: i32) {}

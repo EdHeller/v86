@@ -684,12 +684,22 @@ match opcode {
         }
     },
     0x1A | 0x11A => {
-        instructions_0f::instr_0F1A();
-        after_block_boundary();
+        let modrm_byte = match read_imm8() { Ok(o) => o, Err(()) => return };
+        if modrm_byte < 0xC0 {
+            instructions_0f::instr_0F1A_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+        }
+        else {
+            instructions_0f::instr_0F1A_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+        }
     },
     0x1B | 0x11B => {
-        instructions_0f::instr_0F1B();
-        after_block_boundary();
+        let modrm_byte = match read_imm8() { Ok(o) => o, Err(()) => return };
+        if modrm_byte < 0xC0 {
+            instructions_0f::instr_0F1B_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return }, (modrm_byte >> 3 & 7 | rex_r()));
+        }
+        else {
+            instructions_0f::instr_0F1B_reg((modrm_byte & 7 | rex_b()), (modrm_byte >> 3 & 7 | rex_r()));
+        }
     },
     0x1C | 0x11C => {
         let modrm_byte = match read_imm8() { Ok(o) => o, Err(()) => return };

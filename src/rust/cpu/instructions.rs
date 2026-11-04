@@ -2004,10 +2004,7 @@ pub unsafe fn instr_DF_0_mem(addr: i32) { fpu_fildm16(addr) }
 pub unsafe fn instr_DF_1_mem(addr: i32) { fpu_fisttpm16(addr); }
 pub unsafe fn instr_DF_2_mem(addr: i32) { fpu_fistm16(addr); }
 pub unsafe fn instr_DF_3_mem(addr: i32) { fpu_fistm16p(addr); }
-pub unsafe fn instr_DF_4_mem(_addr: i32) {
-    dbg_log!("fbld");
-    fpu_unimpl();
-}
+pub unsafe fn instr_DF_4_mem(addr: i32) { fpu_fbld(addr); }
 pub unsafe fn instr_DF_5_mem(addr: i32) { fpu_fildm64(addr); }
 pub unsafe fn instr_DF_6_mem(addr: i32) {
     return_on_pagefault!(writable_or_pagefault(addr, 10));

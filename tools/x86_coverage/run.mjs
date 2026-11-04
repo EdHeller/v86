@@ -190,8 +190,21 @@ ${[...both.keys()].sort().map(m => "`" + m + "`").join(", ")}
             else if(fa !== fb) { if(!flag_diffs.has(f.mnemonic)) flag_diffs.set(f.mnemonic, []); flag_diffs.get(f.mnemonic).push([f, (fa ^ fb).toString(16)]); }
         });
     }
+    // differences checked by hand: QEMU's deviations from the SDM, and flags the SDM leaves undefined
+    const WHY = {
+        fst: "QEMU: no x87 stack underflow (stores an empty register's stale bits; v86 stores the indefinite, as CPUs)",
+        fstp: "QEMU: no x87 stack underflow", fist: "QEMU: no x87 stack underflow", fistp: "QEMU: no x87 stack underflow",
+        fisttp: "QEMU: no x87 stack underflow", fcomi: "QEMU: no x87 stack underflow (v86: unordered)",
+        fucomi: "QEMU: no x87 stack underflow (v86: unordered)",
+        fnsavew: "QEMU: an MMX write leaves the exponent field (SDM: bits 64..79 become all ones, as in v86)",
+        enterw: "QEMU: writes all of EBP (SDM: with a 16-bit operand size only BP)",
+        mov: "reads beyond the end of RAM (unmapped memory reads differently)",
+        rcl: "OF is undefined for counts above 1", shld: "OF is undefined for counts above 1",
+        shrd: "OF is undefined for counts above 1",
+        tzcnt: "without BMI1 (v86 does not report it) tzcnt is bsf: ZF/CF differ by design",
+    };
     const vlist = map => [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([m, l]) =>
-        `| \`${m}\` | ${l.length} | ${l.slice(0, 3).map(([f, w]) => "`" + f.full + "` " + f.text.replace(/\|/g, "\\|") + ": " + (Array.isArray(w) ? w.join(" ") : "flags " + w)).join("<br>")} |`).join("\n");
+        `| \`${m}\` | ${l.length} | ${l.slice(0, 3).map(([f, w]) => "`" + f.full + "` " + f.text.replace(/\|/g, "\\|") + ": " + (Array.isArray(w) ? w.join(" ") : "flags " + w)).join("<br>")} | ${WHY[m] || "**to check**"} |`).join("\n");
     md += `
 ## Results that differ from QEMU's
 
@@ -199,16 +212,16 @@ Where both ran a form without an exception (${compared} forms; the time stamp co
 descriptor table addresses and FPU or XSAVE state images left out): the registers, xmm0..7 and the 64 bytes of memory
 the memory forms point at.
 
-| Mnemonic | Forms | Examples (what differs) |
-|---|---|---|
+| Mnemonic | Forms | Examples (what differs) | Why |
+|---|---|---|---|
 ${vlist(value_diffs)}
 
 ## Only the arithmetic flags differ
 
 (CF PF AF ZF SF OF DF; many instructions leave some of them undefined, so not every one of these is a bug)
 
-| Mnemonic | Forms | Examples (flags that differ) |
-|---|---|---|
+| Mnemonic | Forms | Examples (flags that differ) | Why |
+|---|---|---|---|
 ${vlist(flag_diffs)}
 `;
     fs.writeFileSync(path.join(ROOT, `tools/x86_coverage/coverage-${bits}.md`), md);

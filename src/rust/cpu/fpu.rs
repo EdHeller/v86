@@ -521,9 +521,16 @@ pub unsafe fn fpu_fprem(ieee: bool) {
     }
 }
 
-pub unsafe fn fpu_frstor16(_addr: i32) {
-    dbg_log!("frstor16");
-    fpu_unimpl();
+/// frstor with a 16-bit operand size: the 14 byte environment, then the eight registers
+pub unsafe fn fpu_frstor16(mut addr: i32) {
+    return_on_pagefault!(readable_or_pagefault(addr, 14 + 8 * 10));
+    fpu_fldenv16(addr);
+    addr += 14;
+    for i in 0..8 {
+        let reg_index = *fpu_stack_ptr as i32 + i & 7;
+        *fpu_st.offset(reg_index as isize) = fpu_load_m80(addr).unwrap();
+        addr += 10;
+    }
 }
 pub unsafe fn fpu_frstor32(mut addr: i32) {
     return_on_pagefault!(readable_or_pagefault(addr, 28 + 8 * 10));
@@ -536,9 +543,17 @@ pub unsafe fn fpu_frstor32(mut addr: i32) {
     }
 }
 
-pub unsafe fn fpu_fsave16(_addr: i32) {
-    dbg_log!("fsave16");
-    fpu_unimpl();
+/// fsave with a 16-bit operand size: the 14 byte environment, then the eight registers (94 bytes)
+pub unsafe fn fpu_fsave16(mut addr: i32) {
+    return_on_pagefault!(writable_or_pagefault(addr, 94));
+    fpu_fstenv16(addr);
+    addr += 14;
+    for i in 0..8 {
+        let reg_index = i + *fpu_stack_ptr as i32 & 7;
+        fpu_store_m80(addr, *fpu_st.offset(reg_index as isize));
+        addr += 10;
+    }
+    fpu_finit();
 }
 pub unsafe fn fpu_fsave32(mut addr: i32) {
     return_on_pagefault!(writable_or_pagefault(addr, 108));
@@ -645,6 +660,23 @@ pub unsafe fn fpu_fstp(r: i32) {
 }
 
 #[no_mangle]
+/// fbld: an 80-bit packed BCD integer (18 digits, two per byte with the low digit in the low nibble, the sign in
+/// bit 7 of the tenth byte) pushed as a float. Digits above 9 are undefined; they count as their value here.
+pub unsafe fn fpu_fbld(addr: i32) {
+    let mut value: i64 = 0;
+    for i in (0..9).rev() {
+        let b = return_on_pagefault!(safe_read8(addr + i));
+        value = value * 100 + ((b >> 4) * 10 + (b & 15)) as i64;
+    }
+    let sign = return_on_pagefault!(safe_read8(addr + 9)) & 0x80 != 0;
+    let mut f = F80::of_i64(value);
+    if sign {
+        // (a negative zero stays negative)
+        f.sign_exponent |= 0x8000;
+    }
+    fpu_push(f);
+}
+
 pub unsafe fn fpu_fbstp(addr: i32) {
     let st0 = fpu_get_st0();
     let mut x = st0.to_i64().unsigned_abs();
