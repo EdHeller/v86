@@ -249,7 +249,10 @@ unsafe fn round() -> f64 {
     next
 }
 
-/// main_loop for machines with more than one core
+/// main_loop for machines with more than one core. Cold and never inlined: inlined into cpu::main_loop, it kept
+/// the single-core dispatcher (cycle_internal) from being inlined there, about 10-15 % of a 32-bit guest's speed
+#[cold]
+#[inline(never)]
 pub unsafe fn main_loop() -> f64 {
     let start = js::microtick();
     loop {
