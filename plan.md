@@ -88,8 +88,16 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
      them, the inline lookup -10 points on indirect, the SSE fast paths -41 points on scalar_fp.
      - ✅ Inline indirect-jump lookup (`20b72004`); ✅ dispatcher inlined again (`6721d285`, `7d89c947`); ✅ SSE fast
        paths (`684914a5`, `2fe2b6d6`); ✅ chaining with tail calls: slower, off; ✅ bigger modules: no gain.
-     - ⬜ Next: sse (+34 %: compile pxor/xorps/pand/paddd/movdqa inline as wasm SIMD instead of calling Rust),
-       spinlock (+28 %: xchg with memory), rep_small, interrupt.
+     - ✅ SSE inline with wasm SIMD (`2e5fec9b`): the bitwise and integer packed instructions are one SIMD
+       instruction; addps/subps/mulps and the scalar add/sub/mul the operation and a cheap bit check, the helper only
+       when a lane needs it; cvtsi2sd, cvttsd2si inline. The call from compiled code into the main module was the
+       cost (a trivial helper like xorps took as long as upstream's whole addsd). Here: sse +45 % -> +8 %,
+       scalar_fp +127 % -> +48 % (the micro benchmarks' values stay exact, so the inexact test runs every time;
+       with the flag set, as in real programs: sse -4 %, scalar_fp +5 %). `tests/x64/js/sse_fast_paths.js` checks
+       45 forms against the host CPU bit for bit and found three old flag bugs (sums with far apart exponents,
+       underflowing double products, conversions without flags), fixed.
+     - ⬜ Next: the user's numbers for bench6; then spinlock (+28 %: xchg with memory), rep_small, interrupt; more
+       SSE inline (movaps/movdqa, comparisons, shuffles, the remaining conversions, divs/sqrt).
 5. ⬜ **Fewer switches between JavaScript and WebAssembly** (copy/v86#924: "Port pic+apic to Rust. Allows running
    more of the main loop in Rust (fewer switches between Rust/JS)"; the PIC, APIC and I/O APIC are in Rust already).
    Every pass of the main loop still calls JavaScript: `run_hardware_timers` (the PIT, RTC, HPET, ACPI timer and the
