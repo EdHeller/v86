@@ -221,8 +221,110 @@ pub unsafe fn trigger_xm_jit(eip_offset_in_page: i32) {
     };
 }
 
+/// MXCSR as software usually leaves it: every exception masked, round to nearest, no DAZ, no FTZ (the status flags
+/// aside). Then ordinary operands and results can raise nothing but the sticky inexact flag.
+#[inline(always)]
+unsafe fn usual_mxcsr() -> bool { *mxcsr & !0x3F == 0x1F80 }
+
+/// finite and not denormal (zero is fine)
+#[inline(always)]
+fn ordinary64(x: f64) -> bool { x.is_finite() && (x == 0.0 || x.abs() >= f64::MIN_POSITIVE) }
+
+/// The common case of the packed and scalar operations without the per-element exception path: the result, or
+/// None when an operand or the result needs it (NaN, infinity, denormal, underflow, division, square root)
+#[inline(always)]
+unsafe fn fast_f64(op: Op, x: f64, y: f64, inexact: &mut bool, check_inexact: bool) -> Option<f64> {
+    if !ordinary64(x) || !ordinary64(y) {
+        return None;
+    }
+    let r = match op {
+        Op::Add => x + y,
+        Op::Sub => x - y,
+        Op::Mul => x * y,
+        Op::Min => return Some(if x < y { x } else { y }),
+        Op::Max => return Some(if x > y { x } else { y }),
+        _ => return None,
+    };
+    if !ordinary64(r) || (r == 0.0 && op == Op::Mul && x != 0.0 && y != 0.0) {
+        return None;
+    }
+    if check_inexact {
+        *inexact |= match op {
+            Op::Add | Op::Sub => {
+                let y = if op == Op::Sub { -y } else { y };
+                let bb = r - x;
+                (x - (r - bb)) + (y - bb) != 0.0
+            },
+            _ => x.mul_add(y, -r) != 0.0,
+        };
+    }
+    Some(r)
+}
+
+/// The packed single precision add, subtract and multiply in the usual MXCSR state, four lanes at once with wasm
+/// SIMD: the result, or None when a lane needs the exact per-element path (an operand or the result not finite or
+/// denormal, an underflow to zero). The inexact flag is only looked for while it is still clear.
+#[cfg(target_feature = "simd128")]
+#[inline(always)]
+unsafe fn ps_fast(op: Op, d: reg128, s: reg128) -> Option<(reg128, bool)> {
+    use core::arch::wasm32::*;
+    let a: v128 = std::mem::transmute(d);
+    let b: v128 = std::mem::transmute(s);
+    let r = match op {
+        Op::Add => f32x4_add(a, b),
+        Op::Sub => f32x4_sub(a, b),
+        _ => f32x4_mul(a, b),
+    };
+    let exp = u32x4_splat(0x7F80_0000);
+    let zero = u32x4_splat(0);
+    // a lane is special when its exponent is all ones (infinity, NaN) or zero with a nonzero fraction (denormal)
+    let special = |x: v128| {
+        let e = v128_and(x, exp);
+        let mag = v128_and(x, u32x4_splat(0x7FFF_FFFF));
+        v128_or(u32x4_eq(e, exp), v128_and(u32x4_eq(e, zero), u32x4_ne(mag, zero)))
+    };
+    let mut bad = v128_or(v128_or(special(a), special(b)), special(r));
+    if op == Op::Mul {
+        // a product of nonzero numbers that became zero underflowed
+        let fz = f32x4_splat(0.0);
+        bad = v128_or(bad, v128_and(f32x4_eq(r, fz), v128_and(f32x4_ne(a, fz), f32x4_ne(b, fz))));
+    }
+    if v128_any_true(bad) {
+        return None;
+    }
+    let mut inexact = false;
+    if *mxcsr as u32 & PE == 0 {
+        // in double precision the sum, difference and product of two singles are exact
+        let hi = |x: v128| i32x4_shuffle::<2, 3, 0, 1>(x, x);
+        let exact = |x: v128, y: v128, z: v128| {
+            let (xd, yd, zd) = (f64x2_promote_low_f32x4(x), f64x2_promote_low_f32x4(y), f64x2_promote_low_f32x4(z));
+            let e = match op {
+                Op::Add => f64x2_add(xd, yd),
+                Op::Sub => f64x2_sub(xd, yd),
+                _ => f64x2_mul(xd, yd),
+            };
+            f64x2_eq(e, zd)
+        };
+        inexact = !i64x2_all_true(v128_and(exact(a, b, r), exact(hi(a), hi(b), hi(r))));
+    }
+    Some((std::mem::transmute(r), inexact))
+}
+
+#[cfg(not(target_feature = "simd128"))]
+#[inline(always)]
+unsafe fn ps_fast(_op: Op, _d: reg128, _s: reg128) -> Option<(reg128, bool)> { None }
+
 pub unsafe fn ps(op: Op, source: reg128, r: i32) {
     let d = read_xmm128s(r);
+    if usual_mxcsr() && matches!(op, Op::Add | Op::Sub | Op::Mul) {
+        if let Some((out, inexact)) = ps_fast(op, d, source) {
+            if inexact {
+                *mxcsr |= PE as i32;
+            }
+            write_xmm_reg128(r, out);
+            return;
+        }
+    }
     let mut fl = 0;
     let mut out = d;
     for i in 0..4 {
@@ -235,6 +337,28 @@ pub unsafe fn ps(op: Op, source: reg128, r: i32) {
 
 pub unsafe fn pd(op: Op, source: reg128, r: i32) {
     let d = read_xmm128s(r);
+    if usual_mxcsr() {
+        let check = *mxcsr as u32 & PE == 0;
+        let mut inexact = false;
+        let mut out = d;
+        let mut ok = true;
+        for i in 0..2 {
+            match fast_f64(op, d.f64[i], source.f64[i], &mut inexact, check) {
+                Some(v) => out.f64[i] = v,
+                None => {
+                    ok = false;
+                    break;
+                },
+            }
+        }
+        if ok {
+            if inexact {
+                *mxcsr |= PE as i32;
+            }
+            write_xmm_reg128(r, out);
+            return;
+        }
+    }
     let mut fl = 0;
     let mut out = d;
     for i in 0..2 {

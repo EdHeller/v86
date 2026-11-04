@@ -3382,7 +3382,6 @@ pub static mut TRACE_BUF: [u32; TRACE_LEN * 4] = [0; TRACE_LEN * 4];
 pub static mut TRACE_POS: u32 = 0;
 
 #[inline(always)]
-#[inline(always)]
 pub unsafe fn trace_instruction() {
     if TRACE_ON {
         trace_instruction_record();
