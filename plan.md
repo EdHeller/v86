@@ -42,12 +42,21 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
 
 1. ✅ **32-bit speed back to upstream's** (2026-11-04; `docs/releases.md`, speed note).
 
-2. ⬜ **Full instruction coverage on x86: 16-bit, 32-bit and x86_64.** List every instruction of the Intel SDM opcode
-   maps (one-byte, 0F, 0F 38, 0F 3A, x87, SSE through SSE4.2, system) for real mode, 16- and 32-bit protected mode,
-   vm86 and long mode; mark each implemented, stubbed or missing (`tools/opcode_coverage.mjs`, the test Readmes);
-   implement the gaps; test each against the host CPU or QEMU, interpreted and compiled (the nasm tests in all three
-   code sizes, the x64 fuzzer widened to SSE and x87). Done when nothing is missing and `make nasmtests`,
-   `node tests/x64/run.js` and the fuzzers are clean.
+2. ⬜ **Full instruction coverage on x86: 16-bit, 32-bit and x86_64** (in progress). The tool: `tools/x86_coverage`
+   (`reference.py`: every encoding GNU objdump decodes, per mode; `probe.mjs`: one flat binary that runs each form from
+   patterned registers and memory and records the exception, registers, flags, xmm and memory; `run.mjs 32 all`:
+   runs it in v86 and in QEMU (TCG, `-cpu max`) and writes `coverage-32.md`).
+   - ✅ 32-bit protected mode (2026-11-04): added the SSE4.2 string compares, AES-NI, SHA, ADX, lzcnt, rdtscp
+     (IA32_TSC_AUX), rdseed, monitor/mwait, clac/stac, fbld, 16-bit fsave/frstor, 16-bit movbe, hint NOPs (0F 1A/1B);
+     fixed the x87 indefinite's sign, fninit's selectors, SSE4a #UD; CPUID reports them. What only QEMU runs is
+     AMD-only (3DNow, SSE4a) or TSX; every value difference has its reason in the report (QEMU's deviations from the
+     SDM, undefined flags).
+   - ⬜ 64-bit mode: the reference has REX.W/REX.RB forms (`reference-64.json`); next a long-mode stub in `probe.mjs`
+     (4-level identity paging, 64-bit IDT, a 512 byte record per probe with r8..r15 and xmm8..15, 128 MiB of RAM)
+     and the v64 core in `run.mjs` (libv86.mjs plus libv64.js).
+   - ⬜ 16-bit code: real mode and 16-bit protected mode (16-bit addressing modes); the probe needs code segments of
+     at most 64 KiB each.
+   - ⬜ Then the JIT: run the probes hot (each form in a loop) so compiled code is compared too.
 3. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
    persistence, the VM manager). The ARM half of v64 parity is task 8.
 4. ⬜ **Speed ideas from copy/v86#924** (copy's comment of 2023-09-19). Profile first as copy suggests: the Firefox
@@ -60,15 +69,16 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
    - ⬜ c. VGA memory writes through the memory fast path (copy/v86#301).
    - ⬜ d. The boot CPU in a Web Worker (copy/v86#534, #219); the cores after the first already run in workers.
    - ⬜ e. Stack accesses: translate ESP to physical once per block when the access size is known.
-   - ⬜ f. Micro benchmarks: flat binaries (no OS) with a tight loop per instruction class (ALU, flags and jcc,
-     memory, push/pop, call/ret and indirect jumps within and across pages, string ops, SSE, x87, mul/div, page
-     walks), timed in each build, so each change is measured on what it touches. Whole-system runs on the user's
-     machine (2026-11-04, `tools/v86-bench`, 3 rounds): ours +3.5 % login and +4.8 % loop against upstream; the local
-     APIC on at reset costs about 0.4 s of boot; the variants' differences (noinline, nosse4, chain) are within the
-     round-to-round spread of 2-5 %.
-     - ✅ The inline indirect-jump lookup (`20b72004`): 3 % on the shell loop here; kept.
-     - ✅ Chaining to the next page's module with wasm tail calls: 3 % slower; off.
-     - ✅ Modules of 6 or 8 pages: no gain, a slower boot (+10 % login); 1000 blocks run V8 out of memory.
+   - ✅ f. Micro benchmarks (`tools/v86-bench/micro`, 33 benchmarks, no OS) and whole-system runs (`tools/v86-bench`);
+     packages with one improvement taken out per build. The user's machine (low noise), 2026-11-04, ours against
+     upstream: unaligned -56 %, pagewalk -43 %, tlb4k -17 %, indirect -13 %, call_deep -10 %, sysenter -10 %, call_far
+     -9 %; slower: sse +34 %, spinlock +28 %, scalar_fp +19 % (before its fma fix), rep_small +8.5 %, interrupt +6 %.
+     Whole system: shell loop +5.8 %, login +2.5 %. Taken out: the dispatcher fixes cost +42 % on the loop without
+     them, the inline lookup -10 points on indirect, the SSE fast paths -41 points on scalar_fp.
+     - ✅ Inline indirect-jump lookup (`20b72004`); ✅ dispatcher inlined again (`6721d285`, `7d89c947`); ✅ SSE fast
+       paths (`684914a5`, `2fe2b6d6`); ✅ chaining with tail calls: slower, off; ✅ bigger modules: no gain.
+     - ⬜ Next: sse (+34 %: compile pxor/xorps/pand/paddd/movdqa inline as wasm SIMD instead of calling Rust),
+       spinlock (+28 %: xchg with memory), rep_small, interrupt.
 5. ⬜ **Fewer switches between JavaScript and WebAssembly** (copy/v86#924: "Port pic+apic to Rust. Allows running
    more of the main loop in Rust (fewer switches between Rust/JS)"; the PIC, APIC and I/O APIC are in Rust already).
    Every pass of the main loop still calls JavaScript: `run_hardware_timers` (the PIT, RTC, HPET, ACPI timer and the
