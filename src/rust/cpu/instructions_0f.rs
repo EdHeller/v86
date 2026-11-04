@@ -24,7 +24,7 @@ use crate::cpu::fpu::fpu_set_tag_word;
 use crate::cpu::global_pointers::*;
 use crate::cpu::sse_fp;
 use crate::cpu::misc_instr::{
-    adjust_stack_reg, bswap, cmovcc16, cmovcc32, fxrstor, fxsave, get_stack_pointer, jmpcc16,
+    adjust_stack_reg, bswap, cmovcc16, cmovcc32, fxrstor, fxsave, get_stack_pointer, getcf, getof, jmpcc16,
     jmpcc32, push16, push32_sreg, setcc_mem, setcc_reg, test_b, test_be, test_l, test_le, test_o,
     test_p, test_s, test_z,
 };
@@ -1538,8 +1538,18 @@ pub unsafe fn instr_0F38() {
             let crc = crc32c(read_reg32(r) as u32, data as u32 as u64, bits / 8);
             write_reg32(r, crc as i32);
         },
-        (0xF0, Mandatory::None) | (0xF1, Mandatory::None) => {
-            // movbe
+        (0xF6, Mandatory::P66) | (0xF6, Mandatory::F3) => {
+            // adcx (carry flag) / adox (overflow flag): r32 += r/m32 + flag, only that flag changes
+            let src = if is_mem { return_on_pagefault!(safe_read32s(addr)) } else { read_reg32(modrm_byte & 7) };
+            let flag = if mandatory == Mandatory::P66 { FLAG_CARRY } else { FLAG_OVERFLOW };
+            let carry_in = if flag == FLAG_CARRY { getcf() } else { getof() } as u64;
+            let sum = read_reg32(r) as u32 as u64 + src as u32 as u64 + carry_in;
+            write_reg32(r, sum as i32);
+            *flags_changed &= !flag;
+            *flags = *flags & !flag | if sum >> 32 != 0 { flag } else { 0 };
+        },
+        (0xF0, Mandatory::None) | (0xF1, Mandatory::None) | (0xF0, Mandatory::P66) | (0xF1, Mandatory::P66) => {
+            // movbe (the 66 prefix is its operand size)
             if !is_mem {
                 trigger_ud();
                 return;
@@ -1583,11 +1593,33 @@ pub unsafe fn instr_0F3A() {
     let is_mem = modrm_byte < 0xC0;
     let addr = if is_mem { return_on_pagefault!(modrm_resolve(modrm_byte)) } else { 0 };
     let imm = return_on_pagefault!(read_imm8());
-    if mandatory != Mandatory::P66 && op != 0x0F {
+    if mandatory != Mandatory::P66 && op != 0x0F && !(op == 0xCC && mandatory == Mandatory::None) {
         trigger_ud();
         return;
     }
     if !task_switch_test_mmx() {
+        return;
+    }
+    if (0x60..=0x63).contains(&op) {
+        // pcmpestrm / pcmpestri / pcmpistrm / pcmpistri: no alignment needed
+        use crate::cpu::sse_0f38::pcmpstr;
+        let b = if is_mem { return_on_pagefault!(safe_read128s(addr)) } else { read_xmm128s(modrm_byte & 7) };
+        let a = read_xmm128s(r);
+        let explicit = op < 0x62;
+        let res = pcmpstr(
+            a,
+            b,
+            if explicit { Some(read_reg32(EAX) as i64) } else { None },
+            if explicit { Some(read_reg32(EDX) as i64) } else { None },
+            imm,
+        );
+        if op & 1 != 0 {
+            write_reg32(ECX, res.index(imm) as i32);
+        }
+        else {
+            write_xmm_reg128(0, res.mask(imm));
+        }
+        res.set_flags();
         return;
     }
     match op {

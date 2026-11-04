@@ -189,10 +189,26 @@ pub unsafe fn exec_0f38(op: u8, mandatory: Mandatory, r: i32, src: Src) -> OrPag
             }
             out
         }),
+        // ---- SHA extensions (no prefix; sha256rnds2 reads xmm0)
+        0xC8..=0xCD if mandatory == Mandatory::None => {
+            let sv = read128(src)?;
+            let dv = read_xmm128s(r);
+            let x0 = read_xmm128s(0);
+            let out = sha(op as u32, unsafe { dv.u32 }, unsafe { sv.u32 }, unsafe { x0.u32 }, 0);
+            write_xmm_reg128(r, reg128 { u32: out });
+            Ok(())
+        },
         // ---- SSE4.1 / SSE4.2 (all need the 66 prefix)
         _ if mandatory != Mandatory::P66 => {
             trigger_ud();
             Err(())
+        },
+        0xDB..=0xDF => {
+            // aesimc, aesenc, aesenclast, aesdec, aesdeclast
+            let key = read128(src)?;
+            let state = read_xmm128s(r);
+            write_xmm_reg128(r, to_reg(aes(op, unsafe { state.u8 }, unsafe { key.u8 }, -1)));
+            Ok(())
         },
         0x10 | 0x14 | 0x15 => {
             // pblendvb / blendvps / blendvpd with the mask in xmm0
@@ -400,6 +416,14 @@ pub unsafe fn exec_0f3a(op: u8, mandatory: Mandatory, r: i32, src: Src, imm: i32
                 to_reg(out)
             });
         },
+        0xCC if mandatory == Mandatory::None => {
+            // sha1rnds4
+            let sv = read128(src)?;
+            let dv = read_xmm128s(r);
+            let out = sha(0x1CC, unsafe { dv.u32 }, unsafe { sv.u32 }, [0; 4], imm);
+            write_xmm_reg128(r, reg128 { u32: out });
+            return Ok(());
+        },
         _ if mandatory != Mandatory::P66 => {
             trigger_ud();
             return Err(());
@@ -525,6 +549,11 @@ pub unsafe fn exec_0f3a(op: u8, mandatory: Mandatory, r: i32, src: Src, imm: i32
             }
             write_xmm_reg128(r, reg128 { u16: out });
         },
+        0xDF => {
+            // aeskeygenassist
+            let sv = read128(src)?;
+            write_xmm_reg128(r, to_reg(aes(0xDF, [0; 16], unsafe { sv.u8 }, imm & 0xFF)));
+        },
         0x44 => {
             // pclmulqdq
             let s = read128(src)?;
@@ -561,4 +590,352 @@ pub fn crc32c(mut crc: u32, data: u64, bytes: u32) -> u32 {
         }
     }
     crc
+}
+
+// ---------------------------------------------------------------------------------------------
+// AES-NI (66 0F 38 DB..DF, 66 0F 3A DF). The state is the register's 16 bytes, byte r + 4c being row r of column c.
+
+const fn xtime(x: u8) -> u8 { (x << 1) ^ if x & 0x80 != 0 { 0x1B } else { 0 } }
+
+const fn gmul(mut a: u8, mut b: u8) -> u8 {
+    let mut p = 0u8;
+    while b != 0 {
+        if b & 1 != 0 {
+            p ^= a;
+        }
+        a = xtime(a);
+        b >>= 1;
+    }
+    p
+}
+
+const fn make_sbox() -> [u8; 256] {
+    let mut s = [0u8; 256];
+    let mut x = 0;
+    while x < 256 {
+        // the multiplicative inverse (x^254), then the affine transformation
+        let mut inv = 1u8;
+        let mut k = 0;
+        while k < 254 {
+            inv = gmul(inv, x as u8);
+            k += 1;
+        }
+        if x == 0 {
+            inv = 0;
+        }
+        let b = inv;
+        s[x] = b ^ b.rotate_left(1) ^ b.rotate_left(2) ^ b.rotate_left(3) ^ b.rotate_left(4) ^ 0x63;
+        x += 1;
+    }
+    s
+}
+
+const fn make_inv_sbox(s: &[u8; 256]) -> [u8; 256] {
+    let mut inv = [0u8; 256];
+    let mut x = 0;
+    while x < 256 {
+        inv[s[x] as usize] = x as u8;
+        x += 1;
+    }
+    inv
+}
+
+static SBOX: [u8; 256] = make_sbox();
+static INV_SBOX: [u8; 256] = make_inv_sbox(&SBOX);
+
+fn shift_rows(s: [u8; 16], inverse: bool) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    for c in 0..4 {
+        for r in 0..4 {
+            let from = if inverse { (c + 4 - r) % 4 } else { (c + r) % 4 };
+            out[r + 4 * c] = s[r + 4 * from];
+        }
+    }
+    out
+}
+
+fn mix_columns(s: [u8; 16], inverse: bool) -> [u8; 16] {
+    let m: [u8; 4] = if inverse { [14, 11, 13, 9] } else { [2, 3, 1, 1] };
+    let mut out = [0u8; 16];
+    for c in 0..4 {
+        for r in 0..4 {
+            let mut v = 0;
+            for k in 0..4 {
+                v ^= gmul(m[(k + 4 - r) % 4], s[k + 4 * c]);
+            }
+            out[r + 4 * c] = v;
+        }
+    }
+    out
+}
+
+fn sub_bytes(s: [u8; 16], table: &[u8; 256]) -> [u8; 16] { s.map(|b| table[b as usize]) }
+
+fn xor16(a: [u8; 16], b: [u8; 16]) -> [u8; 16] {
+    let mut out = a;
+    for i in 0..16 {
+        out[i] ^= b[i];
+    }
+    out
+}
+
+fn sub_word(w: u32) -> u32 { u32::from_le_bytes(w.to_le_bytes().map(|b| SBOX[b as usize])) }
+
+/// aesenc, aesenclast, aesdec, aesdeclast, aesimc (0F 38 op), aeskeygenassist (`imm` given)
+pub fn aes(op: u8, state: [u8; 16], key: [u8; 16], imm: i32) -> [u8; 16] {
+    match op {
+        0xDC => xor16(mix_columns(sub_bytes(shift_rows(state, false), &SBOX), false), key),
+        0xDD => xor16(sub_bytes(shift_rows(state, false), &SBOX), key),
+        0xDE => xor16(mix_columns(sub_bytes(shift_rows(state, true), &INV_SBOX), true), key),
+        0xDF if imm < 0 => xor16(sub_bytes(shift_rows(state, true), &INV_SBOX), key),
+        0xDB => mix_columns(key, true),
+        _ => {
+            // aeskeygenassist: of the source's dwords 1 and 3
+            let x1 = u32::from_le_bytes([key[4], key[5], key[6], key[7]]);
+            let x3 = u32::from_le_bytes([key[12], key[13], key[14], key[15]]);
+            let rcon = imm as u32 & 0xFF;
+            let w = [sub_word(x1), sub_word(x1).rotate_right(8) ^ rcon, sub_word(x3), sub_word(x3).rotate_right(8) ^ rcon];
+            let mut out = [0u8; 16];
+            for i in 0..4 {
+                out[4 * i..4 * i + 4].copy_from_slice(&w[i].to_le_bytes());
+            }
+            out
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// SHA extensions (0F 38 C8..CD, 0F 3A CC); dword 3 is the register's high dword (bits 127:96)
+
+/// sha1nexte, sha1msg1, sha1msg2, sha256rnds2 (with xmm0), sha256msg1, sha256msg2; sha1rnds4 as op 0xCC + 0x100
+pub fn sha(op: u32, d: [u32; 4], s: [u32; 4], xmm0: [u32; 4], imm: i32) -> [u32; 4] {
+    match op {
+        0xC8 => [s[0], s[1], s[2], s[3].wrapping_add(d[3].rotate_left(30))],
+        0xC9 => [d[0] ^ s[2], d[1] ^ s[3], d[2] ^ d[0], d[3] ^ d[1]],
+        0xCA => {
+            let w16 = (d[3] ^ s[2]).rotate_left(1);
+            let w17 = (d[2] ^ s[1]).rotate_left(1);
+            let w18 = (d[1] ^ s[0]).rotate_left(1);
+            let w19 = (d[0] ^ w16).rotate_left(1);
+            [w19, w18, w17, w16]
+        },
+        0xCB => {
+            let (mut a, mut b, mut c, mut dd) = (s[3], s[2], d[3], d[2]);
+            let (mut e, mut f, mut g, mut h) = (s[1], s[0], d[1], d[0]);
+            for wk in [xmm0[0], xmm0[1]] {
+                let ch = (e & f) ^ (!e & g);
+                let maj = (a & b) ^ (a & c) ^ (b & c);
+                let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+                let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+                let t = ch.wrapping_add(s1).wrapping_add(wk).wrapping_add(h);
+                let a2 = t.wrapping_add(maj).wrapping_add(s0);
+                let e2 = t.wrapping_add(dd);
+                h = g;
+                g = f;
+                f = e;
+                e = e2;
+                dd = c;
+                c = b;
+                b = a;
+                a = a2;
+            }
+            [f, e, b, a]
+        },
+        0xCC => {
+            let sigma0 = |x: u32| x.rotate_right(7) ^ x.rotate_right(18) ^ x >> 3;
+            [
+                d[0].wrapping_add(sigma0(d[1])),
+                d[1].wrapping_add(sigma0(d[2])),
+                d[2].wrapping_add(sigma0(d[3])),
+                d[3].wrapping_add(sigma0(s[0])),
+            ]
+        },
+        0xCD => {
+            let sigma1 = |x: u32| x.rotate_right(17) ^ x.rotate_right(19) ^ x >> 10;
+            let w16 = d[0].wrapping_add(sigma1(s[2]));
+            let w17 = d[1].wrapping_add(sigma1(s[3]));
+            let w18 = d[2].wrapping_add(sigma1(w16));
+            let w19 = d[3].wrapping_add(sigma1(w17));
+            [w16, w17, w18, w19]
+        },
+        _ => {
+            // sha1rnds4: four rounds with the function and constant imm selects
+            let k = [0x5A827999u32, 0x6ED9EBA1, 0x8F1BBCDC, 0xCA62C1D6][(imm & 3) as usize];
+            let f = |b: u32, c: u32, dd: u32| match imm & 3 {
+                0 => (b & c) ^ (!b & dd),
+                2 => (b & c) ^ (b & dd) ^ (c & dd),
+                _ => b ^ c ^ dd,
+            };
+            let (mut a, mut b, mut c, mut dd) = (d[3], d[2], d[1], d[0]);
+            let w = [s[3], s[2], s[1], s[0]];
+            let mut e = 0;
+            for i in 0..4 {
+                let a2 = f(b, c, dd).wrapping_add(a.rotate_left(5)).wrapping_add(w[i]).wrapping_add(e).wrapping_add(k);
+                e = dd;
+                dd = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = a2;
+            }
+            [dd, c, b, a]
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// SSE4.2 string compares (66 0F 3A 60..63): the shared core; the callers read the lengths (pcmpestr*: eax, edx)
+// and write ecx, xmm0 and the flags
+
+pub struct StrCmp {
+    /// IntRes2, one bit per element
+    pub res: u32,
+    /// elements per register: 16 bytes or 8 words
+    pub n: u32,
+    pub la: u32,
+    pub lb: u32,
+}
+
+/// `la` / `lb`: the explicit lengths (pcmpestr*), None for null terminated (pcmpistr*)
+pub fn pcmpstr(a: reg128, b: reg128, la: Option<i64>, lb: Option<i64>, imm: i32) -> StrCmp {
+    let words = imm & 1 != 0;
+    let signed = imm & 2 != 0;
+    let n: u32 = if words { 8 } else { 16 };
+    let elem = |x: &reg128, i: u32| -> i32 {
+        unsafe {
+            match (words, signed) {
+                (false, false) => x.u8[i as usize] as i32,
+                (false, true) => x.i8[i as usize] as i32,
+                (true, false) => x.u16[i as usize] as i32,
+                (true, true) => x.i16[i as usize] as i32,
+            }
+        }
+    };
+    let length = |x: &reg128, explicit: Option<i64>| -> u32 {
+        match explicit {
+            Some(v) => v.unsigned_abs().min(n as u64) as u32,
+            None => (0..n).find(|&i| elem(x, i) == 0).unwrap_or(n),
+        }
+    };
+    let la = length(&a, la);
+    let lb = length(&b, lb);
+    let mut res1 = 0u32;
+    match imm >> 2 & 3 {
+        0 => {
+            // equal any: b[i] is one of a's valid elements
+            for i in 0..lb {
+                if (0..la).any(|j| elem(&a, j) == elem(&b, i)) {
+                    res1 |= 1 << i;
+                }
+            }
+        },
+        1 => {
+            // ranges: a holds pairs (low, high)
+            for i in 0..lb {
+                let v = elem(&b, i);
+                let mut j = 0;
+                while j + 1 < la {
+                    if elem(&a, j) <= v && v <= elem(&a, j + 1) {
+                        res1 |= 1 << i;
+                        break;
+                    }
+                    j += 2;
+                }
+            }
+        },
+        2 => {
+            // equal each: both invalid compares true, one invalid false
+            for i in 0..n {
+                let ok = match (i < la, i < lb) {
+                    (true, true) => elem(&a, i) == elem(&b, i),
+                    (false, false) => true,
+                    _ => false,
+                };
+                if ok {
+                    res1 |= 1 << i;
+                }
+            }
+        },
+        _ => {
+            // equal ordered: a occurs in b at i (a's invalid elements match anything, b's invalid ones nothing)
+            for i in 0..n {
+                let mut ok = true;
+                for k in 0..n - i {
+                    if k >= la {
+                        break;
+                    }
+                    if i + k >= lb || elem(&a, k) != elem(&b, i + k) {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    res1 |= 1 << i;
+                }
+            }
+        },
+    }
+    let all = (1u32 << n) - 1;
+    let res = match imm >> 4 & 3 {
+        1 => !res1 & all,
+        3 => res1 ^ ((1u32 << lb) - 1),
+        _ => res1,
+    };
+    StrCmp { res, n, la, lb }
+}
+
+impl StrCmp {
+    /// pcmpestri / pcmpistri: the index for ecx
+    pub fn index(&self, imm: i32) -> u32 {
+        if self.res == 0 {
+            self.n
+        }
+        else if imm & 0x40 != 0 {
+            31 - self.res.leading_zeros()
+        }
+        else {
+            self.res.trailing_zeros()
+        }
+    }
+
+    /// pcmpestrm / pcmpistrm: the mask for xmm0
+    pub fn mask(&self, imm: i32) -> reg128 {
+        let mut out = reg128 { u64: [0, 0] };
+        if imm & 0x40 == 0 {
+            unsafe { out.u64[0] = self.res as u64 };
+        }
+        else {
+            for i in 0..self.n {
+                if self.res >> i & 1 != 0 {
+                    unsafe {
+                        if self.n == 8 {
+                            out.u16[i as usize] = 0xFFFF;
+                        }
+                        else {
+                            out.u8[i as usize] = 0xFF;
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// CF: any match, ZF: b ended (lb < n), SF: a ended, OF: bit 0; AF and PF clear
+    pub unsafe fn set_flags(&self) {
+        let mut f = 0;
+        if self.res != 0 {
+            f |= FLAG_CARRY;
+        }
+        if self.lb < self.n {
+            f |= FLAG_ZERO;
+        }
+        if self.la < self.n {
+            f |= FLAG_SIGN;
+        }
+        if self.res & 1 != 0 {
+            f |= FLAG_OVERFLOW;
+        }
+        *flags_changed = 0;
+        *flags = *flags & !FLAGS_ALL | f;
+    }
 }

@@ -6,7 +6,7 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 - 25116 forms probed, 4086 skipped (control flow, descriptor tables, control registers, MSR writes,
   waits: covered by the hand-written tests)
-- **576 forms of 41 mnemonics run in QEMU and are #UD in v86** (missing in v86)
+- **256 forms of 21 mnemonics run in QEMU and are #UD in v86** (missing in v86)
 - 238 forms of 42 mnemonics run in v86 and are #UD in QEMU
 - 684 forms of 80 mnemonics are #UD in both (not on QEMU's CPU either: AMD-only,
   VMX/SVM outside a VM, encodings objdump accepts but CPUs do not)
@@ -15,14 +15,6 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 | Mnemonic | Forms | Examples |
 |---|---|---|
-| `adcx` | 16 | `660f38f6c1` adcx eax,ecx<br>`660f38f600` adcx eax,DWORD PTR [eax]<br>`660f38f6c9` adcx ecx,ecx |
-| `adox` | 16 | `f30f38f6c1` adox eax,ecx<br>`f30f38f600` adox eax,DWORD PTR [eax]<br>`f30f38f6c9` adox ecx,ecx |
-| `aesdec` | 16 | `660f38dec1` aesdec xmm0,xmm1<br>`660f38de00` aesdec xmm0,XMMWORD PTR [eax]<br>`660f38dec9` aesdec xmm1,xmm1 |
-| `aesdeclast` | 16 | `660f38dfc1` aesdeclast xmm0,xmm1<br>`660f38df00` aesdeclast xmm0,XMMWORD PTR [eax]<br>`660f38dfc9` aesdeclast xmm1,xmm1 |
-| `aesenc` | 16 | `660f38dcc1` aesenc xmm0,xmm1<br>`660f38dc00` aesenc xmm0,XMMWORD PTR [eax]<br>`660f38dcc9` aesenc xmm1,xmm1 |
-| `aesenclast` | 16 | `660f38ddc1` aesenclast xmm0,xmm1<br>`660f38dd00` aesenclast xmm0,XMMWORD PTR [eax]<br>`660f38ddc9` aesenclast xmm1,xmm1 |
-| `aesimc` | 16 | `660f38dbc1` aesimc xmm0,xmm1<br>`660f38db00` aesimc xmm0,XMMWORD PTR [eax]<br>`660f38dbc9` aesimc xmm1,xmm1 |
-| `aeskeygenassist` | 16 | `660f3adfc1cc` aeskeygenassist xmm0,xmm1,0xcc<br>`660f3adf00cc` aeskeygenassist xmm0,XMMWORD PTR [eax],0xcc<br>`660f3adfc9cc` aeskeygenassist xmm1,xmm1,0xcc |
 | `bndcl` | 16 | `f30f1ac0` bndcl bnd0,eax<br>`f30f1a00` bndcl bnd0,[eax]<br>`f30f1ac8` bndcl bnd1,eax |
 | `bndcn` | 16 | `f20f1bc0` bndcn bnd0,eax<br>`f20f1b00` bndcn bnd0,[eax]<br>`f20f1bc8` bndcn bnd1,eax |
 | `bndcu` | 16 | `f20f1ac0` bndcu bnd0,eax<br>`f20f1a00` bndcu bnd0,[eax]<br>`f20f1ac8` bndcu bnd1,eax |
@@ -38,22 +30,10 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 | `frstorw` | 1 | `66dd20` frstorw [eax] |
 | `insertq` | 16 | `f20f78c0cccc` insertq xmm0,xmm0,0xcc,0xcc<br>`f20f78c8cccc` insertq xmm1,xmm0,0xcc,0xcc<br>`f20f78d0cccc` insertq xmm2,xmm0,0xcc,0xcc |
 | `monitor` | 4 | `0f01c8` monitor<br>`660f01c8` monitor<br>`f20f01c8` monitor |
-| `movbe` | 16 | `660f38f000` movbe ax,WORD PTR [eax]<br>`660f38f008` movbe cx,WORD PTR [eax]<br>`660f38f010` movbe dx,WORD PTR [eax] |
 | `nop` | 24 | `0f1ac0` nop eax<br>`0f1ac8` nop eax<br>`0f1ad0` nop eax |
-| `pcmpestri` | 16 | `660f3a61c1cc` pcmpestri xmm0,xmm1,0xcc<br>`660f3a6100cc` pcmpestri xmm0,XMMWORD PTR [eax],0xcc<br>`660f3a61c9cc` pcmpestri xmm1,xmm1,0xcc |
-| `pcmpestrm` | 16 | `660f3a60c1cc` pcmpestrm xmm0,xmm1,0xcc<br>`660f3a6000cc` pcmpestrm xmm0,XMMWORD PTR [eax],0xcc<br>`660f3a60c9cc` pcmpestrm xmm1,xmm1,0xcc |
-| `pcmpistri` | 16 | `660f3a63c1cc` pcmpistri xmm0,xmm1,0xcc<br>`660f3a6300cc` pcmpistri xmm0,XMMWORD PTR [eax],0xcc<br>`660f3a63c9cc` pcmpistri xmm1,xmm1,0xcc |
-| `pcmpistrm` | 16 | `660f3a62c1cc` pcmpistrm xmm0,xmm1,0xcc<br>`660f3a6200cc` pcmpistrm xmm0,XMMWORD PTR [eax],0xcc<br>`660f3a62c9cc` pcmpistrm xmm1,xmm1,0xcc |
 | `rdpid` | 1 | `f30fc7f8` rdpid eax |
 | `rdseed` | 2 | `0fc7f8` rdseed eax<br>`660fc7f8` rdseed ax |
 | `rdtscp` | 4 | `0f01f9` rdtscp<br>`660f01f9` rdtscp<br>`f20f01f9` rdtscp |
-| `sha1msg1` | 16 | `0f38c9c1` sha1msg1 xmm0,xmm1<br>`0f38c900` sha1msg1 xmm0,XMMWORD PTR [eax]<br>`0f38c9c9` sha1msg1 xmm1,xmm1 |
-| `sha1msg2` | 16 | `0f38cac1` sha1msg2 xmm0,xmm1<br>`0f38ca00` sha1msg2 xmm0,XMMWORD PTR [eax]<br>`0f38cac9` sha1msg2 xmm1,xmm1 |
-| `sha1nexte` | 16 | `0f38c8c1` sha1nexte xmm0,xmm1<br>`0f38c800` sha1nexte xmm0,XMMWORD PTR [eax]<br>`0f38c8c9` sha1nexte xmm1,xmm1 |
-| `sha1rnds4` | 16 | `0f3accc1cc` sha1rnds4 xmm0,xmm1,0xcc<br>`0f3acc00cc` sha1rnds4 xmm0,XMMWORD PTR [eax],0xcc<br>`0f3accc9cc` sha1rnds4 xmm1,xmm1,0xcc |
-| `sha256msg1` | 16 | `0f38ccc1` sha256msg1 xmm0,xmm1<br>`0f38cc00` sha256msg1 xmm0,XMMWORD PTR [eax]<br>`0f38ccc9` sha256msg1 xmm1,xmm1 |
-| `sha256msg2` | 16 | `0f38cdc1` sha256msg2 xmm0,xmm1<br>`0f38cd00` sha256msg2 xmm0,XMMWORD PTR [eax]<br>`0f38cdc9` sha256msg2 xmm1,xmm1 |
-| `sha256rnds2` | 16 | `0f38cbc1` sha256rnds2 xmm0,xmm1,xmm0<br>`0f38cb00` sha256rnds2 xmm0,XMMWORD PTR [eax],xmm0<br>`0f38cbc9` sha256rnds2 xmm1,xmm1,xmm0 |
 | `stac` | 4 | `0f01cb` stac<br>`660f01cb` stac<br>`f20f01cb` stac |
 | `xbeginw` | 2 | `66c7f8cccc` xbeginw 0x4b1<br>`66c738cc` xbeginw (bad),0x51c |
 
