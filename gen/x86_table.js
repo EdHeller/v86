@@ -453,9 +453,9 @@ const encodings = [
     { opcode: 0x0FAE, e: 1, fixed_g: 2, reg_ud: 1, sse: 1, skip: 1, block_boundary: 1 }, // ldmxcsr
     { opcode: 0x0FAE, e: 1, fixed_g: 3, reg_ud: 1, sse: 1, skip: 1, block_boundary: 1 }, // stmxcsr
 
-    { opcode: 0x0FAE, e: 1, fixed_g: 4, reg_ud: 1, skip: 1, block_boundary: 1 }, // xsave (mem, not implemented)
+    { opcode: 0x0FAE, e: 1, fixed_g: 4, reg_ud: 1, skip: 1, block_boundary: 1, needs_prefixes: 1 }, // xsave (mem); F3: ptwrite (#UD)
     { opcode: 0x0FAE, e: 1, fixed_g: 5, skip: 1, block_boundary: 1 }, // lfence (reg, only 0), xrstor (mem)
-    { opcode: 0x0FAE, e: 1, fixed_g: 6, skip: 1, block_boundary: 1 }, // mfence (reg, only 0), xsaveopt (mem, not implemented)
+    { opcode: 0x0FAE, e: 1, fixed_g: 6, skip: 1, block_boundary: 1, needs_prefixes: 1 }, // mfence (reg, only 0), xsaveopt (mem); 66: clwb, F3: clrssbsy (#UD)
     { opcode: 0x0FAE, e: 1, fixed_g: 7, skip: 1, block_boundary: 1 }, // sfence (reg, only 0), clflush (mem)
 
     { opcode: 0x0FAF, os: 1, e: 1, mask_flags: TESTS_ASSUME_INTEL ? af | zf : sf | zf | af | pf, custom: 1 }, // imul

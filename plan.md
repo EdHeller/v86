@@ -51,9 +51,13 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
      fixed the x87 indefinite's sign, fninit's selectors, SSE4a #UD; CPUID reports them. What only QEMU runs is
      AMD-only (3DNow, SSE4a) or TSX; every value difference has its reason in the report (QEMU's deviations from the
      SDM, undefined flags).
-   - ⬜ 64-bit mode: the reference has REX.W/REX.RB forms (`reference-64.json`); next a long-mode stub in `probe.mjs`
-     (4-level identity paging, 64-bit IDT, a 512 byte record per probe with r8..r15 and xmm8..15, 128 MiB of RAM)
-     and the v64 core in `run.mjs` (libv86.mjs plus libv64.js).
+   - ✅ 64-bit long mode (2026-11-04, `run.mjs 64 all`, `coverage-64.md`, 47,632 forms): the probe runs on an IST
+     stack with a shared dump routine. Fixed in v64: `enter` (missing), lahf/sahf (and their CPUID bit), push/pop
+     fs/gs (8 bytes), REX.W over 66 for stack operations, lss/lfs/lgs with REX, swapgs with REX.B, movd r8d..r15d,
+     mm (lost the write), cvt(t)ps2pi with REX.R (wrote past mm7 and crashed the core), mmx memory forms with REX.B
+     (addressed [rax] for [r8]), 66 for fnstenv/fldenv/fnsave/frstor, fxsave64's 64-bit pointers, #UD for movnti
+     and prefetch register forms and xgetbv with a prefix; both cores: ptwrite/clrssbsy #UD, clwb. Every remaining
+     difference has its reason in the report (AMD-only, TSX, QEMU's REX-on-mmx bug, undefined flags).
    - ⬜ 16-bit code: real mode and 16-bit protected mode (16-bit addressing modes); the probe needs code segments of
      at most 64 KiB each.
    - ⬜ Then the JIT: run the probes hot (each form in a loop) so compiled code is compared too.

@@ -110,6 +110,8 @@ impl Prefixes {
     fn r(&self) -> u8 { (self.rex >> 2 & 1) << 3 }
     fn x(&self) -> u8 { (self.rex >> 1 & 1) << 3 }
     fn b(&self) -> u8 { (self.rex & 1) << 3 }
+    /// The operand size of stack operations: 64, or 16 with 66 (REX.W wins over 66)
+    fn stack_size(&self) -> u32 { if self.osz16 && !self.w() { 16 } else { 64 } }
     fn opsize(&self) -> u32 {
         if self.w() {
             64
@@ -229,6 +231,24 @@ unsafe fn rm_write(p: &Prefixes, m: &ModRM, bits: u32, v: u64) -> OrPageFault<()
         },
         Loc::Mem(a) => mem_write(a, bits, v),
     }
+}
+
+/// Loads a data segment register (mov sreg, pop sreg, lss/lfs/lgs)
+unsafe fn load_seg64(reg: i32, sel: i32) -> OrPageFault<()> {
+    if !switch_seg(reg, sel) {
+        return Err(());
+    }
+    if (reg == FS || reg == GS) && sel & 0xFFFC != 0 {
+        // the 64-bit base is replaced by the (32-bit) base of the descriptor
+        let base = *segment_offsets.offset(reg as isize) as u32 as u64;
+        if reg == FS {
+            *fs_base = base;
+        }
+        else {
+            *gs_base = base;
+        }
+    }
+    Ok(())
 }
 
 unsafe fn push_val(v: u64, bits: u32) -> OrPageFault<()> {
@@ -605,11 +625,11 @@ unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
         0x50..=0x57 => {
             let n = (opcode & 7) | p.b();
             let v = r64(n);
-            push_val(v, if p.osz16 { 16 } else { 64 })?;
+            push_val(v, p.stack_size())?;
         },
         0x58..=0x5F => {
             let n = (opcode & 7) | p.b();
-            let bits = if p.osz16 { 16 } else { 64 };
+            let bits = p.stack_size();
             let v = pop_val(bits)?;
             set_reg(n, bits, true, v);
         },
@@ -626,11 +646,11 @@ unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
         },
         0x68 => {
             let v = fetch_imm(if p.osz16 { 16 } else { 32 })?;
-            push_val(v, if p.osz16 { 16 } else { 64 })?;
+            push_val(v, p.stack_size())?;
         },
         0x6A => {
             let v = sign_extend(fetch8()?, 8);
-            push_val(v, if p.osz16 { 16 } else { 64 })?;
+            push_val(v, p.stack_size())?;
         },
         0x69 | 0x6B => {
             let imm_len = if opcode == 0x6B { 1 } else if osz == 16 { 2 } else { 4 };
@@ -718,22 +738,10 @@ unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
                 return ud();
             }
             let sel = rm_read(&p, &m, 16)? as i32;
-            if !switch_seg(reg, sel) {
-                return Err(());
-            }
+            load_seg64(reg, sel)?;
             if reg == SS {
                 // interrupts are inhibited until the next instruction has completed
                 interrupt_shadow = true;
-            }
-            if (reg == FS || reg == GS) && sel & 0xFFFC != 0 {
-                // the 64-bit base is replaced by the (32-bit) base of the descriptor
-                let base = *segment_offsets.offset(reg as isize) as u32 as u64;
-                if reg == FS {
-                    *fs_base = base;
-                }
-                else {
-                    *gs_base = base;
-                }
             }
         },
         0x8F => {
@@ -741,7 +749,7 @@ unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
             if m.reg & 7 != 0 {
                 return ud();
             }
-            let bits = if p.osz16 { 16 } else { 64 };
+            let bits = p.stack_size();
             if let Loc::Mem(_) = m.loc {
                 // the destination write may fault: rsp is only updated once it has succeeded
                 let sp = r64(RSP);
@@ -787,12 +795,20 @@ unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
             let sign = get_reg(RAX, osz, true) >> (osz - 1) & 1 != 0;
             set_reg(RDX, osz, true, if sign { u64::MAX } else { 0 });
         },
+        // sahf / lahf (CPUID 8000_0001h ECX bit 0): SF ZF AF PF CF from or to AH
+        0x9E => {
+            let ah = (r64(RAX) >> 8 & 0xFF) as i32;
+            set_eflags_raw(get_eflags() & !0xD5 | ah & 0xD5 | 2);
+        },
+        0x9F => {
+            set_reg(4, 8, false, (get_eflags() & 0xD7 | 2) as u64);
+        },
         0x9C => {
             let f = (get_eflags() & !(FLAG_RF | FLAG_VM)) as u32 as u64;
-            push_val(f, if p.osz16 { 16 } else { 64 })?;
+            push_val(f, p.stack_size())?;
         },
         0x9D => {
-            let bits = if p.osz16 { 16 } else { 64 };
+            let bits = p.stack_size();
             let v = pop_val(bits)?;
             if bits == 16 {
                 update_eflags(*flags & !0xFFFF | v as i32 & 0xFFFF);
@@ -908,10 +924,33 @@ unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
             let v = fetch_imm(bits)?;
             rm_write(&p, &m, bits, v)?;
         },
+        0xC8 => {
+            // enter imm16, imm8: the stack is written below rsp first, rsp and rbp only change once that succeeded
+            let size = fetch16()? as u64;
+            let level = fetch8()? as u32 & 31;
+            let bits = p.stack_size();
+            let n = bits as u64 / 8;
+            let mut sp = r64(RSP).wrapping_sub(n);
+            let mut bp = r64(5);
+            mem_write(sp, bits, bp & mask(bits))?;
+            let frame = sp;
+            if level > 0 {
+                for _ in 1..level {
+                    bp = bp.wrapping_sub(n);
+                    let v = mem_read(bp, bits)?;
+                    sp = sp.wrapping_sub(n);
+                    mem_write(sp, bits, v)?;
+                }
+                sp = sp.wrapping_sub(n);
+                mem_write(sp, bits, frame & mask(bits))?;
+            }
+            set_reg(5, bits, true, frame & mask(bits));
+            set_r64(RSP, sp.wrapping_sub(size));
+        },
         0xC9 => {
             // leave
             let bp = r64(5);
-            let bits = if p.osz16 { 16 } else { 64 };
+            let bits = p.stack_size();
             set_r64(RSP, bp);
             let v = pop_val(bits)?;
             set_reg(5, bits, true, v);
@@ -1015,7 +1054,7 @@ unsafe fn exec_op(mut p: Prefixes, opcode: u8, osz: u32) -> OrPageFault<()> {
                     set_rip(target)?;
                 },
                 6 => {
-                    let bits = if p.osz16 { 16 } else { 64 };
+                    let bits = p.stack_size();
                     let v = rm_read(&p, &m, bits)?;
                     push_val(v, bits)?;
                 },
@@ -1329,7 +1368,10 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                     invlpg64(a);
                 },
                 (2, Loc::Reg(n)) => {
-                    // xgetbv / xsetbv
+                    // xgetbv / xsetbv (no 66, F2 or F3)
+                    if (n & 7) < 2 && (p.osz16 || p.rep != 0) {
+                        return ud();
+                    }
                     instructions_0f::xcr_instruction((n & 7) as i32);
                     *reg_hi.offset(0) = 0;
                     *reg_hi.offset(2) = 0;
@@ -1345,7 +1387,7 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                     *reg_hi.offset(1) = 0;
                     *reg_hi.offset(2) = 0;
                 },
-                (7, Loc::Reg(0)) => {
+                (7, Loc::Reg(n)) if n & 7 == 0 => {
                     // swapgs
                     if *cpl != 0 || !*is_64 {
                         return if *is_64 {
@@ -1380,8 +1422,11 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
             }
         },
         0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x1F | 0x0D => {
-            // prefetch / hint nops: decode the operand and do nothing
-            decode_modrm(p, 0)?;
+            // prefetch / hint nops: decode the operand and do nothing (prefetch, 0F 0D, has memory forms only)
+            let m = decode_modrm(p, 0)?;
+            if opcode == 0x0D && !matches!(m.loc, Loc::Mem(_)) {
+                return ud();
+            }
         },
         0x20 | 0x22 => {
             if *cpl != 0 {
@@ -1458,8 +1503,24 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
         0xAE => {
             let m = decode_modrm(p, 0)?;
             match (m.reg & 7, m.loc) {
-                (0, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_0_mem(w))?,
-                (1, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_1_mem(w))?,
+                // ptwrite, clrssbsy (F3: no processor trace, no shadow stacks)
+                (4 | 6, Loc::Mem(_)) if p.rep == 0xF3 => return ud(),
+                // clwb
+                (6, Loc::Mem(a)) if p.osz16 => {
+                    mem_read(a, 8)?;
+                },
+                // fxsave64 / fxrstor64 with REX.W
+                (0 | 1, Loc::Mem(a)) => {
+                    crate::cpu::misc_instr::FXSAVE_64 = p.w();
+                    let r = if m.reg & 7 == 0 {
+                        with_window(a, |w| instructions_0f::instr_0FAE_0_mem(w))
+                    }
+                    else {
+                        with_window(a, |w| instructions_0f::instr_0FAE_1_mem(w))
+                    };
+                    crate::cpu::misc_instr::FXSAVE_64 = false;
+                    r?
+                },
                 (2, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_2_mem(w))?,
                 (3, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_3_mem(w))?,
                 (4, Loc::Mem(a)) => with_window(a, |w| instructions_0f::instr_0FAE_4_mem(w))?,
@@ -1668,6 +1729,30 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                 let v = rm_read(p, &m, 32)?;
                 rm_write(p, &m, 32, v)?;
             }
+        },
+        // push fs / push gs
+        0xA0 | 0xA8 => {
+            let reg = if opcode == 0xA0 { FS } else { GS };
+            push_val(*sreg.offset(reg as isize) as u64, p.stack_size())?;
+        },
+        // pop fs / pop gs (rsp moves once the load has succeeded)
+        0xA1 | 0xA9 => {
+            let reg = if opcode == 0xA1 { FS } else { GS };
+            let bits = p.stack_size();
+            let sp = r64(RSP);
+            let sel = mem_read(sp, bits)? as i32 & 0xFFFF;
+            load_seg64(reg, sel)?;
+            set_r64(RSP, sp.wrapping_add(bits as u64 / 8));
+        },
+        // lss / lfs / lgs r, m16:16/32/64
+        0xB2 | 0xB4 | 0xB5 => {
+            let m = decode_modrm(p, 0)?;
+            let Loc::Mem(a) = m.loc else { return ud() };
+            let osz = p.opsize();
+            let offset = mem_read(a, osz)?;
+            let sel = mem_read(a.wrapping_add(osz as u64 / 8), 16)? as i32;
+            load_seg64(match opcode { 0xB2 => SS, 0xB4 => FS, _ => GS }, sel)?;
+            set_reg(m.reg, osz, true, offset);
         },
         _ => {
             if sse_gpr(p, opcode)? {
@@ -2086,9 +2171,12 @@ static mut BRIDGE_PREFIXES: Prefixes = Prefixes {
     lock: false,
 };
 static mut BRIDGE_IMM_LEN: u64 = 0;
+/// The REX bits that extend the register operands (R 4, B 1): not those of mmx and x87 registers, which have 8. The
+/// memory operand's base and index always take REX (BRIDGE_PREFIXES).
+static mut BRIDGE_REG_REX: u8 = 5;
 
-pub unsafe fn rex_b() -> i32 { (BRIDGE_PREFIXES.rex as i32 & 1) << 3 }
-pub unsafe fn rex_r() -> i32 { (BRIDGE_PREFIXES.rex as i32 & 4) << 1 }
+pub unsafe fn rex_b() -> i32 { (BRIDGE_PREFIXES.rex as i32 & BRIDGE_REG_REX as i32 & 1) << 3 }
+pub unsafe fn rex_r() -> i32 { (BRIDGE_PREFIXES.rex as i32 & BRIDGE_REG_REX as i32 & 4) << 1 }
 
 pub unsafe fn read_imm8() -> OrPageFault<i32> { Ok(fetch8()? as i32) }
 pub unsafe fn read_imm8s() -> OrPageFault<i32> { Ok(sign_extend(fetch8()?, 8) as i32) }
@@ -2120,15 +2208,34 @@ fn bridge_imm_len(opcode: u8) -> u64 {
     }
 }
 
-unsafe fn bridge_0f(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
-    // mmx instructions (no mandatory prefix) only have 8 registers, REX.R/B do not apply
-    let xmm = p.osz16
-        || p.rep != 0
-        || matches!(opcode, 0x10..=0x17 | 0x28..=0x2F | 0x50..=0x5F | 0xC2 | 0xC6);
-    BRIDGE_PREFIXES = *p;
-    if !xmm {
-        BRIDGE_PREFIXES.rex &= !5;
+/// Which register operands of a 0F instruction REX extends (R 4 for modrm.reg, B 1 for modrm.rm): mmx registers have
+/// 8, so REX applies to the xmm and general purpose registers only
+fn bridge_reg_rex(p: &Prefixes, opcode: u8) -> u8 {
+    const R: u8 = 4;
+    const B: u8 = 1;
+    match (p.rep, p.osz16, opcode) {
+        // cvtpi2ps / cvtpi2pd xmm, mm
+        (0, _, 0x2A) => R,
+        // cvt(t)ps2pi / cvt(t)pd2pi mm, xmm
+        (0, _, 0x2C | 0x2D) => B,
+        // movq2dq xmm, mm; movdq2q mm, xmm
+        (0xF3, _, 0xD6) => R,
+        (0xF2, _, 0xD6) => B,
+        // the sse forms without a prefix
+        (0, false, 0x10..=0x17 | 0x28..=0x2F | 0x50..=0x5F | 0xC2 | 0xC6) => R | B,
+        // pextrw r32, mm; pmovmskb r32, mm
+        (0, false, 0xC5 | 0xD7) => R,
+        // movd mm, r/m32; movd r/m32, mm; pinsrw mm, r/m32
+        (0, false, 0x6E | 0x7E | 0xC4) => B,
+        // the other mmx forms
+        (0, false, _) => 0,
+        _ => R | B,
     }
+}
+
+unsafe fn bridge_0f(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
+    BRIDGE_PREFIXES = *p;
+    BRIDGE_REG_REX = bridge_reg_rex(p, opcode);
     BRIDGE_IMM_LEN = bridge_imm_len(opcode);
     *prefixes = bridge_prefix_bits(p);
     let size_bit = if p.osz16 && !p.w() { 0 } else { 0x100 };
@@ -2140,9 +2247,11 @@ unsafe fn bridge_0f(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
 
 unsafe fn bridge_x87(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
     BRIDGE_PREFIXES = *p;
+    BRIDGE_REG_REX = 0;
     BRIDGE_IMM_LEN = 0;
     *prefixes = 0;
-    gen::interpreter64::run(opcode as u32 | 0x100);
+    // (66 selects the 16-bit forms of fnstenv, fldenv, fnsave and frstor)
+    gen::interpreter64::run(opcode as u32 | if p.osz16 && !p.w() { 0 } else { 0x100 });
     window_close();
     Ok(())
 }
@@ -2182,17 +2291,18 @@ unsafe fn sse_gpr(p: &Prefixes, opcode: u8) -> OrPageFault<bool> {
             let v = read_xmm64s(m.reg as i32);
             rm_write(p, &m, if wide { 64 } else { 32 }, v & mask(if wide { 64 } else { 32 }))?;
         },
-        // movd / movq mm, r/m
-        0x6E if p.rep == 0 && wide => {
+        // movd / movq mm, r/m (here, not in the generated handlers: r8..r15, and a 32-bit register write clears the
+        // upper half)
+        0x6E if p.rep == 0 => {
             let m = decode_modrm(p, 0)?;
-            let v = rm_read(p, &m, 64)?;
+            let v = rm_read(p, &m, if wide { 64 } else { 32 })?;
             write_mmx_reg64((m.reg & 7) as i32, v);
             transition_fpu_to_mmx();
         },
-        0x7E if p.rep == 0 && wide => {
+        0x7E if p.rep == 0 => {
             let m = decode_modrm(p, 0)?;
             let v = read_mmx64s((m.reg & 7) as i32);
-            rm_write(p, &m, 64, v)?;
+            rm_write(p, &m, if wide { 64 } else { 32 }, v & mask(if wide { 64 } else { 32 }))?;
             transition_fpu_to_mmx();
         },
         // cvtsi2ss / cvtsi2sd xmm, r/m32/64
@@ -2294,6 +2404,9 @@ unsafe fn sse_gpr(p: &Prefixes, opcode: u8) -> OrPageFault<bool> {
         // movnti m32/m64, r32/r64
         0xC3 => {
             let m = decode_modrm(p, 0)?;
+            if !matches!(m.loc, Loc::Mem(_)) {
+                return ud().map(|_| true);
+            }
             let bits = if wide { 64 } else { 32 };
             let v = get_reg(m.reg, bits, true);
             rm_write(p, &m, bits, v)?;

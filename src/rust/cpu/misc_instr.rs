@@ -366,6 +366,10 @@ pub unsafe fn setcc_mem(condition: bool, addr: i32) {
     return_on_pagefault!(safe_write8(addr, condition as i32));
 }
 
+/// fxsave64 / fxrstor64 (REX.W in 64-bit mode, set by the long mode bridge around the call): 64-bit instruction and
+/// data pointers at 8 and 16 in place of the 32-bit pointers and their selectors
+pub static mut FXSAVE_64: bool = false;
+
 pub unsafe fn fxsave(addr: i32) {
     if addr & 0xF != 0 {
         dbg_log!("#gp fxsave with unaligned address");
@@ -379,10 +383,16 @@ pub unsafe fn fxsave(addr: i32) {
     safe_write16(addr + 2, fpu_load_status_word().into()).unwrap();
     safe_write8(addr + 4, !*fpu_stack_empty as i32 & 0xFF).unwrap();
     safe_write16(addr + 6, *fpu_opcode).unwrap();
-    safe_write32(addr + 8, *fpu_ip).unwrap();
-    safe_write16(addr + 12, *fpu_ip_selector).unwrap();
-    safe_write32(addr + 16, *fpu_dp).unwrap();
-    safe_write16(addr + 20, *fpu_dp_selector).unwrap();
+    if FXSAVE_64 {
+        safe_write64(addr + 8, *fpu_ip as u32 as u64).unwrap();
+        safe_write64(addr + 16, *fpu_dp as u32 as u64).unwrap();
+    }
+    else {
+        safe_write32(addr + 8, *fpu_ip).unwrap();
+        safe_write32(addr + 12, *fpu_ip_selector & 0xFFFF).unwrap();
+        safe_write32(addr + 16, *fpu_dp).unwrap();
+        safe_write32(addr + 20, *fpu_dp_selector & 0xFFFF).unwrap();
+    }
 
     safe_write32(addr + 24, *mxcsr).unwrap();
     safe_write32(addr + 28, MXCSR_MASK).unwrap();
@@ -421,9 +431,11 @@ pub unsafe fn fxrstor(addr: i32) {
     *fpu_stack_empty = !safe_read8(addr + 4).unwrap() as u8;
     *fpu_opcode = safe_read16(addr + 6).unwrap();
     *fpu_ip = safe_read32s(addr + 8).unwrap();
-    *fpu_ip_selector = safe_read16(addr + 12).unwrap();
     *fpu_dp = safe_read32s(addr + 16).unwrap();
-    *fpu_dp_selector = safe_read16(addr + 20).unwrap();
+    if !FXSAVE_64 {
+        *fpu_ip_selector = safe_read16(addr + 12).unwrap();
+        *fpu_dp_selector = safe_read16(addr + 20).unwrap();
+    }
 
     set_mxcsr(new_mxcsr);
 

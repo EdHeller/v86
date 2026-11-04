@@ -3495,7 +3495,8 @@ pub unsafe fn instr_0FA2() {
                 1 << 8 | 1 << 13 | 1 << 15 | 1 << 20 | // cx8, pge, cmov, nx
                 1 << 23 | 1 << 24 | 1 << 27 | // mmx, fxsr, rdtscp
                 if LONG_MODE && long_mode_supported { 1 << 11 | 1 << 29 } else { 0 }; // syscall, long mode
-            ecx = 1 << 5; // lzcnt (abm)
+            ecx = 1 << 5 | // lzcnt (abm)
+                if LONG_MODE && long_mode_supported { 1 } else { 0 }; // lahf/sahf in 64-bit mode
         },
 
         0x40000000 => {
@@ -3704,7 +3705,14 @@ pub unsafe fn instr_0FAE_3_mem(addr: i32) {
 #[no_mangle]
 pub unsafe fn instr_0FAE_4_reg(_r: i32) { trigger_ud(); }
 #[no_mangle]
-pub unsafe fn instr_0FAE_4_mem(addr: i32) { crate::cpu::misc_instr::xsave(addr); }
+pub unsafe fn instr_0FAE_4_mem(addr: i32) {
+    if *prefixes & crate::prefix::PREFIX_F3 != 0 {
+        // ptwrite (no processor trace)
+        trigger_ud();
+        return;
+    }
+    crate::cpu::misc_instr::xsave(addr);
+}
 #[no_mangle]
 pub unsafe fn instr_0FAE_5_reg(_r: i32) {
     // lfence
@@ -3717,6 +3725,16 @@ pub unsafe fn instr_0FAE_6_reg(_r: i32) {
 }
 #[no_mangle]
 pub unsafe fn instr_0FAE_6_mem(addr: i32) {
+    if *prefixes & crate::prefix::PREFIX_F3 != 0 {
+        // clrssbsy (no shadow stacks)
+        trigger_ud();
+        return;
+    }
+    if *prefixes & crate::prefix::PREFIX_66 != 0 {
+        // clwb: as clflush, the address checks only
+        return_on_pagefault!(translate_address_read(addr));
+        return;
+    }
     // xsaveopt: same as xsave, the optimisation is optional
     crate::cpu::misc_instr::xsave(addr);
 }

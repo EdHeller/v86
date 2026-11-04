@@ -81,7 +81,8 @@ def decode(bits, cands):
             continue
         hexbytes, text = at[i]
         words = text.split()
-        while words and words[0] in PREFIX_WORDS:
+        # (a REX the instruction does not use shows as rex.W, rex.RB, ...: a prefix word too)
+        while words and (words[0].lower() in PREFIX_WORDS or re.match(r"^rex(\.[wrxb]+)?$", words[0], re.I)):
             words = words[1:]
         if not words or words[0] in ("(bad)", "int3") or text.startswith("(bad)"):
             continue
