@@ -297,50 +297,14 @@ pub unsafe fn sse_max(x: f64, y: f64) -> f64 {
 }
 
 #[no_mangle]
-pub unsafe fn sse_convert_with_truncation_f32_to_i32(x: f32) -> i32 {
-    let x = x.trunc();
-    if x >= -2147483648.0 && x < 2147483648.0 {
-        return x as i64 as i32;
-    }
-    else {
-        // TODO: Signal
-        return -0x80000000;
-    };
-}
+pub unsafe fn sse_convert_with_truncation_f32_to_i32(x: f32) -> i32 { crate::cpu::sse_fp::cvt_i32_jit(x as f64, true) }
 #[no_mangle]
-pub unsafe fn sse_convert_f32_to_i32(x: f32) -> i32 {
-    let x = sse_integer_round(x as f64);
-    if x >= -2147483648.0 && x < 2147483648.0 {
-        return x as i64 as i32;
-    }
-    else {
-        // TODO: Signal
-        return -0x80000000;
-    };
-}
+pub unsafe fn sse_convert_f32_to_i32(x: f32) -> i32 { crate::cpu::sse_fp::cvt_i32_jit(x as f64, false) }
 
 #[no_mangle]
-pub unsafe fn sse_convert_with_truncation_f64_to_i32(x: f64) -> i32 {
-    let x = x.trunc();
-    if x >= -2147483648.0 && x < 2147483648.0 {
-        return x as i64 as i32;
-    }
-    else {
-        // TODO: Signal
-        return -0x80000000;
-    };
-}
+pub unsafe fn sse_convert_with_truncation_f64_to_i32(x: f64) -> i32 { crate::cpu::sse_fp::cvt_i32_jit(x as f64, true) }
 #[no_mangle]
-pub unsafe fn sse_convert_f64_to_i32(x: f64) -> i32 {
-    let x = sse_integer_round(x);
-    if x >= -2147483648.0 && x < 2147483648.0 {
-        return x as i64 as i32;
-    }
-    else {
-        // TODO: Signal
-        return -0x80000000;
-    };
-}
+pub unsafe fn sse_convert_f64_to_i32(x: f64) -> i32 { crate::cpu::sse_fp::cvt_i32_jit(x as f64, false) }
 
 pub unsafe fn sse_integer_round(f: f64) -> f64 {
     // see fpu_integer_round

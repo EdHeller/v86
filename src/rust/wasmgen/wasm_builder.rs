@@ -92,6 +92,7 @@ pub struct WasmBuilder {
 
     free_locals_i32: Vec<WasmLocal>,
     free_locals_i64: Vec<WasmLocalI64>,
+    free_locals_v128: Vec<WasmLocalV128>,
     local_count: u8,
     pub arg_local_initial_state: WasmLocal,
 
@@ -112,6 +113,12 @@ impl WasmLocal {
 
 pub struct WasmLocalI64(u8);
 impl WasmLocalI64 {
+    pub fn idx(&self) -> u8 { self.0 }
+}
+
+/// A 128-bit SIMD local (the inline packed SSE operations)
+pub struct WasmLocalV128(u8);
+impl WasmLocalV128 {
     pub fn idx(&self) -> u8 { self.0 }
 }
 
@@ -143,6 +150,7 @@ impl WasmBuilder {
 
             free_locals_i32: Vec::with_capacity(8),
             free_locals_i64: Vec::with_capacity(8),
+            free_locals_v128: Vec::with_capacity(8),
             local_count: 0,
             arg_local_initial_state: WasmLocal(0),
             internal: Vec::new(),
@@ -175,6 +183,7 @@ impl WasmBuilder {
         self.instruction_body.clear();
         self.free_locals_i32.clear();
         self.free_locals_i64.clear();
+        self.free_locals_v128.clear();
         self.local_count = 0;
         self.internal.clear();
         self.internal_calls.clear();
@@ -214,17 +223,22 @@ impl WasmBuilder {
         self.output.push(0);
 
         dbg_assert!(
-            self.local_count as usize == self.free_locals_i32.len() + self.free_locals_i64.len(),
+            self.local_count as usize
+                == self.free_locals_i32.len() + self.free_locals_i64.len() + self.free_locals_v128.len(),
             "All locals should have been freed"
         );
 
         let free_locals_i32 = &self.free_locals_i32;
         let free_locals_i64 = &self.free_locals_i64;
+        let free_locals_v128 = &self.free_locals_v128;
 
         let locals = (0..self.local_count).map(|i| {
             let local_index = WASM_MODULE_ARGUMENT_COUNT + i;
             if free_locals_i64.iter().any(|v| v.idx() == local_index) {
                 op::TYPE_I64
+            }
+            else if free_locals_v128.iter().any(|v| v.idx() == local_index) {
+                op::TYPE_V128
             }
             else {
                 dbg_assert!(free_locals_i32.iter().any(|v| v.idx() == local_index));
@@ -789,6 +803,62 @@ impl WasmBuilder {
     pub fn get_local_i64(&mut self, local: &WasmLocalI64) {
         self.instruction_body.push(op::OP_GETLOCAL);
         self.instruction_body.push(local.idx());
+    }
+
+    #[must_use = "local allocated but not used"]
+    pub fn set_new_local_v128(&mut self) -> WasmLocalV128 {
+        let local = match self.free_locals_v128.pop() {
+            Some(local) => local,
+            None => {
+                let new_idx = self.local_count + WASM_MODULE_ARGUMENT_COUNT;
+                self.local_count += 1;
+                WasmLocalV128(new_idx)
+            },
+        };
+        self.instruction_body.push(op::OP_SETLOCAL);
+        self.instruction_body.push(local.idx());
+        local
+    }
+    pub fn free_local_v128(&mut self, local: WasmLocalV128) { self.free_locals_v128.push(local) }
+    pub fn get_local_v128(&mut self, local: &WasmLocalV128) {
+        self.instruction_body.push(op::OP_GETLOCAL);
+        self.instruction_body.push(local.idx());
+    }
+
+    /// One plain instruction by its opcode (wasm_opcodes), for code that has no named method here
+    pub fn raw_op(&mut self, opcode: u8) { self.instruction_body.push(opcode); }
+    /// A load or store by its opcode, with log2 of the alignment and the offset
+    pub fn raw_mem_op(&mut self, opcode: u8, align: u8, byte_offset: u32) {
+        self.instruction_body.push(opcode);
+        self.instruction_body.push(align);
+        write_leb_u32(&mut self.instruction_body, byte_offset);
+    }
+
+    /// A SIMD instruction (the 0xFD prefix and its opcode)
+    pub fn simd(&mut self, opcode: u32) {
+        self.instruction_body.push(0xFD);
+        write_leb_u32(&mut self.instruction_body, opcode);
+    }
+    pub fn load_aligned_v128(&mut self, byte_offset: u32) {
+        self.simd(op::SIMD_V128_LOAD);
+        self.instruction_body.push(4); // (log2 of the alignment: 16 bytes)
+        write_leb_u32(&mut self.instruction_body, byte_offset);
+    }
+    pub fn store_aligned_v128(&mut self, byte_offset: u32) {
+        self.simd(op::SIMD_V128_STORE);
+        self.instruction_body.push(4);
+        write_leb_u32(&mut self.instruction_body, byte_offset);
+    }
+    pub fn const_v128_i32x4(&mut self, v: i32) {
+        self.simd(op::SIMD_V128_CONST);
+        for _ in 0..4 {
+            self.instruction_body.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    /// i8x16.shuffle of two vectors with the lane indices `lanes`
+    pub fn shuffle_v128(&mut self, lanes: [u8; 16]) {
+        self.simd(op::SIMD_I8X16_SHUFFLE);
+        self.instruction_body.extend_from_slice(&lanes);
     }
 
     pub fn const_i32(&mut self, v: i32) {

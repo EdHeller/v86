@@ -1033,15 +1033,21 @@ pub unsafe fn instr_660F2B_mem(addr: i32, r: i32) {
     mov_r_m128_aligned(addr, r);
 }
 
+/// (the conversions to integers of the instructions below: flags into sse_fp::CVT_FLAGS)
+unsafe fn cvt_t<T: Into<f64>>(x: T) -> i32 { crate::cpu::sse_fp::cvt_i32_acc(x.into(), true) }
+unsafe fn cvt_r<T: Into<f64>>(x: T) -> i32 { crate::cpu::sse_fp::cvt_i32_acc(x.into(), false) }
+
 pub unsafe fn instr_0F2C(source: u64, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvttps2pi mm, xmm/m64
     let low = f32::from_bits(source as u32);
     let high = f32::from_bits((source >> 32) as u32);
-    write_mmx_reg64(
-        r,
-        sse_convert_with_truncation_f32_to_i32(low) as u32 as u64
-            | (sse_convert_with_truncation_f32_to_i32(high) as u32 as u64) << 32,
-    );
+    let v = cvt_t(low) as u32 as u64
+            | (cvt_t(high) as u32 as u64) << 32;
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
+    write_mmx_reg64(r, v);
     transition_fpu_to_mmx();
 }
 #[no_mangle]
@@ -1052,12 +1058,14 @@ pub unsafe fn instr_0F2C_mem(addr: i32, r: i32) {
 pub unsafe fn instr_0F2C_reg(r1: i32, r2: i32) { instr_0F2C(read_xmm64s(r1), r2); }
 
 pub unsafe fn instr_660F2C(source: reg128, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvttpd2pi mm, xmm/m128
-    write_mmx_reg64(
-        r,
-        sse_convert_with_truncation_f64_to_i32(source.f64[0]) as u32 as u64
-            | (sse_convert_with_truncation_f64_to_i32(source.f64[1]) as u32 as u64) << 32,
-    );
+    let v = cvt_t(source.f64[0]) as u32 as u64
+            | (cvt_t(source.f64[1]) as u32 as u64) << 32;
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
+    write_mmx_reg64(r, v);
     transition_fpu_to_mmx();
 }
 #[no_mangle]
@@ -1068,9 +1076,14 @@ pub unsafe fn instr_660F2C_mem(addr: i32, r: i32) {
 pub unsafe fn instr_660F2C_reg(r1: i32, r2: i32) { instr_660F2C(read_xmm128s(r1), r2); }
 
 pub unsafe fn instr_F20F2C(source: u64, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvttsd2si r32, xmm/m64
     let source = f64::from_bits(source);
-    write_reg32(r, sse_convert_with_truncation_f64_to_i32(source));
+    let v = cvt_t(source);
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
+    write_reg32(r, v);
 }
 #[no_mangle]
 pub unsafe fn instr_F20F2C_reg(r1: i32, r2: i32) { instr_F20F2C(read_xmm64s(r1), r2); }
@@ -1080,8 +1093,13 @@ pub unsafe fn instr_F20F2C_mem(addr: i32, r: i32) {
 }
 
 pub unsafe fn instr_F30F2C(source: f32, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvttss2si
-    write_reg32(r, sse_convert_with_truncation_f32_to_i32(source));
+    let v = cvt_t(source);
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
+    write_reg32(r, v);
 }
 #[no_mangle]
 pub unsafe fn instr_F30F2C_mem(addr: i32, r: i32) {
@@ -1091,12 +1109,16 @@ pub unsafe fn instr_F30F2C_mem(addr: i32, r: i32) {
 pub unsafe fn instr_F30F2C_reg(r1: i32, r2: i32) { instr_F30F2C(read_xmm_f32(r1), r2); }
 
 pub unsafe fn instr_0F2D(source: u64, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvtps2pi mm, xmm/m64
     let source: [f32; 2] = std::mem::transmute(source);
     let result = [
-        sse_convert_f32_to_i32(source[0]),
-        sse_convert_f32_to_i32(source[1]),
+        cvt_r(source[0]),
+        cvt_r(source[1]),
     ];
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
     write_mmx_reg64(r, std::mem::transmute(result));
     transition_fpu_to_mmx();
 }
@@ -1108,11 +1130,15 @@ pub unsafe fn instr_0F2D_mem(addr: i32, r: i32) {
 }
 
 pub unsafe fn instr_660F2D(source: reg128, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvtpd2pi mm, xmm/m128
     let result = [
-        sse_convert_f64_to_i32(source.f64[0]),
-        sse_convert_f64_to_i32(source.f64[1]),
+        cvt_r(source.f64[0]),
+        cvt_r(source.f64[1]),
     ];
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
     write_mmx_reg64(r, std::mem::transmute(result));
     transition_fpu_to_mmx();
 }
@@ -1123,16 +1149,26 @@ pub unsafe fn instr_660F2D_mem(addr: i32, r: i32) {
     instr_660F2D(return_on_pagefault!(safe_read128s_aligned(addr)), r);
 }
 pub unsafe fn instr_F20F2D(source: u64, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvtsd2si r32, xmm/m64
-    write_reg32(r, sse_convert_f64_to_i32(f64::from_bits(source)));
+    let v = cvt_r(f64::from_bits(source));
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
+    write_reg32(r, v);
 }
 pub unsafe fn instr_F20F2D_reg(r1: i32, r2: i32) { instr_F20F2D(read_xmm64s(r1), r2); }
 pub unsafe fn instr_F20F2D_mem(addr: i32, r: i32) {
     instr_F20F2D(return_on_pagefault!(safe_read64s(addr)), r);
 }
 pub unsafe fn instr_F30F2D(source: f32, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvtss2si r32, xmm1/m32
-    write_reg32(r, sse_convert_f32_to_i32(source));
+    let v = cvt_r(source);
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
+    write_reg32(r, v);
 }
 pub unsafe fn instr_F30F2D_reg(r1: i32, r2: i32) { instr_F30F2D(read_xmm_f32(r1), r2); }
 pub unsafe fn instr_F30F2D_mem(addr: i32, r: i32) {
@@ -2144,16 +2180,20 @@ pub unsafe fn instr_0F5B_mem(addr: i32, r: i32) {
 }
 #[no_mangle]
 pub unsafe fn instr_660F5B(source: reg128, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvtps2dq xmm1, xmm2/m128
     let result = reg128 {
         i32: [
             // XXX: Precision exception
-            sse_convert_f32_to_i32(source.f32[0]),
-            sse_convert_f32_to_i32(source.f32[1]),
-            sse_convert_f32_to_i32(source.f32[2]),
-            sse_convert_f32_to_i32(source.f32[3]),
+            cvt_r(source.f32[0]),
+            cvt_r(source.f32[1]),
+            cvt_r(source.f32[2]),
+            cvt_r(source.f32[3]),
         ],
     };
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
     write_xmm_reg128(r, result);
 }
 pub unsafe fn instr_660F5B_reg(r1: i32, r2: i32) { instr_660F5B(read_xmm128s(r1), r2); }
@@ -2162,15 +2202,19 @@ pub unsafe fn instr_660F5B_mem(addr: i32, r: i32) {
 }
 #[no_mangle]
 pub unsafe fn instr_F30F5B(source: reg128, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvttps2dq xmm1, xmm2/m128
     let result = reg128 {
         i32: [
-            sse_convert_with_truncation_f32_to_i32(source.f32[0]),
-            sse_convert_with_truncation_f32_to_i32(source.f32[1]),
-            sse_convert_with_truncation_f32_to_i32(source.f32[2]),
-            sse_convert_with_truncation_f32_to_i32(source.f32[3]),
+            cvt_t(source.f32[0]),
+            cvt_t(source.f32[1]),
+            cvt_t(source.f32[2]),
+            cvt_t(source.f32[3]),
         ],
     };
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
     write_xmm_reg128(r, result);
 }
 pub unsafe fn instr_F30F5B_reg(r1: i32, r2: i32) { instr_F30F5B(read_xmm128s(r1), r2); }
@@ -4777,15 +4821,19 @@ pub unsafe fn instr_0FE6_reg(_r1: i32, _r2: i32) { trigger_ud(); }
 
 #[no_mangle]
 pub unsafe fn instr_660FE6(source: reg128, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvttpd2dq xmm1, xmm2/m128
     let result = reg128 {
         i32: [
-            sse_convert_with_truncation_f64_to_i32(source.f64[0]),
-            sse_convert_with_truncation_f64_to_i32(source.f64[1]),
+            cvt_t(source.f64[0]),
+            cvt_t(source.f64[1]),
             0,
             0,
         ],
     };
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
     write_xmm_reg128(r, result);
 }
 pub unsafe fn instr_660FE6_mem(addr: i32, r: i32) {
@@ -4795,16 +4843,20 @@ pub unsafe fn instr_660FE6_reg(r1: i32, r2: i32) { instr_660FE6(read_xmm128s(r1)
 
 #[no_mangle]
 pub unsafe fn instr_F20FE6(source: reg128, r: i32) {
+    crate::cpu::sse_fp::CVT_FLAGS = 0;
     // cvtpd2dq xmm1, xmm2/m128
     let result = reg128 {
         i32: [
             // XXX: Precision exception
-            sse_convert_f64_to_i32(source.f64[0]),
-            sse_convert_f64_to_i32(source.f64[1]),
+            cvt_r(source.f64[0]),
+            cvt_r(source.f64[1]),
             0,
             0,
         ],
     };
+    if !crate::cpu::sse_fp::commit(crate::cpu::sse_fp::CVT_FLAGS) {
+        return;
+    }
     write_xmm_reg128(r, result);
 }
 pub unsafe fn instr_F20FE6_mem(addr: i32, r: i32) {

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // EXPECT: pass
 // DESC: the fast paths of addps/subps/mulps (wasm SIMD, NaN and infinity rules, MXCSR flags) give what the exact
-// per-element path gives, bit for bit, results and MXCSR, on random and special operands, interpreted and compiled
+// per-element path gives, bit for bit, results and MXCSR, on random and special operands, interpreted and compiled;
+// and the exact path what the host CPU gives (on x86 with a C compiler)
 
 import fs from "node:fs";
 import url from "node:url";
@@ -12,7 +13,14 @@ const __dirname = url.fileURLToPath(new URL(".", import.meta.url));
 process.on("unhandledRejection", exn => { throw exn; });
 
 const N = 60000, IN = 0x100000, OUT = 0x800000;
-const OPS = ["addps", "subps", "mulps", "addpd", "subpd", "mulpd", "addss", "mulss", "addsd", "mulsd"];
+// (" m": the memory form, " s": the same register twice); the bitwise and integer ones are compiled inline too
+const OPS = ["addps", "subps", "mulps", "addpd", "subpd", "mulpd", "addss", "subss", "mulss", "addsd", "subsd", "mulsd",
+    "addps m", "mulps m", "addss m", "mulss m", "subsd m", "mulsd m",
+    "xorps", "andps", "andnps", "orps", "pxor", "pand", "pandn", "por", "xorpd", "andnpd",
+    "paddb", "paddw", "paddd", "paddq", "psubb", "psubw", "psubd", "psubq",
+    "pxor m", "pandn m", "paddd m", "xorps s", "pxor s", "psubd s", "andps s",
+    // (" r": through eax, as cvttsd2si eax, xmm0 / cvtsi2sd xmm0, eax)
+    "cvttsd2si r", "cvtsi2sd r"];
 const tmp = fs.mkdtempSync("/tmp/v86-sse-");
 fs.writeFileSync(tmp + "/t.asm", `
 bits 16
@@ -49,7 +57,37 @@ pm:
     stmxcsr [edi + k * 20 + 16]
 %assign k k + 1
 %endmacro
-${OPS.map(o => "    one " + o).join("\n")}
+%macro onem 1
+    ldmxcsr [esi + 32]
+    movups xmm0, [esi]
+    %1 xmm0, [esi + 16]
+    movups [edi + k * 20], xmm0
+    stmxcsr [edi + k * 20 + 16]
+%assign k k + 1
+%endmacro
+%macro oner 1
+    ldmxcsr [esi + 32]
+    movups xmm0, [esi]
+%ifidn %1, cvttsd2si
+    cvttsd2si eax, xmm0
+    movd xmm0, eax
+%else
+    mov eax, [esi + 16]
+    cvtsi2sd xmm0, eax
+%endif
+    movups [edi + k * 20], xmm0
+    stmxcsr [edi + k * 20 + 16]
+%assign k k + 1
+%endmacro
+%macro ones 1
+    ldmxcsr [esi + 32]
+    movups xmm0, [esi]
+    %1 xmm0, xmm0
+    movups [edi + k * 20], xmm0
+    stmxcsr [edi + k * 20 + 16]
+%assign k k + 1
+%endmacro
+${OPS.map(o => "    " + ({ m: "onem", s: "ones", r: "oner" }[o.slice(-1)] && o[o.length - 2] === " " ? { m: "onem", s: "ones", r: "oner" }[o.slice(-1)] + " " + o.slice(0, -2) : "one " + o)).join("\n")}
     add esi, 48
     add edi, ${OPS.length * 20}
     dec ecx
@@ -96,7 +134,7 @@ for(let i = 0; i < N; i++)
 
 async function run(fast_off, jit)
 {
-    const emulator = new V86({ autostart: false, memory_size: 32 << 20, cpu_type: "x86", log_level: 0, disable_jit: !jit });
+    const emulator = new V86({ autostart: false, memory_size: 128 << 20, cpu_type: "x86", log_level: 0, disable_jit: !jit });
     await new Promise(r => emulator.add_listener("emulator-loaded", r));
     const cpu = emulator.v86.cpu;
     cpu.wm.exports["set_jit_config"](60, fast_off ? 1 : 0);
@@ -119,7 +157,60 @@ async function run(fast_off, jit)
 }
 
 const exact = await run(true, false);
+// the exact path against the host CPU (x86 with a C compiler): the same instructions on the same operands
 let failed = 0;
+let native = "";
+if(process.arch === "x64" && !process.env.NO_NATIVE)
+{
+    const ops = OPS.map((o, k) => o.endsWith(" m") ? `ONEM(${k}, "${o.slice(0, -2)}");` :
+        o.endsWith(" s") ? `ONES(${k}, "${o.slice(0, -2)}");` :
+        o === "cvttsd2si r" ? `ONER(${k}, "cvttsd2si %0, %%eax\\n\\tmovd %%eax, %0");` :
+        o === "cvtsi2sd r" ? `ONER(${k}, "movl 16(%3), %%eax\\n\\tcvtsi2sd %%eax, %0");` : `ONE(${k}, "${o}");`).join(" ");
+    fs.writeFileSync(tmp + "/native.c", `
+#include <stdio.h>
+#include <string.h>
+#include <immintrin.h>
+static unsigned char in[${N * 48}], out[${N * OPS.length * 20}];
+#define ONE(k, INSN) do { unsigned m = *(unsigned *)(p + 32), res; __m128 a, b; memcpy(&a, p, 16); \\
+    memcpy(&b, p + 16, 16); __asm__ volatile("ldmxcsr %2\\n\\t" INSN " %1, %0\\n\\tstmxcsr %3" \\
+    : "+x"(a) : "x"(b), "m"(m), "m"(res)); memcpy(o + k * 20, &a, 16); memcpy(o + k * 20 + 16, &res, 4); } while(0)
+#define ONER(k, INSN) do { unsigned m = *(unsigned *)(p + 32), res; __m128 a; memcpy(&a, p, 16); \\
+    __asm__ volatile("ldmxcsr %1\\n\\t" INSN "\\n\\tstmxcsr %2" \\
+    : "+x"(a) : "m"(m), "m"(res), "r"(p) : "eax"); memcpy(o + k * 20, &a, 16); memcpy(o + k * 20 + 16, &res, 4); } while(0)
+#define ONES(k, INSN) do { unsigned m = *(unsigned *)(p + 32), res; __m128 a; memcpy(&a, p, 16); \\
+    __asm__ volatile("ldmxcsr %1\\n\\t" INSN " %0, %0\\n\\tstmxcsr %2" \\
+    : "+x"(a) : "m"(m), "m"(res)); memcpy(o + k * 20, &a, 16); memcpy(o + k * 20 + 16, &res, 4); } while(0)
+#define ONEM(k, INSN) do { unsigned m = *(unsigned *)(p + 32), res; __m128 a, b; memcpy(&a, p, 16); \\
+    memcpy(&b, p + 16, 16); __asm__ volatile("ldmxcsr %2\\n\\t" INSN " %1, %0\\n\\tstmxcsr %3" \\
+    : "+x"(a) : "m"(b), "m"(m), "m"(res)); memcpy(o + k * 20, &a, 16); memcpy(o + k * 20 + 16, &res, 4); } while(0)
+int main(void) {
+    if(fread(in, 1, sizeof in, stdin) != sizeof in) return 1;
+    for(int i = 0; i < ${N}; i++) { unsigned char *p = in + i * 48, *o = out + i * ${OPS.length * 20}; ${ops} }
+    fwrite(out, 1, sizeof out, stdout);
+    return 0;
+}
+`);
+    try
+    {
+        execFileSync("cc", ["-O1", "-o", tmp + "/native", tmp + "/native.c"], { stdio: "ignore" });
+        const cpu = execFileSync(tmp + "/native", { input, maxBuffer: 1 << 26 });
+        for(let i = 0; i < N * OPS.length && failed < 10; i++)
+        {
+            if(!cpu.subarray(i * 20, i * 20 + 20).equals(exact.subarray(i * 20, i * 20 + 20)))
+            {
+                const c = Math.floor(i / OPS.length);
+                console.log(`host CPU ${OPS[i % OPS.length]} case ${c}: operands ${input.subarray(c * 48, c * 48 + 36).toString("hex")}\n` +
+                    `  cpu ${cpu.subarray(i * 20, i * 20 + 20).toString("hex")}\n  v86 ${exact.subarray(i * 20, i * 20 + 20).toString("hex")}`);
+                failed++;
+            }
+        }
+        native = ", as the host CPU";
+    }
+    catch(e)
+    {
+        native = " (no C compiler: not compared with the host CPU)";
+    }
+}
 for(const [name, out] of [["interpreted", await run(false, false)], ["compiled", await run(false, true)]])
 {
     for(let i = 0; i < N * OPS.length && failed < 10; i++)
@@ -135,5 +226,5 @@ for(const [name, out] of [["interpreted", await run(false, false)], ["compiled",
     }
 }
 fs.rmSync(tmp, { recursive: true });
-console.log(failed ? "FAIL" : `${N} cases of ${OPS.length} operations: the same`);
+console.log(failed ? "FAIL" : `${N} cases of ${OPS.length} operations: the same${native}`);
 process.exit(failed ? 1 : 0);

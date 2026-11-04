@@ -16,7 +16,7 @@ use crate::regs;
 use crate::regs::{AX, BP, BX, CX, DI, DX, SI, SP};
 use crate::regs::{CS, DS, ES, FS, GS, SS};
 use crate::regs::{EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP};
-use crate::wasmgen::wasm_builder::{WasmBuilder, WasmLocal};
+use crate::wasmgen::wasm_builder::{WasmBuilder, WasmLocal, WasmLocalI64, WasmLocalV128};
 
 enum LocalOrImmediate<'a> {
     WasmLocal(&'a WasmLocal),
@@ -145,22 +145,226 @@ pub fn instr_F3_jit(ctx: &mut JitContext, instr_flags: &mut u32) {
 }
 
 fn sse_fp_exception_check(ctx: &mut JitContext, name: &str) {
-    // arithmetic instructions (sqrt, add, mul, sub, min, div, max) can raise #XM
+    // arithmetic instructions (sqrt, add, mul, sub, min, div, max) and the conversions to integers can raise #XM
     let is_arith = name.starts_with("instr_")
-        && matches!(&name[name.len() - 2..], "51" | "58" | "59" | "5C" | "5D" | "5E" | "5F");
+        && matches!(&name[name.len() - 2..], "51" | "58" | "59" | "5C" | "5D" | "5E" | "5F" | "2C" | "2D" | "5B" | "E6");
     if is_arith {
         codegen::gen_sse_exception_check(ctx);
     }
 }
 
+
+/// addss / subss / mulss and addsd / subsd / mulsd compiled inline: the operation on the low element, and when the
+/// operands and the result are ordinary (finite, normal or zero, no underflow) and MXCSR usual, the inexact flag
+/// while it is clear (TwoSum for sums and differences, the single product in double precision; a double product
+/// with the flag clear takes the helper, which has the exact test); the helper (`name`) otherwise. The source is in
+/// the i32 or i64 local `y` (its bits). As sse_ps_arith_inline: the call from compiled code into the main module
+/// is what costs most.
+fn sse_scalar_arith_inline(ctx: &mut JitContext, name: &str, r: u32, y_bits: WasmLocalAny) {
+    use crate::wasmgen::wasm_opcodes as op;
+    let wide = &name[6..8] == "F2";
+    let kind = &name[name.len() - 2..];
+    let is_mul = kind == "59";
+    let b = &mut *ctx.builder;
+    let xmm = global_pointers::get_reg_xmm_offset(r);
+    // per width: (load, store, add, sub, mul, eq, ne, and, or, sub (int), lt_u, eq (int), reinterpret to float,
+    // reinterpret to int)
+    let (ld, st, align) = if wide { (op::OP_I64LOAD, op::OP_I64STORE, 3) } else { (op::OP_I32LOAD, op::OP_I32STORE, 2) };
+    let (fadd, fsub, fmul, fne) = if wide {
+        (op::OP_F64ADD, op::OP_F64SUB, op::OP_F64MUL, op::OP_F64NE)
+    }
+    else {
+        (op::OP_F32ADD, op::OP_F32SUB, op::OP_F32MUL, op::OP_F32NE)
+    };
+    let (iand, ior, isub, iltu, ieq) = if wide {
+        (op::OP_I64AND, op::OP_I64OR, op::OP_I64SUB, op::OP_I64LTU, op::OP_I64EQ)
+    }
+    else {
+        (op::OP_I32AND, op::OP_I32OR, op::OP_I32SUB, op::OP_I32LTU, op::OP_I32EQ)
+    };
+    let (to_f, to_i) = if wide {
+        (op::OP_F64REINTERPRETI64, op::OP_I64REINTERPRETF64)
+    }
+    else {
+        (op::OP_F32REINTERPRETI32, op::OP_I32REINTERPRETF32)
+    };
+    let konst = |b: &mut WasmBuilder, v64: i64, v32: i32| if wide { b.const_i64(v64) } else { b.const_i32(v32) };
+    let (abs_mask, min_normal, inf) = ((0x7FFF_FFFF_FFFF_FFFFi64, 0x7FFF_FFFFi32), (0x0010_0000_0000_0000i64, 0x0080_0000i32), (0x7FF0_0000_0000_0000i64, 0x7F80_0000i32));
+    let new_local = |b: &mut WasmBuilder| if wide { WasmLocalAny::I64(b.set_new_local_i64()) } else { WasmLocalAny::I32(b.set_new_local()) };
+    let get = |b: &mut WasmBuilder, l: &WasmLocalAny| match l {
+        WasmLocalAny::I64(l) => b.get_local_i64(l),
+        WasmLocalAny::I32(l) => b.get_local(l),
+    };
+
+    b.const_i32(xmm as i32);
+    b.raw_mem_op(ld, align, 0);
+    let x = new_local(b);
+    get(b, &x);
+    b.raw_op(to_f);
+    get(b, &y_bits);
+    b.raw_op(to_f);
+    b.raw_op(match kind { "58" => fadd, "5C" => fsub, _ => fmul });
+    b.raw_op(to_i);
+    let res = new_local(b);
+    let abs = |b: &mut WasmBuilder, l: &WasmLocalAny| {
+        get(b, l);
+        konst(b, abs_mask.0, abs_mask.1);
+        b.raw_op(iand);
+    };
+    // the result finite and normal, or zero (a product only when an operand was zero)
+    abs(b, &res);
+    konst(b, min_normal.0, min_normal.1);
+    b.raw_op(isub);
+    konst(b, inf.0 - min_normal.0, inf.1 - min_normal.1);
+    b.raw_op(iltu);
+    abs(b, &res);
+    konst(b, 0, 0);
+    b.raw_op(ieq);
+    if is_mul {
+        abs(b, &x);
+        konst(b, 0, 0);
+        b.raw_op(ieq);
+        abs(b, &y_bits);
+        konst(b, 0, 0);
+        b.raw_op(ieq);
+        b.raw_op(op::OP_I32OR);
+        b.raw_op(op::OP_I32AND);
+    }
+    b.raw_op(op::OP_I32OR);
+    // no denormal operand: |v| - 1 below the smallest normal - 1
+    for l in [&x, &y_bits] {
+        abs(b, l);
+        konst(b, 1, 1);
+        b.raw_op(isub);
+        konst(b, min_normal.0 - 1, min_normal.1 - 1);
+        b.raw_op(iltu);
+        b.eqz_i32();
+        b.raw_op(op::OP_I32AND);
+    }
+    b.load_fixed_i32(global_pointers::mxcsr as u32);
+    b.const_i32(if wide && is_mul { !0x1F } else { !0x3F });
+    b.and_i32();
+    // (a double product: fast only with the inexact flag already set)
+    b.const_i32(if wide && is_mul { 0x1FA0 } else { 0x1F80 });
+    b.eq_i32();
+    b.and_i32();
+    b.if_void();
+    {
+        if !(wide && is_mul) {
+            b.load_fixed_i32(global_pointers::mxcsr as u32);
+            b.const_i32(0x20);
+            b.and_i32();
+            b.eqz_i32();
+            b.if_void();
+            {
+                let f = |b: &mut WasmBuilder, l: &WasmLocalAny| {
+                    get(b, l);
+                    b.raw_op(to_f);
+                };
+                if is_mul {
+                    // the product of two singles is exact in double precision
+                    f(b, &x);
+                    b.raw_op(op::OP_F64PROMOTEF32);
+                    f(b, &y_bits);
+                    b.raw_op(op::OP_F64PROMOTEF32);
+                    b.raw_op(op::OP_F64MUL);
+                    f(b, &res);
+                    b.raw_op(op::OP_F64PROMOTEF32);
+                    b.raw_op(op::OP_F64NE);
+                }
+                else {
+                    // TwoSum: with bb = r - x, inexact when x - (r - bb) != bb - y (for x - y: != -(y + bb)... that
+                    // is != y + bb with r = x - y, bb = r - x)
+                    f(b, &x);
+                    f(b, &res);
+                    f(b, &res);
+                    f(b, &x);
+                    b.raw_op(fsub);
+                    b.raw_op(fsub);
+                    b.raw_op(fsub);
+                    // stack: x - (r - bb), bb = r - x recomputed below
+                    if kind == "58" {
+                        f(b, &res);
+                        f(b, &x);
+                        b.raw_op(fsub);
+                        f(b, &y_bits);
+                        b.raw_op(fsub);
+                    }
+                    else {
+                        f(b, &y_bits);
+                        f(b, &res);
+                        f(b, &x);
+                        b.raw_op(fsub);
+                        b.raw_op(fadd);
+                    }
+                    b.raw_op(fne);
+                }
+                b.if_void();
+                b.const_i32(global_pointers::mxcsr as i32);
+                b.load_fixed_i32(global_pointers::mxcsr as u32);
+                b.const_i32(0x20);
+                b.or_i32();
+                b.store_aligned_i32(0);
+                b.block_end();
+            }
+            b.block_end();
+        }
+        b.const_i32(xmm as i32);
+        get(b, &res);
+        b.raw_mem_op(st, align, 0);
+    }
+    b.else_();
+    {
+        get(b, &y_bits);
+        if !wide {
+            // (the single precision helpers take an f32)
+            b.raw_op(op::OP_F32REINTERPRETI32);
+        }
+        b.const_i32(r as i32);
+        if wide {
+            b.call_fn2_i64_i32(name);
+        }
+        else {
+            b.call_fn2_f32_i32(name);
+        }
+    }
+    b.block_end();
+    for l in [x, res, y_bits] {
+        match l {
+            WasmLocalAny::I64(l) => b.free_local_i64(l),
+            WasmLocalAny::I32(l) => b.free_local(l),
+        }
+    }
+    sse_fp_exception_check(ctx, name);
+}
+
+/// An i32 or an i64 local (the scalar SSE code works on either width)
+enum WasmLocalAny {
+    I32(WasmLocal),
+    I64(WasmLocalI64),
+}
+
+fn scalar_inline(name: &str) -> bool {
+    matches!(name, "instr_F30F58" | "instr_F30F5C" | "instr_F30F59" | "instr_F20F58" | "instr_F20F5C" | "instr_F20F59")
+        && !unsafe { crate::cpu::sse_fp::FAST_PATHS_OFF }
+}
 fn sse_read_f32_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read32(ctx, modrm_byte);
+    if scalar_inline(name) {
+        let y = ctx.builder.set_new_local();
+        return sse_scalar_arith_inline(ctx, name, r, WasmLocalAny::I32(y));
+    }
     ctx.builder.reinterpret_i32_as_f32();
     ctx.builder.const_i32(r as i32);
     ctx.builder.call_fn2_f32_i32(name);
     sse_fp_exception_check(ctx, name);
 }
 fn sse_read_f32_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
+    if scalar_inline(name) {
+        ctx.builder.load_fixed_i32(global_pointers::get_reg_xmm_offset(r1));
+        let y = ctx.builder.set_new_local();
+        return sse_scalar_arith_inline(ctx, name, r2, WasmLocalAny::I32(y));
+    }
     ctx.builder
         .const_i32(global_pointers::get_reg_xmm_offset(r1) as i32);
     ctx.builder.load_aligned_f32(0);
@@ -171,6 +375,10 @@ fn sse_read_f32_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
 
 fn sse_read64_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read64(ctx, modrm_byte);
+    if scalar_inline(name) {
+        let y = ctx.builder.set_new_local_i64();
+        return sse_scalar_arith_inline(ctx, name, r, WasmLocalAny::I64(y));
+    }
     ctx.builder.const_i32(r as i32);
     ctx.builder.call_fn2_i64_i32(name);
     sse_fp_exception_check(ctx, name);
@@ -179,14 +387,244 @@ fn sse_read64_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
     ctx.builder
         .const_i32(global_pointers::get_reg_xmm_offset(r1) as i32);
     ctx.builder.load_aligned_i64(0);
+    if scalar_inline(name) {
+        let y = ctx.builder.set_new_local_i64();
+        return sse_scalar_arith_inline(ctx, name, r2, WasmLocalAny::I64(y));
+    }
     ctx.builder.const_i32(r2 as i32);
     ctx.builder.call_fn2_i64_i32(name);
+    sse_fp_exception_check(ctx, name);
+}
+
+/// The packed bitwise and integer add/subtract instructions (no flags, no exceptions): one SIMD instruction inline,
+/// (operand order: destination, source) and whether the source is the left operand
+fn sse_int_simd_op(name: &str) -> Option<(u32, bool)> {
+    use crate::wasmgen::wasm_opcodes as op;
+    Some(match name {
+        "instr_0F54" | "instr_660F54" | "instr_660FDB" => (op::SIMD_V128_AND, false),
+        // andn: ~destination & source
+        "instr_0F55" | "instr_660F55" | "instr_660FDF" => (op::SIMD_V128_ANDNOT, true),
+        "instr_0F56" | "instr_660F56" | "instr_660FEB" => (op::SIMD_V128_OR, false),
+        "instr_0F57" | "instr_660F57" | "instr_660FEF" => (op::SIMD_V128_XOR, false),
+        "instr_660FFC" => (op::SIMD_I8X16_ADD, false),
+        "instr_660FFD" => (op::SIMD_I16X8_ADD, false),
+        "instr_660FFE" => (op::SIMD_I32X4_ADD, false),
+        "instr_660FD4" => (op::SIMD_I64X2_ADD, false),
+        "instr_660FF8" => (op::SIMD_I8X16_SUB, false),
+        "instr_660FF9" => (op::SIMD_I16X8_SUB, false),
+        "instr_660FFA" => (op::SIMD_I32X4_SUB, false),
+        "instr_660FFB" => (op::SIMD_I64X2_SUB, false),
+        _ => return None,
+    })
+}
+
+fn sse_int_inline(ctx: &mut JitContext, simd_op: (u32, bool), r: u32, source_reg: Option<u32>) {
+    use crate::wasmgen::wasm_opcodes as op;
+    let b = &mut *ctx.builder;
+    let dest = global_pointers::get_reg_xmm_offset(r) as i32;
+    let source = match source_reg {
+        Some(r1) => global_pointers::get_reg_xmm_offset(r1),
+        None => global_pointers::sse_scratch_register as u32,
+    } as i32;
+    b.const_i32(dest);
+    if source_reg == Some(r) && matches!(simd_op.0, op::SIMD_V128_XOR | op::SIMD_I8X16_SUB | op::SIMD_I16X8_SUB | op::SIMD_I32X4_SUB | op::SIMD_I64X2_SUB) {
+        // xorps xmm0, xmm0 and friends: zero
+        b.const_v128_i32x4(0);
+    }
+    else {
+        let (first, second) = if simd_op.1 { (source, dest) } else { (dest, source) };
+        b.const_i32(first);
+        b.load_aligned_v128(0);
+        b.const_i32(second);
+        b.load_aligned_v128(0);
+        b.simd(simd_op.0);
+    }
+    b.store_aligned_v128(0);
+}
+
+/// addps / subps / mulps compiled inline with wasm SIMD: the operation, the check that every lane is ordinary
+/// (finite, normal or zero, no underflow) and MXCSR usual (every exception masked, round to nearest, no DAZ/FTZ),
+/// the inexact flag while it is clear; the helper (`name`, the exact per-element path) only when a lane needs it.
+/// The same decisions as sse_fp::ps_fast (tests/x64/js/sse_fast_paths.js compares the paths).
+fn sse_ps_arith_inline(ctx: &mut JitContext, name: &str, r: u32, source_reg: Option<u32>) {
+    use crate::wasmgen::wasm_opcodes as op;
+    let simd_op = match &name[name.len() - 2..] {
+        "58" => op::SIMD_F32X4_ADD,
+        "5C" => op::SIMD_F32X4_SUB,
+        _ => op::SIMD_F32X4_MUL,
+    };
+    let f64_op = match simd_op {
+        op::SIMD_F32X4_ADD => op::SIMD_F64X2_ADD,
+        op::SIMD_F32X4_SUB => op::SIMD_F64X2_SUB,
+        _ => op::SIMD_F64X2_MUL,
+    };
+    let is_mul = simd_op == op::SIMD_F32X4_MUL;
+    let scratch = global_pointers::sse_scratch_register as u32;
+    let b = &mut *ctx.builder;
+    b.const_i32(global_pointers::get_reg_xmm_offset(r) as i32);
+    b.load_aligned_v128(0);
+    let a = b.set_new_local_v128();
+    b.const_i32(match source_reg {
+        Some(r1) => global_pointers::get_reg_xmm_offset(r1),
+        None => scratch,
+    } as i32);
+    b.load_aligned_v128(0);
+    let s = b.set_new_local_v128();
+    b.get_local_v128(&a);
+    b.get_local_v128(&s);
+    b.simd(simd_op);
+    let res = b.set_new_local_v128();
+
+    // (on the bits) a result lane is ordinary when it is finite and normal, or zero: |r| - 2^23 below 0x7F000000
+    // unsigned; a NaN or infinite operand always makes the result NaN or infinite. An operand is denormal when
+    // |x| - 1 is below 0x7FFFFF: the unsigned minimum of both finds one in either. A zero product is ordinary
+    // only when an operand was zero (else it underflowed).
+    let abs = |b: &mut WasmBuilder, x: &WasmLocalV128| {
+        b.get_local_v128(x);
+        b.const_v128_i32x4(0x7FFF_FFFF);
+        b.simd(op::SIMD_V128_AND);
+    };
+    abs(b, &res);
+    let ar = b.set_new_local_v128();
+    abs(b, &a);
+    let aa = b.set_new_local_v128();
+    abs(b, &s);
+    let ab = b.set_new_local_v128();
+    b.get_local_v128(&ar);
+    b.const_v128_i32x4(0x0080_0000);
+    b.simd(op::SIMD_I32X4_SUB);
+    b.const_v128_i32x4(0x7F00_0000);
+    b.simd(op::SIMD_I32X4_LT_U);
+    b.get_local_v128(&ar);
+    b.const_v128_i32x4(0);
+    b.simd(op::SIMD_I32X4_EQ);
+    if is_mul {
+        b.get_local_v128(&aa);
+        b.get_local_v128(&ab);
+        b.simd(op::SIMD_I32X4_MIN_U);
+        b.const_v128_i32x4(0);
+        b.simd(op::SIMD_I32X4_EQ);
+        b.simd(op::SIMD_V128_AND);
+    }
+    b.simd(op::SIMD_V128_OR);
+    for x in [&aa, &ab] {
+        b.get_local_v128(x);
+        b.const_v128_i32x4(1);
+        b.simd(op::SIMD_I32X4_SUB);
+    }
+    b.simd(op::SIMD_I32X4_MIN_U);
+    b.const_v128_i32x4(0x007F_FFFF);
+    b.simd(op::SIMD_I32X4_LT_U);
+    b.simd(op::SIMD_V128_ANDNOT);
+    b.free_local_v128(ar);
+    b.free_local_v128(aa);
+    b.free_local_v128(ab);
+    b.simd(op::SIMD_I32X4_ALL_TRUE);
+    b.load_fixed_i32(global_pointers::mxcsr as u32);
+    b.const_i32(!0x3F);
+    b.and_i32();
+    b.const_i32(0x1F80);
+    b.eq_i32();
+    b.and_i32();
+    b.if_void();
+    {
+        // the inexact flag while clear: in double precision the operation on two singles is exact
+        b.load_fixed_i32(global_pointers::mxcsr as u32);
+        b.const_i32(0x20);
+        b.and_i32();
+        b.eqz_i32();
+        b.if_void();
+        {
+            if is_mul {
+                // the product in double precision, half by half
+                let exact = |b: &mut WasmBuilder, high: bool| {
+                    for x in [&a, &s, &res] {
+                        b.get_local_v128(x);
+                        if high {
+                            b.get_local_v128(x);
+                            b.shuffle_v128([8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7]);
+                        }
+                        b.simd(op::SIMD_F64X2_PROMOTE_LOW_F32X4);
+                        if std::ptr::eq(x, &s) {
+                            b.simd(f64_op);
+                        }
+                    }
+                    b.simd(op::SIMD_F64X2_EQ);
+                };
+                exact(b, false);
+                exact(b, true);
+                b.simd(op::SIMD_V128_AND);
+                b.simd(op::SIMD_I64X2_ALL_TRUE);
+            }
+            else {
+                // TwoSum (exact for finite operands without overflow): with bb = r - a the rounding error of a + b is
+                // (a - (r - bb)) + (b - bb), zero exactly when a - (r - bb) == bb - b; for a - b: == -(b + bb)... with
+                // r = a - b, bb = r - a, the error is (a - (r - bb)) - (b + bb)
+                b.get_local_v128(&res);
+                b.get_local_v128(&a);
+                b.simd(op::SIMD_F32X4_SUB);
+                let bb = b.set_new_local_v128();
+                b.get_local_v128(&a);
+                b.get_local_v128(&res);
+                b.get_local_v128(&bb);
+                b.simd(op::SIMD_F32X4_SUB);
+                b.simd(op::SIMD_F32X4_SUB);
+                if f64_op == op::SIMD_F64X2_ADD {
+                    b.get_local_v128(&bb);
+                    b.get_local_v128(&s);
+                    b.simd(op::SIMD_F32X4_SUB);
+                }
+                else {
+                    b.get_local_v128(&s);
+                    b.get_local_v128(&bb);
+                    b.simd(op::SIMD_F32X4_ADD);
+                }
+                b.simd(op::SIMD_F32X4_EQ);
+                b.simd(op::SIMD_I32X4_ALL_TRUE);
+                b.free_local_v128(bb);
+            }
+            b.eqz_i32();
+            b.if_void();
+            b.const_i32(global_pointers::mxcsr as i32);
+            b.load_fixed_i32(global_pointers::mxcsr as u32);
+            b.const_i32(0x20);
+            b.or_i32();
+            b.store_aligned_i32(0);
+            b.block_end();
+        }
+        b.block_end();
+        b.const_i32(global_pointers::get_reg_xmm_offset(r) as i32);
+        b.get_local_v128(&res);
+        b.store_aligned_v128(0);
+    }
+    b.else_();
+    {
+        // the exact path: the source in the scratch register for the helper
+        if source_reg.is_some() {
+            b.const_i32(scratch as i32);
+            b.get_local_v128(&s);
+            b.store_aligned_v128(0);
+        }
+        b.const_i32(scratch as i32);
+        b.const_i32(r as i32);
+        b.call_fn2(name);
+    }
+    b.block_end();
+    b.free_local_v128(a);
+    b.free_local_v128(s);
+    b.free_local_v128(res);
     sse_fp_exception_check(ctx, name);
 }
 
 fn sse_read128_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, r: u32) {
     let dest = global_pointers::sse_scratch_register as u32;
     codegen::gen_modrm_resolve_safe_read128_aligned(ctx, modrm_byte, dest);
+    if matches!(name, "instr_0F58" | "instr_0F5C" | "instr_0F59") && !unsafe { crate::cpu::sse_fp::FAST_PATHS_OFF } {
+        return sse_ps_arith_inline(ctx, name, r, None);
+    }
+    if let Some(simd_op) = sse_int_simd_op(name) {
+        return sse_int_inline(ctx, simd_op, r, None);
+    }
     ctx.builder.const_i32(dest as i32);
     ctx.builder.const_i32(r as i32);
     ctx.builder.call_fn2(name);
@@ -207,6 +645,12 @@ fn sse_read128_xmm_mem_imm(
     ctx.builder.call_fn3(name);
 }
 fn sse_read128_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
+    if matches!(name, "instr_0F58" | "instr_0F5C" | "instr_0F59") && !unsafe { crate::cpu::sse_fp::FAST_PATHS_OFF } {
+        return sse_ps_arith_inline(ctx, name, r2, Some(r1));
+    }
+    if let Some(simd_op) = sse_int_simd_op(name) {
+        return sse_int_inline(ctx, simd_op, r2, Some(r1));
+    }
     // Make a copy to avoid aliasing problems: Called function expects a reg128, which must not
     // alias with memory
     codegen::gen_read_reg_xmm128_into_scratch(ctx, r1);
@@ -5922,15 +6366,23 @@ pub fn instr_660F2A_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     ctx.builder.const_i32(r2 as i32);
     ctx.builder.call_fn2("instr_660F2A_reg")
 }
+/// cvtsi2sd inline: every 32-bit integer is exact as a double (no flags), into the low half of the register
+fn gen_cvtsi2sd(ctx: &mut JitContext, r: u32) {
+    use crate::wasmgen::wasm_opcodes as op;
+    let v = ctx.builder.set_new_local();
+    ctx.builder.const_i32(global_pointers::get_reg_xmm_offset(r) as i32);
+    ctx.builder.get_local(&v);
+    ctx.builder.raw_op(op::OP_F64CONVERTSI32);
+    ctx.builder.raw_mem_op(op::OP_F64STORE, 3, 0);
+    ctx.builder.free_local(v);
+}
 pub fn instr_F20F2A_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read32(ctx, modrm_byte);
-    ctx.builder.const_i32(r as i32);
-    ctx.builder.call_fn2("instr_F20F2A")
+    gen_cvtsi2sd(ctx, r);
 }
 pub fn instr_F20F2A_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     codegen::gen_get_reg32(ctx, r1);
-    ctx.builder.const_i32(r2 as i32);
-    ctx.builder.call_fn2("instr_F20F2A")
+    gen_cvtsi2sd(ctx, r2);
 }
 pub fn instr_F30F2A_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read32(ctx, modrm_byte);
@@ -5956,26 +6408,81 @@ pub fn instr_660F2B_reg_jit(ctx: &mut JitContext, _r1: u32, _r2: u32) {
     codegen::gen_trigger_ud(ctx);
 }
 
+/// cvttsd2si inline: in range (-2^31 - 1 < x < 2^31, NaN is not) with the precision exception masked, truncated,
+/// inexact when it had a fraction; else the helper (invalid: the integer indefinite 0x80000000, or an unmasked
+/// exception raised before the register is written). The bits are on the stack.
+fn gen_cvttsd2si(ctx: &mut JitContext, r: u32) {
+    use crate::wasmgen::wasm_opcodes as op;
+    let bits = ctx.builder.set_new_local_i64();
+    let b = &mut *ctx.builder;
+    let x = |b: &mut WasmBuilder| {
+        b.get_local_i64(&bits);
+        b.reinterpret_i64_as_f64();
+    };
+    x(b);
+    b.const_i64(f64::to_bits(-2147483649.0) as i64);
+    b.reinterpret_i64_as_f64();
+    b.raw_op(op::OP_F64GT);
+    x(b);
+    b.const_i64(f64::to_bits(2147483648.0) as i64);
+    b.reinterpret_i64_as_f64();
+    b.raw_op(op::OP_F64LT);
+    b.and_i32();
+    b.load_fixed_i32(global_pointers::mxcsr as u32);
+    b.const_i32(1 << 12);
+    b.and_i32();
+    b.and_i32();
+    b.if_i32();
+    {
+        x(b);
+        b.raw_op(op::OP_I32TRUNCSF64);
+        let t = b.tee_new_local();
+        b.raw_op(op::OP_F64CONVERTSI32);
+        x(b);
+        b.raw_op(op::OP_F64NE);
+        b.if_void();
+        b.const_i32(global_pointers::mxcsr as i32);
+        b.load_fixed_i32(global_pointers::mxcsr as u32);
+        b.const_i32(0x20);
+        b.or_i32();
+        b.store_aligned_i32(0);
+        b.block_end();
+        b.get_local(&t);
+        b.free_local(t);
+    }
+    b.else_();
+    {
+        x(b);
+        b.call_fn1_f64_ret("sse_convert_with_truncation_f64_to_i32");
+    }
+    b.block_end();
+    ctx.builder.free_local_i64(bits);
+    let v = ctx.builder.set_new_local();
+    codegen::gen_sse_exception_check(ctx);
+    ctx.builder.get_local(&v);
+    ctx.builder.free_local(v);
+    codegen::gen_set_reg32(ctx, r);
+}
 pub fn instr_F20F2C_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read64(ctx, modrm_byte);
-    ctx.builder.reinterpret_i64_as_f64();
-    ctx.builder
-        .call_fn1_f64_ret("sse_convert_with_truncation_f64_to_i32");
-    codegen::gen_set_reg32(ctx, r);
+    gen_cvttsd2si(ctx, r);
 }
 pub fn instr_F20F2C_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     ctx.builder
         .const_i32(global_pointers::get_reg_xmm_offset(r1) as i32);
-    ctx.builder.load_aligned_f64(0);
-    ctx.builder
-        .call_fn1_f64_ret("sse_convert_with_truncation_f64_to_i32");
-    codegen::gen_set_reg32(ctx, r2);
+    ctx.builder.load_aligned_i64(0);
+    gen_cvttsd2si(ctx, r2);
 }
 pub fn instr_F30F2C_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read32(ctx, modrm_byte);
     ctx.builder.reinterpret_i32_as_f32();
     ctx.builder
         .call_fn1_f32_ret("sse_convert_with_truncation_f32_to_i32");
+    // (an unmasked exception: raised before the register is written)
+    let v = ctx.builder.set_new_local();
+    codegen::gen_sse_exception_check(ctx);
+    ctx.builder.get_local(&v);
+    ctx.builder.free_local(v);
     codegen::gen_set_reg32(ctx, r);
 }
 pub fn instr_F30F2C_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
@@ -5984,6 +6491,11 @@ pub fn instr_F30F2C_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     ctx.builder.load_aligned_f32(0);
     ctx.builder
         .call_fn1_f32_ret("sse_convert_with_truncation_f32_to_i32");
+    // (an unmasked exception: raised before the register is written)
+    let v = ctx.builder.set_new_local();
+    codegen::gen_sse_exception_check(ctx);
+    ctx.builder.get_local(&v);
+    ctx.builder.free_local(v);
     codegen::gen_set_reg32(ctx, r2);
 }
 
@@ -5991,6 +6503,11 @@ pub fn instr_F20F2D_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32)
     codegen::gen_modrm_resolve_safe_read64(ctx, modrm_byte);
     ctx.builder.reinterpret_i64_as_f64();
     ctx.builder.call_fn1_f64_ret("sse_convert_f64_to_i32");
+    // (an unmasked exception: raised before the register is written)
+    let v = ctx.builder.set_new_local();
+    codegen::gen_sse_exception_check(ctx);
+    ctx.builder.get_local(&v);
+    ctx.builder.free_local(v);
     codegen::gen_set_reg32(ctx, r);
 }
 pub fn instr_F20F2D_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
@@ -5998,12 +6515,22 @@ pub fn instr_F20F2D_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
         .const_i32(global_pointers::get_reg_xmm_offset(r1) as i32);
     ctx.builder.load_aligned_f64(0);
     ctx.builder.call_fn1_f64_ret("sse_convert_f64_to_i32");
+    // (an unmasked exception: raised before the register is written)
+    let v = ctx.builder.set_new_local();
+    codegen::gen_sse_exception_check(ctx);
+    ctx.builder.get_local(&v);
+    ctx.builder.free_local(v);
     codegen::gen_set_reg32(ctx, r2);
 }
 pub fn instr_F30F2D_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     codegen::gen_modrm_resolve_safe_read32(ctx, modrm_byte);
     ctx.builder.reinterpret_i32_as_f32();
     ctx.builder.call_fn1_f32_ret("sse_convert_f32_to_i32");
+    // (an unmasked exception: raised before the register is written)
+    let v = ctx.builder.set_new_local();
+    codegen::gen_sse_exception_check(ctx);
+    ctx.builder.get_local(&v);
+    ctx.builder.free_local(v);
     codegen::gen_set_reg32(ctx, r);
 }
 pub fn instr_F30F2D_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
@@ -6011,6 +6538,11 @@ pub fn instr_F30F2D_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
         .const_i32(global_pointers::get_reg_xmm_offset(r1) as i32);
     ctx.builder.load_aligned_f32(0);
     ctx.builder.call_fn1_f32_ret("sse_convert_f32_to_i32");
+    // (an unmasked exception: raised before the register is written)
+    let v = ctx.builder.set_new_local();
+    codegen::gen_sse_exception_check(ctx);
+    ctx.builder.get_local(&v);
+    ctx.builder.free_local(v);
     codegen::gen_set_reg32(ctx, r2);
 }
 

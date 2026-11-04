@@ -39,6 +39,16 @@ fn quiet64(x: f64) -> f64 { f64::from_bits(x.to_bits() | 0x0008_0000_0000_0000) 
 fn is_denormal32(x: f32) -> bool { x != 0.0 && x.abs() < f32::MIN_POSITIVE }
 fn is_denormal64(x: f64) -> bool { x != 0.0 && x.abs() < f64::MIN_POSITIVE }
 
+/// Whether the single precision sum or difference r of x and y (finite) was rounded. Not by redoing it in double
+/// precision: that is exact only while the exponents are close (-3.7e9 + 2.9e-24 rounds in both). TwoSum: with
+/// bb = r - x the rounding error (x - (r - bb)) + (y - bb) is exact, zero exactly when x - (r - bb) == bb - y.
+#[inline(always)]
+fn add_inexact32(op: Op, x: f32, y: f32, r: f32) -> bool {
+    let y = if op == Op::Sub { -y } else { y };
+    let bb = r - x;
+    x - (r - bb) != bb - y
+}
+
 pub unsafe fn f32_op(op: Op, a: f32, b: f32, fl: &mut u32) -> f32 {
     let daz = *mxcsr & DAZ != 0;
     let (mut x, mut y) = (a, b);
@@ -90,8 +100,8 @@ pub unsafe fn f32_op(op: Op, a: f32, b: f32, fl: &mut u32) -> f32 {
     }
     let (xd, yd, rd) = (x as f64, y as f64, r as f64);
     let inexact = match op {
-        Op::Add => rd != xd + yd,
-        Op::Sub => rd != xd - yd,
+        Op::Add | Op::Sub => add_inexact32(op, x, y, r),
+        // (products and quotient checks of singles are exact in double precision: 48 bits)
         Op::Mul => rd != xd * yd,
         Op::Div => rd * yd != xd,
         _ => rd * rd != yd,
@@ -167,6 +177,19 @@ pub unsafe fn f64_op(op: Op, a: f64, b: f64, fl: &mut u32) -> f64 {
             let bb = r - x;
             (x - (r - bb)) + (y - bb) != 0.0
         },
+        // (a product that comes out denormal or zero: its error term would underflow too and look exact, so the
+        // smaller operand (both when the larger is below 1) and the result are scaled by 2^1000 first, exactly)
+        Op::Mul if (is_denormal64(r) || r == 0.0) && x != 0.0 && y != 0.0 => {
+            const SCALE: f64 = 1.0715086071862673e301; // 2^1000
+            let (small, large) = if x.abs() < y.abs() { (x, y) } else { (y, x) };
+            if large.abs() < 1.0 {
+                // (both tiny: both scaled, the product by 2^2000, still below the overflow)
+                (small * SCALE).mul_add(large * SCALE, -(r * SCALE * SCALE)) != 0.0
+            }
+            else {
+                (small * SCALE).mul_add(large, -(r * SCALE)) != 0.0
+            }
+        },
         Op::Mul => x.mul_add(y, -r) != 0.0,
         Op::Div => r.mul_add(y, -x) != 0.0,
         _ => r.mul_add(r, -y) != 0.0,
@@ -208,6 +231,34 @@ pub unsafe fn commit(fl: u32) -> bool {
         }
     }
     false
+}
+
+/// The status flags of the conversions to integers of the instruction running (reset by it, committed before it
+/// writes its destination)
+pub static mut CVT_FLAGS: u32 = 0;
+
+/// A conversion to a 32-bit integer (cvt(t)ss2si, cvt(t)sd2si, the packed ones): truncated or rounded as MXCSR says;
+/// NaN or out of range raises invalid and gives the integer indefinite 0x80000000, a fraction raises inexact (into
+/// CVT_FLAGS)
+pub unsafe fn cvt_i32_acc(x: f64, truncate: bool) -> i32 {
+    let v = if truncate { x.trunc() } else { crate::cpu::sse_instr::sse_integer_round(x) };
+    if !(v >= -2147483648.0 && v < 2147483648.0) {
+        CVT_FLAGS |= IE;
+        return i32::MIN;
+    }
+    if v != x {
+        CVT_FLAGS |= PE;
+    }
+    v as i32
+}
+
+/// The same for a helper called by compiled code: the flags committed at once (an unmasked exception is left
+/// pending for the code to raise before it writes the destination)
+pub unsafe fn cvt_i32_jit(x: f64, truncate: bool) -> i32 {
+    CVT_FLAGS = 0;
+    let v = cvt_i32_acc(x, truncate);
+    commit(CVT_FLAGS);
+    v
 }
 
 #[no_mangle]
@@ -291,6 +342,29 @@ unsafe fn fast_f64(op: Op, x: f64, y: f64, inexact: &mut bool, check_inexact: bo
 /// computation has overflowed every following operation would otherwise take the slow path): a NaN operand is
 /// returned quieted (the destination's first), an invalid operation gives the default NaN. The inexact flag is
 /// only looked for while it is still clear.
+/// The lanes of r = a op b (finite lanes) that were rounded: TwoSum for sums and differences (see add_inexact32),
+/// the product in double precision (exact there: 48 bits)
+#[cfg(target_feature = "simd128")]
+#[inline(always)]
+fn inexact_lanes(op: Op, a: core::arch::wasm32::v128, b: core::arch::wasm32::v128, r: core::arch::wasm32::v128) -> core::arch::wasm32::v128 {
+    use core::arch::wasm32::*;
+    match op {
+        Op::Add | Op::Sub => {
+            let bb = f32x4_sub(r, a);
+            let t = f32x4_sub(a, f32x4_sub(r, bb));
+            f32x4_ne(t, if op == Op::Add { f32x4_sub(bb, b) } else { f32x4_add(b, bb) })
+        },
+        _ => {
+            let hi = |x: v128| i32x4_shuffle::<2, 3, 0, 1>(x, x);
+            let differs = |x: v128, y: v128, z: v128| {
+                f64x2_ne(f64x2_mul(f64x2_promote_low_f32x4(x), f64x2_promote_low_f32x4(y)), f64x2_promote_low_f32x4(z))
+            };
+            // (the 64-bit lane masks of both halves back to four 32-bit lanes)
+            i32x4_shuffle::<0, 2, 4, 6>(differs(a, b, r), differs(hi(a), hi(b), hi(r)))
+        },
+    }
+}
+
 #[cfg(target_feature = "simd128")]
 #[inline(always)]
 unsafe fn ps_fast(op: Op, d: reg128, s: reg128) -> Option<(reg128, u32)> {
@@ -322,21 +396,8 @@ unsafe fn ps_fast(op: Op, d: reg128, s: reg128) -> Option<(reg128, u32)> {
         return ps_special(op, a, b, r);
     }
     let mut fl = 0;
-    if *mxcsr as u32 & PE == 0 {
-        // in double precision the sum, difference and product of two singles are exact
-        let hi = |x: v128| i32x4_shuffle::<2, 3, 0, 1>(x, x);
-        let exact = |x: v128, y: v128, z: v128| {
-            let (xd, yd, zd) = (f64x2_promote_low_f32x4(x), f64x2_promote_low_f32x4(y), f64x2_promote_low_f32x4(z));
-            let e = match op {
-                Op::Add => f64x2_add(xd, yd),
-                Op::Sub => f64x2_sub(xd, yd),
-                _ => f64x2_mul(xd, yd),
-            };
-            f64x2_eq(e, zd)
-        };
-        if !i64x2_all_true(v128_and(exact(a, b, r), exact(hi(a), hi(b), hi(r)))) {
-            fl = PE;
-        }
+    if *mxcsr as u32 & PE == 0 && v128_any_true(inexact_lanes(op, a, b, r)) {
+        fl = PE;
     }
     Some((std::mem::transmute(r), fl))
 }
@@ -385,23 +446,9 @@ unsafe fn ps_special(op: Op, a: core::arch::wasm32::v128, b: core::arch::wasm32:
     out = v128_bitselect(v128_or(b, quiet), out, nan_b);
     out = v128_bitselect(v128_or(a, quiet), out, nan_a);
     if (*mxcsr as u32 | fl) & PE == 0 {
-        // in double precision the sum, difference and product of two singles are exact (the lanes of numbers with a
-        // finite result: the others raise no inexact)
+        // (the lanes of numbers with a finite result: the others raise no inexact)
         let ordinary = v128_and(numbers, v128_not(v128_or(nan_r, inf_r)));
-        let hi = |x: v128| i32x4_shuffle::<2, 3, 0, 1>(x, x);
-        let differs = |x: v128, y: v128, z: v128| {
-            let (xd, yd, zd) = (f64x2_promote_low_f32x4(x), f64x2_promote_low_f32x4(y), f64x2_promote_low_f32x4(z));
-            let e = match op {
-                Op::Add => f64x2_add(xd, yd),
-                Op::Sub => f64x2_sub(xd, yd),
-                _ => f64x2_mul(xd, yd),
-            };
-            f64x2_ne(e, zd)
-        };
-        // (f64x2 lanes: widen the 32-bit lane mask of the low and the high two lanes to match)
-        let low = i64x2_extend_low_i32x4(ordinary);
-        let high = i64x2_extend_low_i32x4(hi(ordinary));
-        if v128_any_true(v128_or(v128_and(differs(a, b, r), low), v128_and(differs(hi(a), hi(b), hi(r)), high))) {
+        if v128_any_true(v128_and(inexact_lanes(op, a, b, r), ordinary)) {
             fl |= PE;
         }
     }
@@ -486,11 +533,9 @@ unsafe fn ss_fast(op: Op, x: f32, y: f32) -> Option<(f32, bool)> {
     }
     let mut inexact = false;
     if *mxcsr as u32 & PE == 0 {
-        let (xd, yd, rd) = (x as f64, y as f64, r as f64);
-        inexact = rd != match op {
-            Op::Add => xd + yd,
-            Op::Sub => xd - yd,
-            _ => xd * yd,
+        inexact = match op {
+            Op::Add | Op::Sub => add_inexact32(op, x, y, r),
+            _ => r as f64 != x as f64 * y as f64,
         };
     }
     Some((r, inexact))
