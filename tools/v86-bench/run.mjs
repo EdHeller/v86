@@ -32,6 +32,15 @@ if(process.argv[2] === "--child")
 {
     const build = process.argv[3];
     const dir = path.join(here, "builds", build);
+    // (DUMP_WASM=dir: every generated module written there, as in micro/run.mjs)
+    if(process.env.DUMP_WASM)
+    {
+        let n = 0;
+        const save = code => { if(code.byteLength < 1 << 20) fs.writeFileSync(path.join(process.env.DUMP_WASM, build + "-" + (n++) + ".wasm"), Buffer.from(code instanceof ArrayBuffer ? new Uint8Array(code) : code)); };
+        const instantiate = WebAssembly.instantiate, Module = WebAssembly.Module;
+        WebAssembly.instantiate = (code, imports) => { if(!(code instanceof WebAssembly.Module)) save(code); return instantiate(code, imports); };
+        WebAssembly.Module = function(code) { save(code); return new Module(code); };
+    }
     const { V86 } = await import(url.pathToFileURL(path.join(dir, "libv86.mjs")).href);
     // ARCH=x86_64: the 64-bit images on v64.wasm (libv64.js next to libv86.mjs in the build's folder)
     const x64 = process.env.ARCH === "x86_64";

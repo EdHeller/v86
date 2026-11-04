@@ -4,6 +4,7 @@
 //
 //   node micro/run.mjs [rounds] [builds...]     default: 5 rounds of every build in ../builds (rotating order)
 //   ONLY=sse,x87 node micro/run.mjs ...          only these benchmarks
+//   REPEAT=5 node micro/run.mjs ...              each benchmark 5 times per round (summed): longer, steadier
 //
 // Uses the same builds/ folders as run.mjs (libv86.mjs, v86.wasm, optional options.json). Plain text out.
 
@@ -55,23 +56,31 @@ if(process.argv[2] === "--child")
     let halted = null;
     e.add_listener("cpu-event-halt", () => { if(halted) halted(); });
     const result = { build };
+    // REPEAT=n: each benchmark n times in a row (a fresh reset each time), the seconds summed: longer runs for
+    // differences of a few percent
+    const repeat = Math.max(1, +process.env.REPEAT || 1);
     for(let i = 0; i < NAMES.length; i++)
     {
-        const cpu = e.v86.cpu;
-        e.stop();
-        await new Promise(r => setTimeout(r, 20));
-        cpu.reboot_internal();
-        cpu.reset_memory();
-        cpu.mem8.set(bin, 0x7C00);
-        cpu.mem8.set([0xEA, 0x00, 0x7C, 0x00, 0x00], 0xFFFF0);
-        cpu.mem8[0x500] = ALL.indexOf(NAMES[i]);
-        const done = new Promise(r => { halted = r; });
-        const t0 = performance.now();
-        e.run();
-        const timeout = new Promise(r => setTimeout(() => r("timeout"), 120000));
-        const outcome = await Promise.race([done, timeout]);
-        result[NAMES[i]] = outcome === "timeout" ? null : (performance.now() - t0) / 1000;
-        halted = null;
+        let total = 0;
+        for(let k = 0; k < repeat && total !== null; k++)
+        {
+            const cpu = e.v86.cpu;
+            e.stop();
+            await new Promise(r => setTimeout(r, 20));
+            cpu.reboot_internal();
+            cpu.reset_memory();
+            cpu.mem8.set(bin, 0x7C00);
+            cpu.mem8.set([0xEA, 0x00, 0x7C, 0x00, 0x00], 0xFFFF0);
+            cpu.mem8[0x500] = ALL.indexOf(NAMES[i]);
+            const done = new Promise(r => { halted = r; });
+            const t0 = performance.now();
+            e.run();
+            const timeout = new Promise(r => setTimeout(() => r("timeout"), 120000));
+            const outcome = await Promise.race([done, timeout]);
+            total = outcome === "timeout" ? null : total + (performance.now() - t0) / 1000;
+            halted = null;
+        }
+        result[NAMES[i]] = total;
     }
     console.log(JSON.stringify(result));
     process.exit(0);
