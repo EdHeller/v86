@@ -75,6 +75,16 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
    and ACPI PM timer to Rust, read the clock without a call per check (`performance.now` once per slice), and run the
    timer pass in Rust, so a slice leaves WebAssembly only for devices that need JavaScript (disks, network, screen).
    Measure with the micro benchmarks (task 6's harness) and `tools/v86-bench`.
+   - ✅ Measured (2026-11-04, a profile of Alpine's boot and the four workloads): JavaScript is **1.2 %** of the time
+     (the main loop calls it twice per 100,000 instructions), so moving the timers to Rust gains at most about 1 %.
+     The switch that costs is between the main module and compiled code: 406 M entries into compiled blocks (about 40
+     instructions each), 89 % of the exits leave for another page, and `main_loop` itself is 11 % of the time (about
+     30 ns per round trip: an indirect call into another instance, registers loaded and stored at each end). Calls
+     from compiled code into the main module (helpers) cost the same way: see task 6's SSE work.
+   - ⬜ Block chaining (compiled code tail-calls the next page's block itself; `set_jit_config(17, 1)`, from October,
+     then measured 8 % slower with the old dispatcher): works with today's code, within noise here; bench7 sent to
+     the user (`SCALE=4`, longer runs) to decide. If it pays: direct calls for exits with a known target page,
+     registers kept across chained blocks. Then the rdtsc clock read and the JavaScript devices' port I/O.
 4. ⬜ **The lazy-compile cost:** V8 compiles each jit64 module with Liftoff on its first call, 1-3 s of the main
    thread per boot. Smaller modules, or compiling off the main thread.
 5. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
