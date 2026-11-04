@@ -3993,7 +3993,8 @@ unsafe fn generate(b: &mut WasmBuilder, rip: u64, code: &[u8], ext: &[u8], seeds
 
     // budget: return to the dispatcher now and then so that interrupts can be handled
     g.b.get_local(&g.n_local);
-    g.b.load_fixed_i32(unsafe { &raw const JIT64_LOOP_LIMIT } as u32);
+    // (a constant: set once, by smp_init before anything is compiled)
+    g.b.const_i32(unsafe { JIT64_LOOP_LIMIT });
     g.b.geu_i32();
     g.b.if_void();
     {

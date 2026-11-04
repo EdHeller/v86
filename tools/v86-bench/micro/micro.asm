@@ -144,6 +144,7 @@ benchmarks:
     dd b_call_deep, b_setcc, b_bitops, b_unaligned, b_rep_small, b_scalar_fp, b_lock, b_rdtsc, b_pagefault
     dd b_tlb4k, b_code16, b_segment
     dd b_sysenter, b_cli_sti, b_spinlock, b_cpuid, b_memcpy_bytes
+    dd b_page_hop, b_call_pages
 
 ; 0 alu: dependent register arithmetic, no memory
 b_alu:
@@ -622,6 +623,22 @@ b_memcpy_bytes:
     jnz .p
     ret
 
+; 33 page_hop: a loop of short blocks on four pages joined by direct jumps (each jump leaves the page: in v86 the
+; end of a compiled module)
+b_page_hop:
+    mov ecx, 25000000
+    jmp hop1
+
+; 34 call_pages: calls to functions on three other pages (each call and each ret leaves the page)
+b_call_pages:
+    mov ecx, 25000000
+.l: call far_fn
+    call far_fn2
+    call far_fn3
+    dec ecx
+    jnz .l
+    ret
+
 align 8
 gdt:
     dq 0
@@ -643,4 +660,34 @@ idt_ptr:
 align 4096
 far_fn:
     add eax, 1
+    ret
+
+align 4096
+hop1:
+    add eax, ecx
+    xor eax, 0x1234
+    jmp hop2
+align 4096
+hop2:
+    add ebx, eax
+    shl ebx, 1
+    jmp hop3
+align 4096
+hop3:
+    sub edx, ebx
+    or edx, 3
+    jmp hop4
+align 4096
+hop4:
+    xor eax, edx
+    dec ecx
+    jnz hop1
+    ret
+align 4096
+far_fn2:
+    add ebx, 1
+    ret
+align 4096
+far_fn3:
+    add edx, 1
     ret

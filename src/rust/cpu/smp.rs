@@ -275,4 +275,6 @@ pub unsafe fn smp_debug_field(core: u32, off: u32) -> i32 { field32(core as usiz
 pub unsafe fn smp_set_loop_limit(n: u32) {
     JIT_LOOP_LIMIT = n as i32;
     jit64::JIT64_LOOP_LIMIT = n as i32;
+    // (compiled code has the limit as a constant)
+    crate::jit::jit_clear_cache_js();
 }

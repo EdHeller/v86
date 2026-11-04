@@ -16,18 +16,29 @@ const here = path.dirname(url.fileURLToPath(import.meta.url));
 const root = path.join(here, "..");
 const NAMES = ["alu", "flags", "memory", "stack", "call_near", "call_far", "indirect", "string", "muldiv", "sse", "x87",
     "pagewalk", "smc", "port", "interrupt", "pit", "call_deep", "setcc", "bitops", "unaligned", "rep_small", "scalar_fp",
-    "lock", "rdtsc", "pagefault", "tlb4k", "code16", "segment", "sysenter", "cli_sti", "spinlock", "cpuid", "memcpy_bytes"]
+    "lock", "rdtsc", "pagefault", "tlb4k", "code16", "segment", "sysenter", "cli_sti", "spinlock", "cpuid", "memcpy_bytes",
+    "page_hop", "call_pages"]
     .filter(n => !process.env.ONLY || process.env.ONLY.split(",").includes(n));
 // (the benchmark's number in micro.bin)
 const ALL = ["alu", "flags", "memory", "stack", "call_near", "call_far", "indirect", "string", "muldiv", "sse", "x87",
     "pagewalk", "smc", "port", "interrupt", "pit", "call_deep", "setcc", "bitops", "unaligned", "rep_small", "scalar_fp",
-    "lock", "rdtsc", "pagefault", "tlb4k", "code16", "segment", "sysenter", "cli_sti", "spinlock", "cpuid", "memcpy_bytes"];
+    "lock", "rdtsc", "pagefault", "tlb4k", "code16", "segment", "sysenter", "cli_sti", "spinlock", "cpuid", "memcpy_bytes",
+    "page_hop", "call_pages"];
 
 // ---------------------------------------------------------------------------------------------------------------
 // child: every benchmark once in one build, a JSON line of seconds
 if(process.argv[2] === "--child")
 {
     const build = process.argv[3];
+    // (DUMP_WASM=dir: every generated module written there, to read the compiled code: wasm2wat)
+    if(process.env.DUMP_WASM)
+    {
+        let n = 0;
+        const save = code => { if(code.byteLength < 1 << 20) fs.writeFileSync(path.join(process.env.DUMP_WASM, build + "-" + (n++) + ".wasm"), Buffer.from(code instanceof ArrayBuffer ? new Uint8Array(code) : code)); };
+        const instantiate = WebAssembly.instantiate, Module = WebAssembly.Module;
+        WebAssembly.instantiate = (code, imports) => { if(!(code instanceof WebAssembly.Module)) save(code); return instantiate(code, imports); };
+        WebAssembly.Module = function(code) { save(code); return new Module(code); };
+    }
     const dir = path.join(root, "builds", build);
     const { V86 } = await import(url.pathToFileURL(path.join(dir, "libv86.mjs")).href);
     const extra = fs.existsSync(path.join(dir, "options.json")) ? JSON.parse(fs.readFileSync(path.join(dir, "options.json"), "utf8")) : {};
@@ -76,7 +87,7 @@ const W = Math.max(14, ...builds.map(b => b.length + 1));
 
 console.log("v86 micro benchmarks: " + rounds + " rounds of " + builds.join(", ") + ", node " + process.version);
 console.log("seconds per benchmark (lower is better)");
-console.log("".padEnd(10) + "build".padEnd(W) + NAMES.map(n => n.padStart(10)).join(""));
+console.log("".padEnd(10) + "build".padEnd(W) + NAMES.map(n => n.padStart(Math.max(10, n.length + 1))).join(""));
 for(let r = 0; r < rounds; r++)
 {
     const order = builds.map((_, i) => builds[(i + r) % builds.length]);
@@ -101,7 +112,7 @@ const median = (b, n) => {
     return v.length ? v[v.length >> 1] : null;
 };
 console.log("\nmedian of the rounds; second line: change against upstream (negative is faster)");
-console.log("".padEnd(10) + "build".padEnd(W) + NAMES.map(n => n.padStart(10)).join(""));
+console.log("".padEnd(10) + "build".padEnd(W) + NAMES.map(n => n.padStart(Math.max(10, n.length + 1))).join(""));
 for(const b of builds)
 {
     console.log("".padEnd(10) + b.padEnd(W) + NAMES.map(n => { const m = median(b, n); return (m == null ? "-" : m.toFixed(3)).padStart(10); }).join(""));
