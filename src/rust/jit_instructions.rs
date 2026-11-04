@@ -4884,10 +4884,17 @@ pub fn instr32_0F8F_jit(_ctx: &mut JitContext, _imm: u32) {}
 
 pub fn instr_90_jit(ctx: &mut JitContext) {
     if ctx.cpu.prefixes & PREFIX_F3 != 0 {
-        // pause: with several cores the function returns here so that the other cores run
+        // pause: with several cores the function returns here so that the other cores run (the core count read
+        // inline: a call from compiled code costs more than a spin loop's other instructions together)
+        ctx.builder
+            .load_fixed_i32(unsafe { &raw const crate::cpu::apic::CORE_COUNT } as u32);
+        ctx.builder.const_i32(1);
+        ctx.builder.gtu_i32();
+        ctx.builder.if_void();
         codegen::gen_set_eip_to_after_current_instruction(ctx);
         ctx.builder.call_fn0_ret("jit_pause");
         ctx.builder.br_if(ctx.exit_with_fault_label);
+        ctx.builder.block_end();
     }
 }
 
