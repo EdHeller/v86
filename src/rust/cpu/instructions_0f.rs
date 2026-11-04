@@ -194,10 +194,17 @@ pub unsafe fn instr16_0F00_5_reg(r: i32) {
 pub unsafe fn instr32_0F00_5_reg(r: i32) { instr16_0F00_5_reg(r) }
 
 #[no_mangle]
-/// 0F 01 C8..CF: monitor, mwait (both may do nothing: mwait can always return at once), clac, stac (ring 0)
+/// 0F 01 C8..CF: monitor, mwait, clac, stac (ring 0). monitor does nothing; mwait waits for an interrupt like hlt on
+/// one core with interrupts on (Linux idles with sti; mwait: a no-op made its idle loop spin), and returns at once
+/// otherwise (always allowed; with several cores another one may wake it by a write alone)
 pub unsafe fn instr_0F01_1_reg(rm: i32) {
     match rm {
-        0 | 1 => {},
+        0 => {},
+        1 => {
+            if *cpl == 0 && *flags & FLAG_INTERRUPT != 0 && crate::cpu::apic::CORE_COUNT == 1 {
+                crate::cpu::instructions::instr_F4();
+            }
+        },
         2 | 3 => {
             if *cpl != 0 {
                 trigger_ud();
