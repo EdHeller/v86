@@ -1408,10 +1408,23 @@ fn jit_generate_module(
                     },
                     BasicBlockType::AbsoluteEip => {
                         // Check if we can stay in this module, if not exit
-                        codegen::gen_get_eip(ctx.builder);
-                        ctx.builder.const_i32(wasm_table_index.to_u16() as i32);
-                        ctx.builder.const_i32(state_flags.to_u32() as i32);
-                        ctx.builder.call_fn3_ret("jit_find_cache_entry_in_page");
+                        if cfg!(feature = "parallel") || cfg!(feature = "profiler") {
+                            codegen::gen_get_eip(ctx.builder);
+                            ctx.builder.const_i32(wasm_table_index.to_u16() as i32);
+                            ctx.builder.const_i32(state_flags.to_u32() as i32);
+                            ctx.builder.call_fn3_ret("jit_find_cache_entry_in_page");
+                        }
+                        else {
+                            codegen::gen_get_eip(ctx.builder);
+                            let eip = ctx.builder.set_new_local();
+                            codegen::gen_find_entry_in_page(
+                                ctx.builder,
+                                &eip,
+                                wasm_table_index.to_u16(),
+                                state_flags.to_u32() as u8,
+                            );
+                            ctx.builder.free_local(eip);
+                        }
                         ctx.builder.tee_local(target_block);
                         ctx.builder.const_i32(0);
                         ctx.builder.ge_i32();

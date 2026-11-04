@@ -2755,6 +2755,67 @@ pub fn gen_debug_track_jit_exit(builder: &mut WasmBuilder, address: u32) {
     }
 }
 
+/// jit_find_cache_entry_in_page, inline: the state (block number) of the entry at eip in this module, or -1
+/// when eip is not an entry of this module (another page, another module, other state flags). Leaves an i32.
+/// Indirect jumps (ret, call/jmp through a register or memory) do this every time; as a call out of the module it
+/// was about 4 % of a shell loop on 32-bit Linux. The parallel build keeps the call: its tables are per instance.
+pub fn gen_find_entry_in_page(builder: &mut WasmBuilder, eip: &WasmLocal, wasm_table_index: u16, state_flags: u8) {
+    use crate::cpu::cpu::{tlb_code, Code};
+    use std::mem::offset_of;
+
+    let tlb_code_base = (&raw const tlb_code) as u32;
+
+    // the compiled code of eip's page (0: none)
+    builder.get_local(eip);
+    builder.const_i32(12);
+    builder.shr_u_i32();
+    builder.const_i32(2);
+    builder.shl_i32();
+    builder.load_aligned_i32(tlb_code_base);
+    let code = builder.set_new_local();
+
+    builder.get_local(&code);
+    builder.if_i32();
+    {
+        builder.get_local(&code);
+        builder.load_aligned_u16(offset_of!(Code, wasm_table_index) as u32);
+        builder.const_i32(wasm_table_index as i32);
+        builder.eq_i32();
+        builder.get_local(&code);
+        builder.load_u8(offset_of!(Code, state_flags) as u32);
+        builder.const_i32(state_flags as i32);
+        builder.eq_i32();
+        builder.and_i32();
+        builder.if_i32();
+        {
+            // the entry's state; 0xFFFF (no entry) becomes -1
+            builder.get_local(eip);
+            builder.const_i32(0xFFF);
+            builder.and_i32();
+            builder.const_i32(1);
+            builder.shl_i32();
+            builder.get_local(&code);
+            builder.add_i32();
+            builder.load_aligned_u16(offset_of!(Code, state_table) as u32);
+            let state = builder.set_new_local();
+            builder.get_local(&state);
+            builder.const_i32(-1);
+            builder.get_local(&state);
+            builder.const_i32(0xFFFF);
+            builder.ne_i32();
+            builder.select();
+            builder.free_local(state);
+        }
+        builder.else_();
+        builder.const_i32(-1);
+        builder.block_end();
+    }
+    builder.else_();
+    builder.const_i32(-1);
+    builder.block_end();
+    builder.free_local(code);
+}
+
 /// Called at the end of a compiled module after registers and the instruction counter have been
 /// stored: when eip is the entry point of another compiled block, jump to it directly (wasm tail
 /// call) instead of returning to the dispatcher in Rust. This is what `cycle_internal` would do
