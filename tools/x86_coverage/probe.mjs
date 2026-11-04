@@ -3,7 +3,8 @@
 // tools/x86_coverage/reference.py) executed once, recording the exception it raised (-1 for none, 6 for #UD, ...).
 // A boot stub at 0x7C00 enters the mode, masks the PICs and installs handlers that record the vector, reload the
 // segments and the stack and continue with the next probe; the probes are at 1 MiB, the results (one dword per probe)
-// at 3 MiB, scratch memory at 4 MiB. Done: the magic 0x45444F4E ("NODE") at 0x600, the probe count at 0x604; the
+// at 8 MiB, scratch memory at 9 MiB, and after each probe that raised nothing its state at 16 MiB + 256 * index:
+// eax..edi (32 bytes), eflags (at 32), xmm0..7 (at 48) and the first 64 bytes of scratch memory (at 176). Done: the magic 0x45444F4E ("NODE") at 0x600, the probe count at 0x604; the
 // probe running now is at 0x608 (to find one that hangs).
 //
 //   node tools/x86_coverage/probe.mjs [bits]     writes build/x86_coverage/probe<bits>-stub.bin, -probes.bin, -forms.json
@@ -21,7 +22,7 @@ const OUT = path.join(ROOT, "build/x86_coverage");
 const bits = +process.argv[2] || 32;
 if(bits !== 32) throw new Error("only the 32-bit probe so far");
 
-export const PROBES = 0x100000, RESULTS = 0x300000, SCRATCH = 0x400000;
+export const PROBES = 0x100000, RESULTS = 0x800000, SCRATCH = 0x900000, DUMPS = 0x1000000, DUMP_SIZE = 256;
 
 // control flow, waits, and what changes the probe's own environment
 const SKIP_MNEMONICS = new Set(`
@@ -133,11 +134,25 @@ reset:
     push dword 2
     popfd
     ldmxcsr [mxcsr]
+    ; mm0..7 from the pattern (the x87 registers' mantissas), then an empty x87 stack over them
+%assign k 0
+%rep 8
+    movq mm%+k, [pattern + 0x80 + k * 8]
+%assign k k + 1
+%endrep
     fninit
+    mov esi, pattern
     mov edi, ${SCRATCH}
     mov ecx, 256
-    xor eax, eax
-    rep stosd
+    rep movsd
+    movdqu xmm0, [pattern + 0x00]
+    movdqu xmm1, [pattern + 0x10]
+    movdqu xmm2, [pattern + 0x20]
+    movdqu xmm3, [pattern + 0x30]
+    movdqu xmm4, [pattern + 0x40]
+    movdqu xmm5, [pattern + 0x50]
+    movdqu xmm6, [pattern + 0x60]
+    movdqu xmm7, [pattern + 0x70]
     mov eax, ${SCRATCH}
     mov ebx, ${SCRATCH + 64}
     mov ecx, 4
@@ -145,8 +160,6 @@ reset:
     mov esi, ${SCRATCH + 128}
     mov edi, ${SCRATCH + 256}
     mov ebp, ${SCRATCH + 512}
-    pxor xmm0, xmm0
-    pxor xmm1, xmm1
     jmp [0x60C]
 
 align 16
@@ -171,6 +184,16 @@ handler:
 
 align 4
 mxcsr: dd 0x1F80
+align 16
+pattern:
+%assign k 0
+%rep 64
+    dd 0x3F800000 + k * 0x10000 + k     ; floats from 1.0 upward
+    dd (k * 0x9E3779B9) & 0xFFFFFFFF
+    dd 0x40000000 + k * 0x1000          ; and a double's high half: 2.0 upward
+    dd (k * 0x85EBCA6B + 0x1234) & 0xFFFFFFFF
+%assign k k + 1
+%endrep
 align 8
 gdt:
     dq 0
@@ -190,7 +213,13 @@ let probes = `bits 32\norg ${PROBES}\n`;
 probed.forEach((f, i) => {
     probes += `p${i}:\n    mov dword [0x608], ${i}\n    mov dword [0x618], e${i}\n    mov dword [0x614], -1\n    call ${0x7C00}+reset_off\n`;
     probes += `    db ${Buffer.from(f.full, "hex").map(x => x).join(",").split(",").map(x => "0x" + (+x).toString(16)).join(",")}\n`;
-    probes += `e${i}:\n    mov ax, 0x10\n    mov ds, ax\n    mov ss, ax\n    mov esp, 0x90000\n    mov eax, [0x614]\n    mov [${RESULTS + i * 4}], eax\n`;
+    const d = DUMPS + i * DUMP_SIZE;
+    probes += `e${i}:\n    mov [ss:${d}], eax\n    mov [ss:${d + 4}], ecx\n    mov [ss:${d + 8}], edx\n    mov [ss:${d + 12}], ebx\n` +
+        `    mov [ss:${d + 16}], esp\n    mov [ss:${d + 20}], ebp\n    mov [ss:${d + 24}], esi\n    mov [ss:${d + 28}], edi\n` +
+        `    mov ax, 0x10\n    mov ds, ax\n    mov es, ax\n    mov ss, ax\n    mov esp, 0x90000\n    pushfd\n    pop dword [${d + 32}]\n` +
+        [0, 1, 2, 3, 4, 5, 6, 7].map(k => `    movdqu [${d + 48 + 16 * k}], xmm${k}\n`).join("") +
+        `    mov esi, ${SCRATCH}\n    mov edi, ${d + 176}\n    mov ecx, 16\n    rep movsd\n` +
+        `    mov eax, [0x614]\n    mov [${RESULTS + i * 4}], eax\n`;
 });
 probes += `    mov dword [0x604], ${probed.length}\n    mov dword [0x600], 0x45444F4E\n.done:\n    cli\n    hlt\n    jmp .done\n`;
 

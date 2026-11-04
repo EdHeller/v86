@@ -74,9 +74,10 @@ impl F80 {
         mantissa: 0xB8AA3B295C17F000,
         sign_exponent: 0x3FFF,
     };
+    /// The x87's real indefinite: a negative quiet NaN (sign set), what masked invalid operations produce
     pub const INDEFINITE_NAN: F80 = F80 {
         mantissa: 0xC000000000000000,
-        sign_exponent: 0x7FFF,
+        sign_exponent: 0xFFFF,
     };
     pub const POS_INFINITY: F80 = F80 {
         mantissa: 0x8000000000000000,

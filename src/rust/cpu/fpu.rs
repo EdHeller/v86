@@ -274,6 +274,9 @@ pub unsafe fn fpu_finit() {
     *fpu_status_word = 0;
     *fpu_ip = 0;
     *fpu_dp = 0;
+    // (the selectors too: fnstenv after fninit stores zeros there)
+    *fpu_ip_selector = 0;
+    *fpu_dp_selector = 0;
     *fpu_opcode = 0;
     *fpu_stack_empty = 0xFF;
     *fpu_stack_ptr = 0;

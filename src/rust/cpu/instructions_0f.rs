@@ -12,7 +12,7 @@ unsafe fn unimplemented_sse() {
 use crate::config;
 use crate::cpu::arith::{
     bsf16, bsf32, bsr16, bsr32, bt_mem, bt_reg, btc_mem, btc_reg, btr_mem, btr_reg, bts_mem,
-    bts_reg, cmpxchg16, cmpxchg32, cmpxchg8, popcnt, shld16, shld32, shrd16, shrd32, xadd16,
+    bts_reg, cmpxchg16, cmpxchg32, cmpxchg8, lzcnt, popcnt, shld16, shld32, shrd16, shrd32, xadd16,
     xadd32, xadd8,
 };
 use crate::cpu::arith::{
@@ -3348,6 +3348,8 @@ pub unsafe fn instr_0FA2() {
             // initial APIC id, cpu count, clflush size
             ebx = (crate::cpu::apic::CURRENT_CORE as i32) << 24 | cores << 16 | 8 << 8;
             ecx = 1 << 0 | 1 << 13 | 1 << 23 | 1 << 26 | 1 << 30; // sse3, cx16, popcnt, xsave, rdrand
+            // pclmulqdq, movbe, aes (checked against QEMU by tools/x86_coverage)
+            ecx |= 1 << 1 | 1 << 22 | 1 << 25;
             // ssse3, sse4.1, sse4.2, in every mode (they were reported in long mode only while the 32-bit JIT lost
             // the prefixes of the 0F 38 / 0F 3A instructions: 32-bit Alpine's OpenSSL then failed its checks)
             ecx |= 1 << 9 | 1 << 19 | 1 << 20;
@@ -3417,7 +3419,7 @@ pub unsafe fn instr_0FA2() {
         7 => {
             if read_reg32(ECX) == 0 {
                 eax = 0; // maximum supported sub-level
-                ebx = 1 << 9; // enhanced REP MOVSB/STOSB
+                ebx = 1 << 9 | 1 << 19 | 1 << 29; // enhanced REP MOVSB/STOSB, adx, sha
                 ecx = 0;
                 edx = 0;
             }
@@ -3452,6 +3454,7 @@ pub unsafe fn instr_0FA2() {
                 1 << 8 | 1 << 13 | 1 << 15 | 1 << 20 | // cx8, pge, cmov, nx
                 1 << 23 | 1 << 24 | // mmx, fxsr
                 if LONG_MODE && long_mode_supported { 1 << 11 | 1 << 29 } else { 0 }; // syscall, long mode
+            ecx = 1 << 5; // lzcnt (abm)
         },
 
         0x40000000 => {
@@ -3783,6 +3786,26 @@ pub unsafe fn instr32_F30FB8_mem(addr: i32, r: i32) {
     write_reg32(r, popcnt(return_on_pagefault!(safe_read32s(addr))));
 }
 pub unsafe fn instr32_F30FB8_reg(r1: i32, r: i32) { write_reg32(r, popcnt(read_reg32(r1))); }
+#[no_mangle]
+pub unsafe fn instr_F20F2B_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+#[no_mangle]
+pub unsafe fn instr_F20F2B_mem(_addr: i32, _r: i32) { trigger_ud(); }
+#[no_mangle]
+pub unsafe fn instr_F30F2B_reg(_r1: i32, _r2: i32) { trigger_ud(); }
+#[no_mangle]
+pub unsafe fn instr_F30F2B_mem(_addr: i32, _r: i32) { trigger_ud(); }
+#[no_mangle]
+pub unsafe fn instr16_F30FBD_mem(addr: i32, r: i32) {
+    write_reg16(r, lzcnt(return_on_pagefault!(safe_read16(addr)), 16));
+}
+#[no_mangle]
+pub unsafe fn instr16_F30FBD_reg(r1: i32, r: i32) { write_reg16(r, lzcnt(read_reg16(r1), 16)); }
+#[no_mangle]
+pub unsafe fn instr32_F30FBD_mem(addr: i32, r: i32) {
+    write_reg32(r, lzcnt(return_on_pagefault!(safe_read32s(addr)), 32));
+}
+#[no_mangle]
+pub unsafe fn instr32_F30FBD_reg(r1: i32, r: i32) { write_reg32(r, lzcnt(read_reg32(r1), 32)); }
 #[no_mangle]
 pub unsafe fn instr_0FB9() {
     // UD2

@@ -2349,6 +2349,46 @@ unsafe fn sse_three_byte(p: &Prefixes, esc: u8) -> OrPageFault<()> {
         return Ok(());
     }
 
+    if esc == 0x38 && op == 0xF6 && (mandatory == Mandatory::P66 || mandatory == Mandatory::F3) {
+        // adcx (carry flag) / adox (overflow flag), 32 or 64 bits (REX.W)
+        let bits = if wide { 64 } else { 32 };
+        let src = rm_read(p, &m, bits)?;
+        let flag = if mandatory == Mandatory::P66 { FLAG_CARRY } else { FLAG_OVERFLOW };
+        let carry_in = if flag == FLAG_CARRY { crate::cpu::misc_instr::getcf() } else { crate::cpu::misc_instr::getof() } as u128;
+        let d = get_reg(m.reg, bits, true);
+        let sum = d as u128 + src as u128 + carry_in;
+        let carry_out = if bits == 64 { sum >> 64 != 0 } else { sum >> 32 != 0 };
+        set_reg(m.reg, bits, true, sum as u64);
+        *flags_changed &= !flag;
+        *flags = *flags & !flag | if carry_out { flag } else { 0 };
+        return Ok(());
+    }
+
+    if esc == 0x3A && mandatory == Mandatory::P66 && (0x60..=0x63).contains(&op) {
+        // pcmpestrm / pcmpestri / pcmpistrm / pcmpistri (REX.W: rax / rdx lengths); no alignment needed
+        let imm = fetch8()? as i32;
+        let b = match m.loc {
+            Loc::Reg(n) => read_xmm128s(n as i32),
+            Loc::Mem(a) => {
+                let lo = mem_read(a, 64)?;
+                let hi = mem_read(a.wrapping_add(8), 64)?;
+                reg128 { u64: [lo, hi] }
+            },
+        };
+        let a = read_xmm128s(m.reg as i32);
+        let explicit = op < 0x62;
+        let len = |r: u8| if wide { get_reg(r, 64, true) as i64 } else { get_reg(r, 32, true) as u32 as i32 as i64 };
+        let res = crate::cpu::sse_0f38::pcmpstr(a, b, if explicit { Some(len(0)) } else { None }, if explicit { Some(len(2)) } else { None }, imm);
+        if op & 1 != 0 {
+            set_reg(1, 32, true, res.index(imm) as u64);
+        }
+        else {
+            write_xmm_reg128(0, res.mask(imm));
+        }
+        res.set_flags();
+        return Ok(());
+    }
+
     if esc == 0x3A && mandatory == Mandatory::P66 && matches!(op, 0x14..=0x17 | 0x20 | 0x22) {
         let imm = fetch8()? as usize;
         if op >= 0x20 {
@@ -2384,9 +2424,12 @@ unsafe fn sse_three_byte(p: &Prefixes, esc: u8) -> OrPageFault<()> {
         return Ok(());
     }
 
-    let reg = if mandatory == Mandatory::None { (m.reg & 7) as i32 } else { m.reg as i32 };
+    // (the prefixless forms are mmx, with registers 0..7; the SHA instructions are prefixless too, on xmm0..15)
+    let sha = (esc == 0x38 && (0xC8..=0xCD).contains(&op)) || (esc == 0x3A && op == 0xCC);
+    let mmx = mandatory == Mandatory::None && !sha;
+    let reg = if mmx { (m.reg & 7) as i32 } else { m.reg as i32 };
     let src = match m.loc {
-        Loc::Reg(n) => Src::Reg(if mandatory == Mandatory::None { (n & 7) as i32 } else { n as i32 }),
+        Loc::Reg(n) => Src::Reg(if mmx { (n & 7) as i32 } else { n as i32 }),
         Loc::Mem(a) => Src::Mem(window(a)?),
     };
     let result = if esc == 0x38 {

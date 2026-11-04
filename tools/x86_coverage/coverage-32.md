@@ -6,9 +6,9 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 - 25116 forms probed, 4086 skipped (control flow, descriptor tables, control registers, MSR writes,
   waits: covered by the hand-written tests)
-- **256 forms of 21 mnemonics run in QEMU and are #UD in v86** (missing in v86)
-- 238 forms of 42 mnemonics run in v86 and are #UD in QEMU
-- 684 forms of 80 mnemonics are #UD in both (not on QEMU's CPU either: AMD-only,
+- **272 forms of 23 mnemonics run in QEMU and are #UD in v86** (missing in v86)
+- 40 forms of 6 mnemonics run in v86 and are #UD in QEMU
+- 1212 forms of 109 mnemonics are #UD in both (not on QEMU's CPU either: AMD-only,
   VMX/SVM outside a VM, encodings objdump accepts but CPUs do not)
 
 ## Missing in v86 (#UD in v86, not in QEMU)
@@ -30,6 +30,8 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 | `frstorw` | 1 | `66dd20` frstorw [eax] |
 | `insertq` | 16 | `f20f78c0cccc` insertq xmm0,xmm0,0xcc,0xcc<br>`f20f78c8cccc` insertq xmm1,xmm0,0xcc,0xcc<br>`f20f78d0cccc` insertq xmm2,xmm0,0xcc,0xcc |
 | `monitor` | 4 | `0f01c8` monitor<br>`660f01c8` monitor<br>`f20f01c8` monitor |
+| `movntsd` | 8 | `f20f2b00` movntsd QWORD PTR [eax],xmm0<br>`f20f2b08` movntsd QWORD PTR [eax],xmm1<br>`f20f2b10` movntsd QWORD PTR [eax],xmm2 |
+| `movntss` | 8 | `f30f2b00` movntss DWORD PTR [eax],xmm0<br>`f30f2b08` movntss DWORD PTR [eax],xmm1<br>`f30f2b10` movntss DWORD PTR [eax],xmm2 |
 | `nop` | 24 | `0f1ac0` nop eax<br>`0f1ac8` nop eax<br>`0f1ad0` nop eax |
 | `rdpid` | 1 | `f30fc7f8` rdpid eax |
 | `rdseed` | 2 | `0fc7f8` rdseed eax<br>`660fc7f8` rdseed ax |
@@ -41,49 +43,42 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 | Mnemonic | Forms | Examples |
 |---|---|---|
-| `aesdec128kl` | 8 | `f30f` aesdec128kl xmm0,(bad)<br>`f30f` aesdec128kl xmm1,(bad)<br>`f30f` aesdec128kl xmm2,(bad) |
-| `aesdec256kl` | 8 | `f30f` aesdec256kl xmm0,(bad)<br>`f30f` aesdec256kl xmm1,(bad)<br>`f30f` aesdec256kl xmm2,(bad) |
-| `aesdecwide128kl` | 1 | `f30f` aesdecwide128kl (bad) |
-| `aesdecwide256kl` | 1 | `f30f` aesdecwide256kl (bad) |
-| `aesenc256kl` | 8 | `f30f` aesenc256kl xmm0,(bad)<br>`f30f` aesenc256kl xmm1,(bad)<br>`f30f` aesenc256kl xmm2,(bad) |
-| `aesencwide128kl` | 1 | `f30f` aesencwide128kl (bad) |
-| `aesencwide256kl` | 1 | `f30f` aesencwide256kl (bad) |
-| `aor` | 8 | `f20f` aor (bad),eax<br>`f20f` aor (bad),ecx<br>`f20f` aor (bad),edx |
-| `axor` | 8 | `f30f` axor (bad),eax<br>`f30f` axor (bad),ecx<br>`f30f` axor (bad),edx |
 | `clrssbsy` | 1 | `f30fae30` clrssbsy QWORD PTR [eax] |
-| `cmpxchg8b` | 2 | `f20f` cmpxchg8b (bad)<br>`f30f` cmpxchg8b (bad) |
-| `encodekey128` | 8 | `f30f` encodekey128 eax,(bad)<br>`f30f` encodekey128 ecx,(bad)<br>`f30f` encodekey128 edx,(bad) |
-| `encodekey256` | 8 | `f30f` encodekey256 eax,(bad)<br>`f30f` encodekey256 ecx,(bad)<br>`f30f` encodekey256 edx,(bad) |
-| `insertq` | 8 | `f20f` insertq xmm0,(bad)<br>`f20f` insertq xmm1,(bad)<br>`f20f` insertq xmm2,(bad) |
-| `lddqu` | 8 | `f20f` lddqu xmm0,(bad)<br>`f20f` lddqu xmm1,(bad)<br>`f20f` lddqu xmm2,(bad) |
-| `lfs` | 16 | `f20f` lfs eax,(bad)<br>`f20f` lfs ecx,(bad)<br>`f20f` lfs edx,(bad) |
-| `lgs` | 16 | `f20f` lgs eax,(bad)<br>`f20f` lgs ecx,(bad)<br>`f20f` lgs edx,(bad) |
-| `lss` | 16 | `f20f` lss eax,(bad)<br>`f20f` lss ecx,(bad)<br>`f20f` lss edx,(bad) |
-| `montmul` | 2 | `f20f` montmul (bad)<br>`f30f` montmul (bad) |
-| `movdq2q` | 8 | `f20f` movdq2q mm0,(bad)<br>`f20f` movdq2q mm1,(bad)<br>`f20f` movdq2q mm2,(bad) |
-| `movntsd` | 8 | `f20f` movntsd (bad),xmm0<br>`f20f` movntsd (bad),xmm1<br>`f20f` movntsd (bad),xmm2 |
-| `movntss` | 8 | `f30f` movntss (bad),xmm0<br>`f30f` movntss (bad),xmm1<br>`f30f` movntss (bad),xmm2 |
-| `movq2dq` | 8 | `f30f` movq2dq xmm0,(bad)<br>`f30f` movq2dq xmm1,(bad)<br>`f30f` movq2dq xmm2,(bad) |
 | `nop` | 16 | `0f18c0` nop eax<br>`0f18c8` nop eax<br>`0f18d0` nop eax |
-| `prefetch` | 12 | `f20f` prefetch (bad)<br>`f20f` prefetch (bad)<br>`f20f` prefetch (bad) |
-| `prefetchw` | 2 | `f20f` prefetchw (bad)<br>`f30f` prefetchw (bad) |
-| `prefetchwt1` | 2 | `f20f` prefetchwt1 (bad)<br>`f30f` prefetchwt1 (bad) |
 | `ptwrite` | 1 | `f30fae20` ptwrite DWORD PTR [eax] |
 | `test` | 16 | `f6c8cc` test al,0xcc<br>`f608cc` test BYTE PTR [eax],0xcc<br>`f7c8cccccccc` test eax,0xcccccccc |
-| `xcrypt-cbc` | 2 | `f20f` xcrypt-cbc (bad)<br>`f30f` xcrypt-cbc (bad) |
-| `xcrypt-cfb` | 2 | `f20f` xcrypt-cfb (bad)<br>`f30f` xcrypt-cfb (bad) |
-| `xcrypt-ctr` | 2 | `f20f` xcrypt-ctr (bad)<br>`f30f` xcrypt-ctr (bad) |
-| `xcrypt-ecb` | 2 | `f20f` xcrypt-ecb (bad)<br>`f30f` xcrypt-ecb (bad) |
-| `xcrypt-ofb` | 2 | `f20f` xcrypt-ofb (bad)<br>`f30f` xcrypt-ofb (bad) |
 | `xgetbv` | 3 | `660f01d0` xgetbv<br>`f20f01d0` xgetbv<br>`f30f01d0` xgetbv |
-| `xrstors` | 2 | `f20f` xrstors (bad)<br>`f30f` xrstors (bad) |
-| `xsavec` | 2 | `f20f` xsavec (bad)<br>`f30f` xsavec (bad) |
-| `xsaves` | 2 | `f20f` xsaves (bad)<br>`f30f` xsaves (bad) |
 | `xsetbv` | 3 | `660f01d1` xsetbv<br>`f20f01d1` xsetbv<br>`f30f01d1` xsetbv |
-| `xsha1` | 2 | `f20f` xsha1 (bad)<br>`f30f` xsha1 (bad) |
-| `xsha256` | 2 | `f20f` xsha256 (bad)<br>`f30f` xsha256 (bad) |
-| `xstore-rng` | 2 | `f20f` xstore-rng (bad)<br>`f30f` xstore-rng (bad) |
 
 ## #UD in both
 
-`aadd`, `aand`, `aesdec128kl`, `aesdec256kl`, `aesdecwide128kl`, `aesdecwide256kl`, `aesenc128kl`, `aesenc256kl`, `aesencwide128kl`, `aesencwide256kl`, `aor`, `axor`, `clzero`, `encodekey128`, `encodekey256`, `enqcmd`, `enqcmds`, `frstpm(287`, `getsec`, `gf2p8affineinvqb`, `gf2p8affineqb`, `gf2p8mulb`, `insertq`, `invept`, `invpcid`, `invvpid`, `loadiwkey`, `mcommit`, `monitorx`, `montmul`, `mov`, `movdir64b`, `movdiri`, `pextrw`, `pslld`, `pslldq`, `psllq`, `psllw`, `psrad`, `psraw`, `psrld`, `psrldq`, `psrlq`, `psrlw`, `ptwrite`, `pvalidate`, `rdfsbase`, `rdgsbase`, `rdpkru`, `rdpmc`, `rdpru`, `rstorssp`, `saveprevssp`, `serialize`, `setssbsy`, `swapgs`, `ud0`, `ud1`, `ud2`, `wrfsbase`, `wrgsbase`, `wrmsrns`, `wrpkru`, `wrssd`, `wrussd`, `xcrypt-cbc`, `xcrypt-cfb`, `xcrypt-ctr`, `xcrypt-ecb`, `xcrypt-ofb`, `xend`, `xresldtrk`, `xrstors`, `xsavec`, `xsaves`, `xsha1`, `xsha256`, `xstore-rng`, `xsusldtrk`, `xtest`
+`aadd`, `aand`, `aesdec128kl`, `aesdec256kl`, `aesdecwide128kl`, `aesdecwide256kl`, `aesenc128kl`, `aesenc256kl`, `aesencwide128kl`, `aesencwide256kl`, `aor`, `axor`, `clzero`, `cmpxchg8b`, `encodekey128`, `encodekey256`, `enqcmd`, `enqcmds`, `extrq`, `frstpm(287`, `getsec`, `gf2p8affineinvqb`, `gf2p8affineqb`, `gf2p8mulb`, `insertq`, `invept`, `invpcid`, `invvpid`, `lddqu`, `lfs`, `lgs`, `loadiwkey`, `lss`, `maskmovdqu`, `maskmovq`, `mcommit`, `monitorx`, `montmul`, `mov`, `movbe`, `movdir64b`, `movdiri`, `movdq2q`, `movhpd`, `movhps`, `movlpd`, `movlps`, `movmskpd`, `movmskps`, `movntdq`, `movntdqa`, `movnti`, `movntpd`, `movntps`, `movntq`, `movntsd`, `movntss`, `movq2dq`, `pextrw`, `pmovmskb`, `prefetch`, `prefetchw`, `prefetchwt1`, `pslld`, `pslldq`, `psllq`, `psllw`, `psrad`, `psraw`, `psrld`, `psrldq`, `psrlq`, `psrlw`, `ptwrite`, `pvalidate`, `rdfsbase`, `rdgsbase`, `rdpkru`, `rdpmc`, `rdpru`, `rstorssp`, `saveprevssp`, `serialize`, `setssbsy`, `swapgs`, `ud0`, `ud1`, `ud2`, `wrfsbase`, `wrgsbase`, `wrmsrns`, `wrpkru`, `wrssd`, `wrussd`, `xcrypt-cbc`, `xcrypt-cfb`, `xcrypt-ctr`, `xcrypt-ecb`, `xcrypt-ofb`, `xend`, `xresldtrk`, `xrstors`, `xsavec`, `xsaves`, `xsha1`, `xsha256`, `xstore-rng`, `xsusldtrk`, `xtest`
+
+## Results that differ from QEMU's
+
+Where both ran a form without an exception (22625 forms; the time stamp counter, random numbers, cpuid, port input,
+descriptor table addresses and FPU or XSAVE state images left out): the registers, xmm0..7 and the 64 bytes of memory
+the memory forms point at.
+
+| Mnemonic | Forms | Examples (what differs) |
+|---|---|---|
+| `enterw` | 16 | `66c8c0cccc` enterw 0xccc0,0xcc: ebp<br>`66c800cccc` enterw 0xcc00,0xcc: ebp<br>`66c8c8cccc` enterw 0xccc8,0xcc: ebp |
+| `fist` | 2 | `db10` fist DWORD PTR [eax]: memory<br>`f3db10` fist DWORD PTR [eax]: memory |
+| `fistp` | 2 | `db18` fistp DWORD PTR [eax]: memory<br>`f3db18` fistp DWORD PTR [eax]: memory |
+| `fisttp` | 4 | `db08` fisttp DWORD PTR [eax]: memory<br>`dd08` fisttp QWORD PTR [eax]: memory<br>`f3db08` fisttp DWORD PTR [eax]: memory |
+| `fst` | 8 | `d910` fst DWORD PTR [eax]: memory<br>`dd10` fst QWORD PTR [eax]: memory<br>`66d910` fst DWORD PTR [eax]: memory |
+| `fstp` | 12 | `d918` fstp DWORD PTR [eax]: memory<br>`db38` fstp TBYTE PTR [eax]: memory<br>`dd18` fstp QWORD PTR [eax]: memory |
+| `mov` | 128 | `a0c0cccccc` mov al,ds:0xccccccc0: eax<br>`a000cccccc` mov al,ds:0xcccccc00: eax<br>`a0c8cccccc` mov al,ds:0xccccccc8: eax |
+
+## Only the arithmetic flags differ
+
+(CF PF AF ZF SF OF DF; many instructions leave some of them undefined, so not every one of these is a bug)
+
+| Mnemonic | Forms | Examples (flags that differ) |
+|---|---|---|
+| `fcomi` | 2 | `dbf0` fcomi st,st(0): flags 5<br>`f3dbf0` fcomi st,st(0): flags 5 |
+| `fucomi` | 2 | `dbe8` fucomi st,st(0): flags 5<br>`f3dbe8` fucomi st,st(0): flags 5 |
+| `rcl` | 6 | `c1d0cc` rcl eax,0xcc: flags 800<br>`d310` rcl DWORD PTR [eax],cl: flags 800<br>`f2c1d0cc` rcl eax,0xcc: flags 800 |
+| `shld` | 24 | `0fa4c0cc` shld eax,eax,0xcc: flags 800<br>`0fa4c8cc` shld eax,ecx,0xcc: flags 800<br>`0fa4d0cc` shld eax,edx,0xcc: flags 800 |
+| `shrd` | 16 | `0facd0cc` shrd eax,edx,0xcc: flags 800<br>`0fac10cc` shrd DWORD PTR [eax],edx,0xcc: flags 800<br>`0fadc8` shrd eax,ecx,cl: flags 800 |
+| `tzcnt` | 16 | `f30fbcc0` tzcnt eax,eax: flags 4<br>`f30fbc00` tzcnt eax,DWORD PTR [eax]: flags 4<br>`f30fbcc8` tzcnt ecx,eax: flags 4 |

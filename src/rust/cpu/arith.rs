@@ -1162,6 +1162,21 @@ pub unsafe fn popcnt(v: i32) -> i32 {
     };
 }
 
+/// lzcnt (F3 0F BD): leading zero bits of a `bits` wide value; CF when the source is zero, ZF when the count is
+pub unsafe fn lzcnt(v: i32, bits: u32) -> i32 {
+    *flags_changed = 0;
+    *flags &= !FLAGS_ALL;
+    let v = v as u32 & if bits == 16 { 0xFFFF } else { 0xFFFF_FFFF };
+    let count = if v == 0 { bits } else { v.leading_zeros() - (32 - bits) };
+    if v == 0 {
+        *flags |= FLAG_CARRY;
+    }
+    if count == 0 {
+        *flags |= FLAG_ZERO;
+    }
+    count as i32
+}
+
 pub unsafe fn saturate_sw_to_ub(v: u16) -> u8 {
     let mut ret = v;
     if ret >= 32768 {

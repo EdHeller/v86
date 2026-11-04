@@ -434,6 +434,7 @@ const encodings = [
 
     { opcode: 0x0FBC, os: 1, e: 1, mask_flags: of | sf | af | pf | cf, custom: 1 }, // bsf
     { opcode: 0x0FBD, os: 1, e: 1, mask_flags: of | sf | af | pf | cf, custom: 1 },
+    { opcode: 0xF30FBD, os: 1, e: 1, mask_flags: of | sf | af | pf }, // lzcnt
 
     // note: overflow flag only undefined if shift is > 1
     { opcode: 0x0FA4, os: 1, e: 1, custom: 1, imm8: 1, mask_flags: af | of }, // shld
@@ -527,6 +528,9 @@ const encodings = [
     { sse: 1, opcode: 0xF30F2A, e: 1, custom: 1 },
     { sse: 1, opcode: 0x0F2B, reg_ud: 1, e: 1, custom: 1 },
     { sse: 1, opcode: 0x660F2B, reg_ud: 1, e: 1, custom: 1 },
+    // (F3/F2 0F 2B: AMD's SSE4a movntss/movntsd; #UD on Intel, not the 16 byte movntps)
+    { opcode: 0xF20F2B, e: 1 },
+    { opcode: 0xF30F2B, e: 1 },
 
     { sse: 1, opcode: 0x0F2C, e: 1 },
     { sse: 1, opcode: 0x660F2C, e: 1 },
