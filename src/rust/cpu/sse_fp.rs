@@ -232,6 +232,26 @@ fn ordinary64(x: f64) -> bool { x.is_finite() && (x == 0.0 || x.abs() >= f64::MI
 
 /// The common case of the packed and scalar operations without the per-element exception path: the result, or
 /// None when an operand or the result needs it (NaN, infinity, denormal, underflow, division, square root)
+/// Whether x * y (rounded to r) was inexact, without a fused multiply-add (WebAssembly has none: f64::mul_add is a
+/// slow library routine there): Dekker's product splits the operands into halves whose products are exact
+#[inline(always)]
+fn mul_inexact64(x: f64, y: f64, r: f64) -> bool {
+    // (operands near the end of the range overflow in the split: let the exact path decide those)
+    if x.abs() > 1e300 || y.abs() > 1e300 || r.abs() > 1e300 || (r != 0.0 && r.abs() < 1e-290) {
+        return x.mul_add(y, -r) != 0.0;
+    }
+    let split = |v: f64| {
+        let c = 134217729.0 * v; // 2^27 + 1
+        let hi = c - (c - v);
+        (hi, v - hi)
+    };
+    let (xh, xl) = split(x);
+    let (yh, yl) = split(y);
+    // (the evaluation order of TwoProduct, in which every step is exact)
+    let err = xl * yl - (((r - xh * yh) - xl * yh) - xh * yl);
+    err != 0.0
+}
+
 #[inline(always)]
 unsafe fn fast_f64(op: Op, x: f64, y: f64, inexact: &mut bool, check_inexact: bool) -> Option<f64> {
     if !ordinary64(x) || !ordinary64(y) {
@@ -255,7 +275,7 @@ unsafe fn fast_f64(op: Op, x: f64, y: f64, inexact: &mut bool, check_inexact: bo
                 let bb = r - x;
                 (x - (r - bb)) + (y - bb) != 0.0
             },
-            _ => x.mul_add(y, -r) != 0.0,
+            _ => mul_inexact64(x, y, r),
         };
     }
     Some(r)
@@ -369,7 +389,46 @@ pub unsafe fn pd(op: Op, source: reg128, r: i32) {
     }
 }
 
+/// The scalar single precision operations' fast path (as ps_fast, one lane)
+#[inline(always)]
+unsafe fn ss_fast(op: Op, x: f32, y: f32) -> Option<(f32, bool)> {
+    let ordinary = |v: f32| v.is_finite() && (v == 0.0 || v.abs() >= f32::MIN_POSITIVE);
+    if !ordinary(x) || !ordinary(y) {
+        return None;
+    }
+    let r = match op {
+        Op::Add => x + y,
+        Op::Sub => x - y,
+        Op::Mul => x * y,
+        Op::Min => return Some((if x < y { x } else { y }, false)),
+        Op::Max => return Some((if x > y { x } else { y }, false)),
+        _ => return None,
+    };
+    if !ordinary(r) || (r == 0.0 && op == Op::Mul && x != 0.0 && y != 0.0) {
+        return None;
+    }
+    let mut inexact = false;
+    if *mxcsr as u32 & PE == 0 {
+        let (xd, yd, rd) = (x as f64, y as f64, r as f64);
+        inexact = rd != match op {
+            Op::Add => xd + yd,
+            Op::Sub => xd - yd,
+            _ => xd * yd,
+        };
+    }
+    Some((r, inexact))
+}
+
 pub unsafe fn ss(op: Op, source: f32, r: i32) {
+    if usual_mxcsr() {
+        if let Some((v, inexact)) = ss_fast(op, read_xmm_f32(r), source) {
+            if inexact {
+                *mxcsr |= PE as i32;
+            }
+            write_xmm_f32(r, v);
+            return;
+        }
+    }
     let mut fl = 0;
     let v = f32_op(op, read_xmm_f32(r), source, &mut fl);
     if commit(fl) {
@@ -378,6 +437,17 @@ pub unsafe fn ss(op: Op, source: f32, r: i32) {
 }
 
 pub unsafe fn sd(op: Op, source: f64, r: i32) {
+    if usual_mxcsr() {
+        let check = *mxcsr as u32 & PE == 0;
+        let mut inexact = false;
+        if let Some(v) = fast_f64(op, f64::from_bits(read_xmm64s(r)), source, &mut inexact, check) {
+            if inexact {
+                *mxcsr |= PE as i32;
+            }
+            write_xmm_f64(r, v);
+            return;
+        }
+    }
     let mut fl = 0;
     let v = f64_op(op, f64::from_bits(read_xmm64s(r)), source, &mut fl);
     if commit(fl) {
