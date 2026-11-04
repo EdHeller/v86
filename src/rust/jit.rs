@@ -74,6 +74,8 @@ static mut JIT_USE_LOOP_SAFETY: bool = true;
 pub static mut MAX_EXTRA_BASIC_BLOCKS: u32 = 250;
 
 pub const JIT_THRESHOLD: u32 = 200 * 1000;
+/// The heat at which a page is compiled: JIT_THRESHOLD, lowered by tests through set_jit_config(59, ..)
+static mut JIT_THRESHOLD_NOW: u32 = JIT_THRESHOLD;
 
 // less branches will generate if-else, more will generate brtable
 pub const BRTABLE_CUTOFF: usize = 10;
@@ -840,7 +842,7 @@ pub fn jit_force_generate_unsafe(virt_addr: i32) {
         cpu::translate_address_read(virt_addr).unwrap(),
         cpu::get_seg_cs() as u32,
         cpu::get_state_flags(),
-        JIT_THRESHOLD,
+        unsafe { JIT_THRESHOLD_NOW },
     );
     dbg_assert!(get_jit_state().compiling.is_some());
 }
@@ -2211,7 +2213,7 @@ pub fn jit_increase_hotness_and_maybe_compile(
     }
 
     *hotness += heat;
-    if *hotness >= JIT_THRESHOLD {
+    if *hotness >= unsafe { JIT_THRESHOLD_NOW } {
         if is_compiling {
             return;
         }
@@ -2642,6 +2644,8 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         2 => JIT_USE_LOOP_SAFETY = value != 0,
         3 => MAX_EXTRA_BASIC_BLOCKS = value,
         4 => crate::cpu::jit64::set_threshold(value),
+        59 => JIT_THRESHOLD_NOW = value.max(1),
+        60 => crate::cpu::sse_fp::FAST_PATHS_OFF = value != 0,
         9 => crate::cpu::jit64::set_disable_mask(value),
         41 => crate::cpu::jit64::WATCH_PAGE = value as u64,
         53 => crate::cpu::jit64::BACKOFF_CAP = value,
@@ -2676,6 +2680,7 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         2 => JIT_USE_LOOP_SAFETY as u32,
         3 => MAX_EXTRA_BASIC_BLOCKS as u32,
         4 => crate::cpu::jit64::threshold(),
+        59 => JIT_THRESHOLD_NOW,
         5 => crate::cpu::jit64::STAT_COMPILED,
         6 => crate::cpu::jit64::STAT_FAILED,
         7 => crate::cpu::jit64::STAT_RUN,

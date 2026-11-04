@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Runs the probe of tools/x86_coverage/probe.mjs in v86 and in QEMU (TCG, -cpu max) and compares the outcomes.
 //
-//   node tools/x86_coverage/run.mjs [bits] [v86|v64|qemu|all]       default: 32 all
+//   node tools/x86_coverage/run.mjs [bits] [v86|v64|qemu|all|jit]       default: 32 all
+//
+// jit: runs the probes in v86 (v64 for 64) once interpreted and once compiled (several passes over the probes with the
+// JIT's threshold lowered, the last pass compared) and writes tools/x86_coverage/jit-<bits>.md: where they differ.
 //
 // Writes build/x86_coverage/outcome<bits>-<machine>.json (the vector each probe raised, -1 for none) and
 // tools/x86_coverage/coverage-<bits>.md: the forms v86 rejects with #UD that QEMU executes (missing in v86), the ones
@@ -23,7 +26,7 @@ const probes = fs.readFileSync(path.join(OUT, `probe${bits}-probes.bin`));
 const { layout, probed, skipped } = JSON.parse(fs.readFileSync(path.join(OUT, `probe${bits}-forms.json`), "utf8"));
 const { PROBES, RESULTS, DUMPS, DUMP_SIZE, MEMORY_MB } = layout;
 
-async function run_v86(wasm)
+async function run_v86(wasm, jit_passes = 0, jit = true)
 {
     // (the release bundle: the source tree asserts on 32-bit reads of 8-bit ports, which the probe does on purpose)
     const { V86 } = await import(path.join(ROOT, "build/libv86.mjs"));
@@ -34,14 +37,22 @@ async function run_v86(wasm)
         wasm_path: path.join(ROOT, "build", wasm),
         bios: { buffer: buf(path.join(ROOT, "bios/seabios.bin")) },
         memory_size: MEMORY_MB << 20, cpu_type: wasm.startsWith("v64") ? "x86_64" : "x86", autostart: false, log_level: 0,
+        ...(jit_passes && jit ? { jit64_threshold: 1, sync_jit: true } : { disable_jit: true }),
     });
     await new Promise(r => emulator.add_listener("emulator-loaded", r));
     const cpu = emulator.v86.cpu;
+    // (the JIT: pages compiled after little heat (59: the 16/32-bit JIT; 4: jit64), the set run jit_passes times)
+    if(jit_passes && jit)
+    {
+        cpu.wm.exports["set_jit_config"](59, 100);
+        cpu.wm.exports["set_jit_config"](4, 1);
+    }
     cpu.reboot_internal();
     cpu.reset_memory();
     cpu.mem8.set(stub, 0x7C00);
     cpu.mem8.set(probes, PROBES);
     cpu.mem8.set([0xEA, 0x00, 0x7C, 0x00, 0x00], 0xFFFF0);
+    cpu.mem32s[0x634 >> 2] = jit_passes;
     emulator.run();
     const m32 = a => cpu.mem32s[a >> 2];
     const t0 = Date.now();
@@ -54,6 +65,8 @@ async function run_v86(wasm)
         if(Date.now() - since > 20000) { emulator.stop(); return { hang: cur, outcome: null }; }
     }
     emulator.stop();
+    // (the profiler build counts the compiled entry points: X86_COVERAGE_WASM=v86-prof.wasm)
+    if(jit_passes && jit && cpu.wm.exports["jit_get_cache_size"]) { const st = n => cpu.wm.exports["profiler_stat_get"](n); console.log(`threshold ${cpu.wm.exports["get_jit_config"](59)} stats ${[0,1,2,3,4,5,6,7].map(st).join(" ")}; compiles ${st(0)}, instructions interpreted ${st(24)}, compiled ${st(26)}, different state ${st(18)}`); }
     const outcome = Array.from({ length: probed.length }, (_, i) => m32(RESULTS + i * 4) | 0);
     const dumps = Buffer.from(cpu.mem8.slice(DUMPS, DUMPS + probed.length * DUMP_SIZE));
     return { seconds: (Date.now() - t0) / 1000, outcome, dumps };
@@ -106,6 +119,46 @@ async function run_qemu()
     return { seconds: (Date.now() - t0) / 1000, outcome, dumps };
 }
 
+if(which === "jit")
+{
+    const wasm = process.env.X86_COVERAGE_WASM || (bits === 64 ? "v64.wasm" : "v86.wasm");
+    // (both six passes: a form leaves memory outside scratch changed for the next pass, bts beyond it for one)
+    // (jit64 compiles synchronously; the 16/32-bit JIT one module per turn of the event loop, about 80% of the
+    // probes' pages compiled after 300 passes)
+    const passes = +process.env.X86_COVERAGE_PASSES || (bits === 64 ? 6 : 300);
+    const runs = [await run_v86(wasm, passes, false), await run_v86(wasm, passes)];
+    for(const r of runs) if(!r.outcome) { const f = probed[r.hang]; console.log(`hangs at probe ${r.hang}: ${f ? f.full + " " + f.text : "?"}`); process.exit(1); }
+    const [a, b] = runs;
+    const SKIP = /^(rdtsc|rdtscp|rdrand|rdseed|rdpid|rdpmc|in|ins[bwd]?|fn?stenv|fn?save|fxsave|xsave)/;
+    const lines = [];
+    probed.forEach((f, i) => {
+        if(SKIP.test(f.mnemonic)) return;
+        const what = [];
+        if(a.outcome[i] !== b.outcome[i]) what.push(`outcome ${a.outcome[i]} / ${b.outcome[i]}`);
+        else if(a.outcome[i] === -1)
+        {
+            const x = a.dumps.subarray(i * DUMP_SIZE, (i + 1) * DUMP_SIZE), y = b.dumps.subarray(i * DUMP_SIZE, (i + 1) * DUMP_SIZE);
+            for(let k = 0; k < DUMP_SIZE; k += 4) if(x.readUInt32LE(k) !== y.readUInt32LE(k)) what.push(`+${k}: ${x.readUInt32LE(k).toString(16)} / ${y.readUInt32LE(k).toString(16)}`);
+        }
+        if(what.length) lines.push(`| \`${f.full}\` | ${f.text.replace(/\|/g, "\\|")} | ${what.slice(0, 4).join("<br>")} |`);
+    });
+    fs.writeFileSync(path.join(ROOT, `tools/x86_coverage/jit-${bits}.md`), `# ${bits}-bit: the interpreter against the JIT
+
+\`run.mjs ${bits} jit\`: ${passes} passes over the probes interpreted (disable_jit) and ${passes} compiled (the pages
+compiled after little heat); the last passes compared. Interpreted ${a.seconds.toFixed(1)} s, compiled ${b.seconds.toFixed(1)} s.
+Left out: time stamps, random numbers, port input, saved FPU environments (their instruction pointers differ).
+Dump offsets: ${bits === 64 ? "rax..r15 at 0..127, rflags 128, xmm0..15 at 144, memory at 400" : "eax..edi at 0..31, eflags 32, xmm0..7 at 48, memory at 176"}.
+
+**${lines.length} forms differ** (interpreted / compiled)
+
+| Form | Instruction | Differences |
+|---|---|---|
+${lines.join("\n")}
+`);
+    console.log(`interpreted ${a.seconds.toFixed(1)} s, compiled ${b.seconds.toFixed(1)} s: ${lines.length} forms differ`);
+    process.exit(0);
+}
+
 const machines = which === "all" ? [bits === 64 ? "v64" : "v86", "qemu"] : [which];
 const results = {};
 const dumps = {};
@@ -140,7 +193,7 @@ if(ours && ref)
     // why a form is #UD on one machine only (checked by hand)
     const UD_WHY = {
         extrq: "SSE4a (AMD only)", insertq: "SSE4a (AMD only)", movntsd: "SSE4a (AMD only)", movntss: "SSE4a (AMD only)",
-        femms: "3DNow! (AMD only)", xbeginw: "TSX (not on v86's CPU)",
+        femms: "3DNow! (AMD only)", xbeginw: "TSX (not on v86's CPU)", xbegind: "TSX (not on v86's CPU)",
         movhpd: "QEMU: runs the register form (SDM: memory only, #UD)", movlpd: "QEMU: runs the register form (SDM: memory only, #UD)",
         movntdq: "QEMU: runs the register form (SDM: memory only, #UD)", movntq: "QEMU: runs the register form (SDM: memory only, #UD)",
         nop: "0F 18 with a register operand: a hint NOP on Intel CPUs; QEMU raises #UD",
@@ -149,7 +202,7 @@ if(ours && ref)
     };
     const list = map => [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([m, fs]) =>
         `| \`${m}\` | ${fs.length} | ${fs.slice(0, 3).map(f => "`" + f.full + "` " + f.text.replace(/\|/g, "\\|")).join("<br>")} | ${UD_WHY[m] || "**to check**"} |`).join("\n");
-    let md = `# x86 instruction coverage, ${bits === 64 ? "64-bit long mode" : bits + "-bit protected mode"}
+    let md = `# x86 instruction coverage, ${{ 16: "16-bit code (16-bit code segments, protected mode)", 32: "32-bit protected mode", 64: "64-bit long mode" }[bits]}
 
 Generated by \`tools/x86_coverage\` (\`reference.py\`, \`probe.mjs\`, \`run.mjs\`): every instruction form GNU objdump
 decodes (the one-byte, 0F, 0F 38 and 0F 3A maps with no prefix, 66, F2 and F3, each ModRM reg field, register and memory
@@ -224,6 +277,17 @@ ${[...both.keys()].sort().map(m => "`" + m + "`").join(", ")}
         fnstenvw: "the reserved upper halves of the 32-bit environment (66 48: REX.W wins, the 32-bit format)",
         fxsave64: "QEMU: an MMX write leaves the exponent field (SDM: all ones, as in v86)",
     };
+    if(bits === 16) Object.assign(WHY, {
+        crc32: "QEMU: a 32-bit operand in 16-bit code without 66 (v86 checked by hand: CRC-32C of the 16-bit value)",
+        popcnt: "QEMU: a 32-bit operand in 16-bit code without 66", movbe: "QEMU: a 32-bit operand in 16-bit code without 66",
+        enter: "QEMU: writes all of EBP (SDM: with a 16-bit operand size only BP)",
+        fnsaved: "the reserved upper halves of the 32-bit image: v86 writes ones, QEMU zeros; QEMU's MMX exponent",
+        fnstenvd: "the reserved upper halves of the 32-bit environment: v86 writes ones, QEMU zeros",
+        bt: "v86: a bit offset beyond the segment does not wrap the 16-bit effective address at 64 KiB (rare)",
+        btc: "v86: a bit offset beyond the segment does not wrap the 16-bit effective address at 64 KiB (rare)",
+        btr: "v86: a bit offset beyond the segment does not wrap the 16-bit effective address at 64 KiB (rare)",
+        bts: "v86: a bit offset beyond the segment does not wrap the 16-bit effective address at 64 KiB (rare)",
+    });
     // (QEMU extends mmx registers with REX.R and REX.B, reading and writing past mm7: SDM, REX does not apply)
     const why = (m, f) => WHY[m] || (bits === 64 && /^(66|f2|f3)?4[1-7c-f]/.test(f.full) && /\bmm\d/.test(f.text) ?
         "QEMU: REX.R/REX.B select mm8..mm15 (into the xmm state); SDM: REX does not apply to mmx registers" : null);

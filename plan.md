@@ -42,7 +42,7 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
 
 1. ✅ **32-bit speed back to upstream's** (2026-11-04; `docs/releases.md`, speed note).
 
-2. ⬜ **Full instruction coverage on x86: 16-bit, 32-bit and x86_64** (in progress). The tool: `tools/x86_coverage`
+2. ✅ **Full instruction coverage on x86: 16-bit, 32-bit and x86_64** (2026-11-04). The tool: `tools/x86_coverage`
    (`reference.py`: every encoding GNU objdump decodes, per mode; `probe.mjs`: one flat binary that runs each form from
    patterned registers and memory and records the exception, registers, flags, xmm and memory; `run.mjs 32 all`:
    runs it in v86 and in QEMU (TCG, `-cpu max`) and writes `coverage-32.md`).
@@ -58,9 +58,16 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
      (addressed [rax] for [r8]), 66 for fnstenv/fldenv/fnsave/frstor, fxsave64's 64-bit pointers, #UD for movnti
      and prefetch register forms and xgetbv with a prefix; both cores: ptwrite/clrssbsy #UD, clwb. Every remaining
      difference has its reason in the report (AMD-only, TSX, QEMU's REX-on-mmx bug, undefined flags).
-   - ⬜ 16-bit code: real mode and 16-bit protected mode (16-bit addressing modes); the probe needs code segments of
-     at most 64 KiB each.
-   - ⬜ Then the JIT: run the probes hot (each form in a loop) so compiled code is compared too.
+   - ✅ 16-bit code (`run.mjs 16 all`, `coverage-16.md`): the probes in 16-bit code segments of protected mode
+     (16-bit operand and address sizes, [bx+si] memory forms). v86 matches; QEMU runs crc32, popcnt and movbe with
+     32-bit operands in 16-bit code. Known: a bt/btc/btr/bts bit offset beyond the segment does not wrap the 16-bit
+     effective address at 64 KiB (rare).
+   - ✅ The JIT (`run.mjs <bits> jit`, `jit-<bits>.md`): every probe interpreted and compiled (many passes, the JIT's
+     threshold lowered through `set_jit_config(59, ..)`), no differences. Fixed: compiled `bound` with a 16-bit operand
+     (read 32-bit bounds: the handler asked the prefixes at run time), compiled `fbld` (#UD), `fpu_fbstp` not
+     exported (a LinkError when a compiled block used fbstp; `tests/x64/js/jit_exports.js` now checks every function
+     name the code generators call), jit64's push/pop/leave with 66 and REX.W.
+   - Left for later: real mode specifics (segment loads without descriptors) are covered by the hand-written tests.
 3. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
    persistence, the VM manager). The ARM half of v64 parity is task 8.
 4. ⬜ **Speed ideas from copy/v86#924** (copy's comment of 2023-09-19). Profile first as copy suggests: the Firefox

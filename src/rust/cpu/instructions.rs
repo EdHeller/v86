@@ -524,14 +524,20 @@ pub unsafe fn instr16_61() { popa16(); }
 pub unsafe fn instr32_61() { popa32(); }
 
 #[no_mangle]
-pub unsafe fn instr_62_reg(_r2: i32, _r: i32) {
+pub unsafe fn instr16_62_reg(_r2: i32, _r: i32) {
     // bound with a register operand
     trigger_ud();
 }
 #[no_mangle]
-pub unsafe fn instr_62_mem(addr: i32, r: i32) {
-    // bound: raises #BR if the signed index is outside of [lower, upper] read from memory
-    let (index, lower, upper) = if is_osize_32() {
+pub unsafe fn instr32_62_reg(_r2: i32, _r: i32) { trigger_ud(); }
+#[no_mangle]
+pub unsafe fn instr16_62_mem(addr: i32, r: i32) { bound(addr, r, false) }
+#[no_mangle]
+pub unsafe fn instr32_62_mem(addr: i32, r: i32) { bound(addr, r, true) }
+/// bound: raises #BR if the signed index is outside of [lower, upper] read from memory (the operand size from the
+/// instruction's form: compiled code does not keep the prefixes for is_osize_32)
+unsafe fn bound(addr: i32, r: i32, osize_32: bool) {
+    let (index, lower, upper) = if osize_32 {
         (
             read_reg32(r),
             return_on_pagefault!(safe_read32s(addr)),

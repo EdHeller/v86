@@ -28,7 +28,7 @@ process.on("unhandledRejection", exn => { throw exn; });
 
 const MAX_PARALLEL_TESTS = +process.env.MAX_PARALLEL_TESTS || 99;
 const TEST_NAME = new RegExp(process.env.TEST_NAME || "", "i");
-const SINGLE_TEST_TIMEOUT = 10000;
+const SINGLE_TEST_TIMEOUT = +process.env.NASM_TEST_TIMEOUT || 10000;  // (ms; slower hosts need more for the bt* tests)
 
 const TEST_DIR = __dirname + "/build/";
 const DONE_MSG = "DONE";
@@ -258,7 +258,9 @@ else {
 
         cpu.reboot_internal();
         cpu.reset_memory();
-        cpu.load_multiboot(fs.readFileSync(TEST_DIR + current_test.img_name).buffer);
+        // (exactly the file: a small file can be a view into node's shared buffer pool, whose .buffer holds more)
+        const img = fs.readFileSync(TEST_DIR + current_test.img_name);
+        cpu.load_multiboot(img.buffer.slice(img.byteOffset, img.byteOffset + img.byteLength));
 
         test_timeout = setTimeout(() => {
             console.error("Test " + test.img_name + " timed out after " + (SINGLE_TEST_TIMEOUT / 1000) + " seconds.");

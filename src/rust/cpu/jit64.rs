@@ -809,6 +809,8 @@ struct Pfx {
 
 impl Pfx {
     fn w(&self) -> bool { self.rex & 8 != 0 }
+    /// The operand size of stack operations: 64, or 16 with 66 (REX.W wins over 66)
+    fn stack_size(&self) -> u32 { if self.osz16 && !self.w() { 16 } else { 64 } }
     fn r(&self) -> u8 { (self.rex >> 2 & 1) << 3 }
     fn x(&self) -> u8 { (self.rex >> 1 & 1) << 3 }
     fn b(&self) -> u8 { (self.rex & 1) << 3 }
@@ -924,10 +926,10 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
             }
         },
         0x50..=0x57 => Insn::Push {
-            bits: if p.osz16 { 16 } else { 64 },
+            bits: p.stack_size(),
             src: Opd::Reg((opcode & 7) | p.b(), true),
         },
-        0x58..=0x5F => Insn::Pop { bits: if p.osz16 { 16 } else { 64 }, dst: (opcode & 7) | p.b() },
+        0x58..=0x5F => Insn::Pop { bits: p.stack_size(), dst: (opcode & 7) | p.b() },
         0x63 => {
             let m = modrm(&mut c, &p)?;
             if !p.w() {
@@ -937,11 +939,11 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
         },
         0x68 => {
             let v = if p.osz16 { c.u16()? } else { sign_extend(c.u32()?, 32) };
-            Insn::Push { bits: if p.osz16 { 16 } else { 64 }, src: Opd::Imm(v) }
+            Insn::Push { bits: p.stack_size(), src: Opd::Imm(v) }
         },
         0x6A => {
             let v = c.i8()? as u64;
-            Insn::Push { bits: if p.osz16 { 16 } else { 64 }, src: Opd::Imm(v) }
+            Insn::Push { bits: p.stack_size(), src: Opd::Imm(v) }
         },
         0x70..=0x7F => {
             let d = c.i8()?;
@@ -1095,7 +1097,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
             };
             Insn::Mov { bits, dst: m.rm, src: Opd::Imm(v) }
         },
-        0xC9 => Insn::Leave { bits: if p.osz16 { 16 } else { 64 } },
+        0xC9 => Insn::Leave { bits: p.stack_size() },
         0xFA | 0xFB if rep == 0 => Insn::IfFlag { set: opcode == 0xFB },
         0x9C if rep == 0 && !p.osz16 => Insn::Pushf,
         0xE8 => {
@@ -1121,7 +1123,7 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                 // call, jmp and push r/m (operand size 64, or 16 for push)
                 2 if opcode == 0xFF => Insn::CallInd { src: m.rm },
                 4 if opcode == 0xFF => Insn::JmpInd { src: m.rm },
-                6 if opcode == 0xFF => Insn::Push { bits: if p.osz16 { 16 } else { 64 }, src: m.rm },
+                6 if opcode == 0xFF => Insn::Push { bits: p.stack_size(), src: m.rm },
                 _ => return None,
             }
         },

@@ -17,8 +17,15 @@ const names = new Set();
 for(const f of sources)
 {
     const text = fs.readFileSync(path.join(root, f), "utf8");
-    for(const m of text.matchAll(/"((?:instr|mmx|sse|jit)[A-Za-z0-9_]{3,})"/g)) names.add(m[1]);
+    for(const m of text.matchAll(/"([A-Za-z_][A-Za-z0-9_]{3,})"/g)) names.add(m[1]);
 }
+// (every quoted name that is a Rust function: fpu_*, safe_*, ... too, not only instr*)
+const rust = [];
+const walk = d => { for(const e of fs.readdirSync(d, { withFileTypes: true })) e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith(".rs") && rust.push(fs.readFileSync(path.join(d, e.name), "utf8")); };
+walk(path.join(root, "src/rust"));
+const defined = new Set(rust.join("\n").match(/\bfn [A-Za-z_][A-Za-z0-9_]*/g).map(m => m.slice(3)));
+// (report_*: called only by the profiler build, bug_*: only by the debug build, where they are defined)
+for(const n of [...names]) if(!defined.has(n) || /^(report_|bug_)/.test(n)) names.delete(n);
 
 let errors = 0;
 for(const wasm of ["build/v86-debug.wasm", "build/v86.wasm"])

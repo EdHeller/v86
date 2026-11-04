@@ -662,6 +662,7 @@ pub unsafe fn fpu_fstp(r: i32) {
 #[no_mangle]
 /// fbld: an 80-bit packed BCD integer (18 digits, two per byte with the low digit in the low nibble, the sign in
 /// bit 7 of the tenth byte) pushed as a float. Digits above 9 are undefined; they count as their value here.
+#[no_mangle]
 pub unsafe fn fpu_fbld(addr: i32) {
     let mut value: i64 = 0;
     for i in (0..9).rev() {
@@ -677,6 +678,7 @@ pub unsafe fn fpu_fbld(addr: i32) {
     fpu_push(f);
 }
 
+#[no_mangle]
 pub unsafe fn fpu_fbstp(addr: i32) {
     let st0 = fpu_get_st0();
     let mut x = st0.to_i64().unsigned_abs();

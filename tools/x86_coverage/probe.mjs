@@ -5,7 +5,8 @@
 // segments and the stack and continue with the next probe; the probes are at 1 MiB, the results (one dword per probe)
 // at 8 MiB, scratch memory at 9 MiB, and after each probe that raised nothing its state at 16 MiB + 256 * index:
 // eax..edi (32 bytes), eflags (at 32), xmm0..7 (at 48) and the first 64 bytes of scratch memory (at 176). Done: the magic 0x45444F4E ("NODE") at 0x600, the probe count at 0x604; the
-// probe running now is at 0x608 (to find one that hangs).
+// probe running now is at 0x608 (to find one that hangs). The whole set runs [0x634] times (at least once: the JIT
+// compiles the probes' pages after a few passes), counted at 0x630.
 //
 //   node tools/x86_coverage/probe.mjs [bits]     writes build/x86_coverage/probe<bits>-stub.bin, -probes.bin, -forms.json
 //
@@ -20,11 +21,12 @@ import { execFileSync } from "node:child_process";
 const ROOT = path.join(path.dirname(url.fileURLToPath(import.meta.url)), "../..");
 const OUT = path.join(ROOT, "build/x86_coverage");
 const bits = +process.argv[2] || 32;
-if(bits !== 32 && bits !== 64) throw new Error("the 32-bit and the 64-bit probe so far");
+if(![16, 32, 64].includes(bits)) throw new Error("bits: 16, 32 or 64");
 
 // (64-bit: four times the forms, so a shared dump routine instead of one per probe, and 256 MiB of memory; a dump is
 // rax..r15 (128 bytes), rflags at 128, xmm0..15 at 144 and the 64 bytes of scratch memory at 400)
 const LAYOUT = {
+    16: { PROBES: 0x100000, RESULTS: 0x800000, SCRATCH: 0x900000, DUMPS: 0x1000000, DUMP_SIZE: 256, MEMORY_MB: 64 },
     32: { PROBES: 0x100000, RESULTS: 0x800000, SCRATCH: 0x900000, DUMPS: 0x1000000, DUMP_SIZE: 256, MEMORY_MB: 64 },
     64: { PROBES: 0x1000000, RESULTS: 0x800000, SCRATCH: 0x900000, DUMPS: 0x4000000, DUMP_SIZE: 512, MEMORY_MB: 256 },
 }[bits];
@@ -235,7 +237,216 @@ idt_ptr:
             `    mov esi, ${SCRATCH}\n    mov edi, ${d + 176}\n    mov ecx, 16\n    rep movsd\n` +
             `    mov eax, [0x614]\n    mov [${RESULTS + i * 4}], eax\n`;
     });
-    probes += `    mov dword [0x604], ${probed.length}\n    mov dword [0x600], 0x45444F4E\n.done:\n    cli\n    hlt\n    jmp .done\n`;
+    probes += `    mov eax, [0x630]\n    inc eax\n    mov [0x630], eax\n    cmp eax, [0x634]\n    jb p0\n` +
+        `    mov dword [0x604], ${probed.length}\n    mov dword [0x600], 0x45444F4E\n.done:\n    cli\n    hlt\n    jmp .done\n`;
+}
+else if(bits === 16)
+{
+    // 16-bit code in protected mode: the probes in 16-bit code segments (one per 64 KiB chunk, selectors 0x20 + 8k),
+    // calling the 32-bit reset and dump routines of the stub far. ss is the flat data segment (esp 0x90000), ds and
+    // es the scratch segment (base SCRATCH), so the memory forms' [bx+si] (bx = si = 0) is the start of scratch.
+    // Control words: 0x608 the probe's index, 0x614 its outcome, 0x618 m16:32 of the next probe, 0x620 the return of
+    // the reset.
+    const PER_CHUNK = 1200, chunks = Math.ceil(probed.length / PER_CHUNK);
+    stub = `
+bits 16
+org 0x7C00
+    cli
+    xor ax, ax
+    mov ds, ax
+    mov ss, ax
+    mov sp, 0x7000
+    mov al, 0xFF
+    out 0x21, al
+    out 0xA1, al
+    lgdt [gdt_ptr]
+    mov eax, cr0
+    or eax, 1
+    mov cr0, eax
+    jmp 0x08:pm
+bits 32
+pm:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov esp, 0x90000
+    mov edi, 0x20000
+    mov ecx, 0
+.idt:
+    mov eax, ecx
+    imul eax, eax, 16
+    add eax, vec0
+    mov word [edi], ax
+    mov word [edi + 2], 0x08
+    mov word [edi + 4], 0x8E00
+    shr eax, 16
+    mov word [edi + 6], ax
+    add edi, 8
+    inc ecx
+    cmp ecx, 32
+    jb .idt
+    lidt [idt_ptr]
+    mov eax, cr0
+    and eax, ~(1 << 2)
+    or eax, 1 << 1
+    mov cr0, eax
+    mov eax, cr4
+    or eax, (1 << 9) | (1 << 10) | (1 << 18)
+    mov cr4, eax
+    fninit
+    mov dword [0x608], -1
+    jmp 0x20:0
+
+; the state each probe starts from (called far from the probe: eip and cs on the stack)
+reset:
+    pop dword [ss:0x620]
+    pop dword [ss:0x624]
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov esp, 0x90000
+    mov dword [0x614], -1
+    push dword 2
+    popfd
+    ldmxcsr [mxcsr]
+%assign k 0
+%rep 8
+    movq mm%+k, [pattern + 0x80 + k * 8]
+%assign k k + 1
+%endrep
+    fninit
+    cld
+    mov esi, pattern
+    mov edi, ${SCRATCH}
+    mov ecx, 256
+    rep movsd
+%assign k 0
+%rep 8
+    movdqu xmm%+k, [pattern + k * 16]
+%assign k k + 1
+%endrep
+    mov ax, 0x18
+    mov ds, ax
+    mov es, ax
+    mov eax, 0x3F800040
+    mov ecx, 4
+    mov edx, 0x1E00                ; an unused port
+    xor ebx, ebx
+    xor esi, esi                   ; ([bx+si]: scratch)
+    mov edi, 0x100
+    mov ebp, 0x200
+    jmp far [ss:0x620]
+
+; after a probe that raised nothing: its state to DUMPS + DUMP_SIZE * index (the flags before anything changes them)
+dump:
+    mov [ss:0x700], eax
+    mov eax, [ss:0x608]
+    lea eax, [eax * 8]
+    lea eax, [eax * 8]
+    lea eax, [eax * 4 + ${DUMPS}]
+    mov [ss:eax + 4], ecx
+    mov [ss:eax + 8], edx
+    mov [ss:eax + 12], ebx
+    mov [ss:eax + 16], esp
+    mov [ss:eax + 20], ebp
+    mov [ss:eax + 24], esi
+    mov [ss:eax + 28], edi
+    mov ecx, [ss:0x700]
+    mov [ss:eax], ecx
+    mov cx, 0x10
+    mov ss, cx
+    mov esp, 0x90000
+    pushfd
+    pop dword [ss:eax + 32]
+    mov ds, cx
+    mov es, cx
+    cld
+%assign k 0
+%rep 8
+    movdqu [eax + 48 + k * 16], xmm%+k
+%assign k k + 1
+%endrep
+    mov esi, ${SCRATCH}
+    lea edi, [eax + 176]
+    mov ecx, 16
+    rep movsd
+    jmp after
+
+align 16
+vec0:
+%assign v 0
+%rep 32
+    mov dword [ss:0x614], v
+    jmp after
+    align 16
+%assign v v + 1
+%endrep
+; the outcome (the vector, or -1) to RESULTS + 4 * index, then the next probe
+after:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov esp, 0x90000
+    mov eax, [0x608]
+    mov edx, [0x614]
+    mov [${RESULTS} + eax * 4], edx
+    push dword 2
+    popfd
+    jmp far [0x618]
+
+align 4
+mxcsr: dd 0x1F80
+align 16
+pattern:
+%assign k 0
+%rep 64
+    dd 0x3F800000 + k * 0x10000 + k
+    dd (k * 0x9E3779B9) & 0xFFFFFFFF
+    dd 0x40000000 + k * 0x1000
+    dd (k * 0x85EBCA6B + 0x1234) & 0xFFFFFFFF
+%assign k k + 1
+%endrep
+align 8
+gdt:
+    dq 0
+    dq 0x00CF9A000000FFFF
+    dq 0x00CF92000000FFFF
+    dw 0xFFFF, ${SCRATCH} & 0xFFFF            ; 0x18: the scratch segment
+    db (${SCRATCH} >> 16) & 0xFF, 0x92, 0xCF, ${SCRATCH} >>> 24
+%assign k 0
+%rep ${chunks}
+    dw 0xFFFF, (${PROBES} + k * 0x10000) & 0xFFFF   ; 0x20 + 8k: a 16-bit code segment per chunk
+    db ((${PROBES} + k * 0x10000) >> 16) & 0xFF, 0x9A, 0x00, ((${PROBES} + k * 0x10000) >> 24) & 0xFF
+%assign k k + 1
+%endrep
+gdt_end:
+gdt_ptr:
+    dw gdt_end - gdt - 1
+    dd gdt
+idt_ptr:
+    dw 32 * 8 - 1
+    dd 0x20000
+`;
+
+    probes = "bits 16\n";
+    probed.forEach((f, i) => {
+        const k = Math.floor(i / PER_CHUNK);
+        if(i % PER_CHUNK === 0) probes += `section c${k} start=${k * 0x10000} vstart=0\n`;
+        const last = (i + 1) % PER_CHUNK === 0 || i + 1 === probed.length;
+        const next_sel = 0x20 + 8 * (i + 1 === probed.length ? k : Math.floor((i + 1) / PER_CHUNK));
+        probes += `p${i}:\n    mov dword [ss:0x608], ${i}\n    mov dword [ss:0x618], ${last && i + 1 < probed.length ? 0 : "p" + (i + 1)}\n` +
+            `    mov word [ss:0x61C], ${next_sel}\n    call dword 0x08:${0x7C00}+reset_off\n` +
+            `    db ${[...Buffer.from(f.full, "hex")].map(x => "0x" + x.toString(16)).join(",")}\n    jmp dword 0x08:${0x7C00}+dump_off\n`;
+    });
+    probes += `p${probed.length}:\n    mov eax, [ss:0x630]\n    inc eax\n    mov [ss:0x630], eax\n    cmp eax, [ss:0x634]\n` +
+        `    jae .fin\n    jmp 0x20:0\n.fin:\n    mov dword [ss:0x604], ${probed.length}\n    mov dword [ss:0x600], 0x45444F4E\n.done:\n    cli\n    hlt\n    jmp .done\n`;
 }
 else
 {
@@ -465,7 +676,8 @@ idt_ptr:
         probes += `p${i}:\n    mov dword [0x608], ${i}\n    mov qword [0x618], p${i + 1}\n    call ${0x7C00}+reset_off\n` +
             `    db ${[...Buffer.from(f.full, "hex")].map(x => "0x" + x.toString(16)).join(",")}\n    jmp ${0x7C00}+dump_off\n`;
     });
-    probes += `p${probed.length}:\n    mov dword [0x604], ${probed.length}\n    mov dword [0x600], 0x45444F4E\n.done:\n    cli\n    hlt\n    jmp .done\n`;
+    probes += `p${probed.length}:\n    mov eax, [0x630]\n    inc eax\n    mov [0x630], eax\n    cmp eax, [0x634]\n    jb p0\n` +
+        `    mov dword [0x604], ${probed.length}\n    mov dword [0x600], 0x45444F4E\n.done:\n    cli\n    hlt\n    jmp .done\n`;
 }
 
 const stub_asm = path.join(OUT, `probe${bits}-stub.asm`);

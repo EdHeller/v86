@@ -30,3 +30,5 @@ bench-results
 .devcontainer/devcontainer-lock.json
 __pycache__/
 /*.tar.xz
+/tools/v86-bench/builds/
+/tools/v86-bench/bios

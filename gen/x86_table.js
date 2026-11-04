@@ -75,7 +75,7 @@ const encodings = [
 
     { opcode: 0x60, os: 1, block_boundary: 1 }, // pusha
     { opcode: 0x61, os: 1, block_boundary: 1 }, // popa
-    { opcode: 0x62, e: 1, skip: 1 },
+    { opcode: 0x62, e: 1, os: 1, skip: 1 }, // bound (os: the compiled code calls the 16- or 32-bit form)
     { opcode: 0x63, e: 1, block_boundary: 1 }, // arpl
     { opcode: 0x64, prefix: 1 },
     { opcode: 0x65, prefix: 1 },

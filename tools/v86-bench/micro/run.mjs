@@ -3,6 +3,7 @@
 // a fresh reset of the emulator, timed from start to the guest's halt.
 //
 //   node micro/run.mjs [rounds] [builds...]     default: 5 rounds of every build in ../builds (rotating order)
+//   ONLY=sse,x87 node micro/run.mjs ...          only these benchmarks
 //
 // Uses the same builds/ folders as run.mjs (libv86.mjs, v86.wasm, optional options.json). Plain text out.
 
@@ -15,6 +16,11 @@ const here = path.dirname(url.fileURLToPath(import.meta.url));
 const root = path.join(here, "..");
 const NAMES = ["alu", "flags", "memory", "stack", "call_near", "call_far", "indirect", "string", "muldiv", "sse", "x87",
     "pagewalk", "smc", "port", "interrupt", "pit", "call_deep", "setcc", "bitops", "unaligned", "rep_small", "scalar_fp",
+    "lock", "rdtsc", "pagefault", "tlb4k", "code16", "segment", "sysenter", "cli_sti", "spinlock", "cpuid", "memcpy_bytes"]
+    .filter(n => !process.env.ONLY || process.env.ONLY.split(",").includes(n));
+// (the benchmark's number in micro.bin)
+const ALL = ["alu", "flags", "memory", "stack", "call_near", "call_far", "indirect", "string", "muldiv", "sse", "x87",
+    "pagewalk", "smc", "port", "interrupt", "pit", "call_deep", "setcc", "bitops", "unaligned", "rep_small", "scalar_fp",
     "lock", "rdtsc", "pagefault", "tlb4k", "code16", "segment", "sysenter", "cli_sti", "spinlock", "cpuid", "memcpy_bytes"];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -26,7 +32,7 @@ if(process.argv[2] === "--child")
     const { V86 } = await import(url.pathToFileURL(path.join(dir, "libv86.mjs")).href);
     const extra = fs.existsSync(path.join(dir, "options.json")) ? JSON.parse(fs.readFileSync(path.join(dir, "options.json"), "utf8")) : {};
     const buf = p => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
-    const bin = fs.readFileSync(path.join(here, "micro.bin"));
+    const bin = fs.readFileSync(process.env.MICRO_BIN || path.join(here, "micro.bin"));
     const e = new V86({
         wasm_path: path.join(dir, extra.wasm || "v86.wasm"),
         bios: { buffer: buf(path.join(root, "bios/seabios.bin")) },
@@ -47,7 +53,7 @@ if(process.argv[2] === "--child")
         cpu.reset_memory();
         cpu.mem8.set(bin, 0x7C00);
         cpu.mem8.set([0xEA, 0x00, 0x7C, 0x00, 0x00], 0xFFFF0);
-        cpu.mem8[0x500] = i;
+        cpu.mem8[0x500] = ALL.indexOf(NAMES[i]);
         const done = new Promise(r => { halted = r; });
         const t0 = performance.now();
         e.run();

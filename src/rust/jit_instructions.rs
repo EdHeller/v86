@@ -4041,9 +4041,13 @@ pub fn instr_DF_3_reg_jit(ctx: &mut JitContext, r: u32) {
 }
 
 pub fn instr_DF_4_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte) {
-    dbg_log!("fbld");
+    // fbld (the 10 bytes checked first: the helper then cannot fault)
     codegen::gen_modrm_resolve(ctx, modrm_byte);
-    codegen::gen_trigger_ud(ctx);
+    let address_local = ctx.builder.set_new_local();
+    codegen::gen_readable_or_pagefault(ctx, &address_local, 10);
+    ctx.builder.get_local(&address_local);
+    ctx.builder.call_fn1("fpu_fbld");
+    ctx.builder.free_local(address_local);
 }
 pub fn instr_DF_4_reg_jit(ctx: &mut JitContext, r: u32) {
     if r == 0 {
