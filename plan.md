@@ -14,7 +14,7 @@
 
 ## State (2026-11-04)
 
-- **32-bit x86 (`v86.wasm`):** SSE3/SSSE3/SSE4 in every mode; about 5-20 % slower than upstream v86 (task 1).
+- **32-bit x86 (`v86.wasm`):** SSE3/SSSE3/SSE4 in every mode; as fast as upstream v86 again (`docs/releases.md`, speed note).
 - **x86_64 (`v64.wasm`, `libv64.js`):** faster than v64: Alpine x86_64 to login in about 40 s against v64's 44.5 s.
 - **ARM (`v86-arm64.wasm`, `libv86-arm.js`):** Alpine aarch64 by direct kernel boot and through UEFI; virtio-gpu 2D
   on virtio-mmio.
@@ -40,40 +40,37 @@
 
 The user's order (2026-11-04): ⬜ open, ✅ done. Finished items move to "Done" below.
 
-1. ⬜ **32-bit speed back to upstream's** (in progress). Measured 2026-11-04 (best of three, two boots each): the
-   shell loop 2.2-2.3 s against upstream's 1.7-1.9 s, gzip 5.9 s against 5.2-5.8 s, login 44 s against 41-43 s.
-   Bisect between 315b2b0 and HEAD on the loop time, fix the cause, check ours is as fast or faster.
-2. ⬜ **Full instruction coverage on x86: 16-bit, 32-bit and x86_64.** List every instruction of the Intel SDM opcode
+1. ⬜ **Full instruction coverage on x86: 16-bit, 32-bit and x86_64.** List every instruction of the Intel SDM opcode
    maps (one-byte, 0F, 0F 38, 0F 3A, x87, SSE through SSE4.2, system) for real mode, 16- and 32-bit protected mode,
    vm86 and long mode; mark each implemented, stubbed or missing (`tools/opcode_coverage.mjs`, the test Readmes);
    implement the gaps; test each against the host CPU or QEMU, interpreted and compiled (the nasm tests in all three
    code sizes, the x64 fuzzer widened to SSE and x87). Done when nothing is missing and `make nasmtests`,
    `node tests/x64/run.js` and the fuzzers are clean.
-3. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
-   persistence, the VM manager). The ARM half of v64 parity is task 7.
-4. ⬜ **Speed ideas from copy/v86#924** (copy's comment of 2023-09-19). Profile first as copy suggests: the Firefox
+2. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
+   persistence, the VM manager). The ARM half of v64 parity is task 6.
+3. ⬜ **Speed ideas from copy/v86#924** (copy's comment of 2023-09-19). Profile first as copy suggests: the Firefox
    profiler (https://profiler.firefox.com/docs/), `make debug-with-profiler` (stats at the bottom of debug.html), the
    generated wasm and x86 code (`docs/profiling.md`).
    - ⬜ a. Register and flag analysis, to omit flags and fuse cmp+jcc (copy/v86#466). jit64 drops dead flags
-     (`flag_liveness`); the 32-bit JIT does not yet. Needs task 2's fuzzer.
+     (`flag_liveness`); the 32-bit JIT does not yet. Needs task 1's fuzzer.
    - ⬜ b. Function boundaries instead of one big br_table; call/ret as wasm calls. jit64 has one function per page;
      call/ret still return to Rust; the 32-bit JIT is as upstream.
    - ⬜ c. VGA memory writes through the memory fast path (copy/v86#301).
    - ⬜ d. The boot CPU in a Web Worker (copy/v86#534, #219); the cores after the first already run in workers.
    - ⬜ e. Stack accesses: translate ESP to physical once per block when the access size is known.
-5. ⬜ **The lazy-compile cost:** V8 compiles each jit64 module with Liftoff on its first call, 1-3 s of the main
+4. ⬜ **The lazy-compile cost:** V8 compiles each jit64 module with Liftoff on its first call, 1-3 s of the main
    thread per boot. Smaller modules, or compiling off the main thread.
-6. ⬜ **virtio-gpu, the rest.**
+5. ⬜ **virtio-gpu, the rest.**
    - ⬜ a. The ARM machine through `new V86({ cpu_type: "arm64", graphics_adapter: "virtio_gpu" })` (today only
      `examples/alpine-arm64.html?gpu=1`).
    - ⬜ b. virgl 3D on arm64 (host visible memory as device memory on the ARM bus).
    - ⬜ c. Venus (Vulkan) through v64's gfxstream path (`docs/gfxstream-plan.md` there).
    - It stays optional: without WebGPU the device is 2D, and without the option nothing changes.
-7. ⬜ **ARM: PCIe, then Android.** Wire `src/arm/virt/pcie.js` in (`virtio_transport: "pci"`), boot Alpine on
+6. ⬜ **ARM: PCIe, then Android.** Wire `src/arm/virt/pcie.js` in (`virtio_transport: "pci"`), boot Alpine on
    virtio-blk-pci by direct kernel boot and through UEFI (`make a64-boot-tests`), virtio-gpu-pci; then the rest of
    v64's ARM devices and Android, see "Plan: Android".
-8. ⬜ **Apple: Darwin up through Mac OS X 10.14 Mojave on x86; the iPhone 4 on ARM.** See "Plan: Apple".
-9. ⬜ **Buildroot: an x86_64 build and multicore** (`tools/buildroot/build.sh`): a 64-bit kernel and userland next to
+7. ⬜ **Apple: Darwin up through Mac OS X 10.14 Mojave on x86; the iPhone 4 on ARM.** See "Plan: Apple".
+8. ⬜ **Buildroot: an x86_64 build and multicore** (`tools/buildroot/build.sh`): a 64-bit kernel and userland next to
    the 32-bit one; ACPI, SMP with the local and I/O APIC, HPET and TSC; the matching v86 options in the run
    instructions (`acpi`, `cpu_cores`, `cpu_type: "x86_64"`, the worker build). Check: `nproc` shows the cores.
 
@@ -82,7 +79,7 @@ The user's order (2026-11-04): ⬜ open, ✅ done. Finished items move to "Done"
 Follows v64's `docs/arm64-virt-android16-plan.md` and `docs/android-images-plan.md`. v64 runs Android 16 on the
 `virt` board with Cuttlefish's arm64-only phone images, so its path, not `ranchu`, is the one to port first.
 
-- A1. Device groundwork: PCIe and virtio-pci (task 7), virtio-console with several ports, virtio-input (keyboard,
+- A1. Device groundwork: PCIe and virtio-pci (task 6), virtio-console with several ports, virtio-input (keyboard,
   tablet, multi-touch), virtio-vsock (adbd), more than 2 GiB of RAM (the core has `extended.rs`; the machine
   refuses more than 2 GiB today).
 - A2. The GKI kernel (android16-6.12) with Alpine's initramfs on our `virt` board: the kernel's own features
@@ -92,7 +89,7 @@ Follows v64's `docs/arm64-virt-android16-plan.md` and `docs/android-images-plan.
   ci.android.com. If that download is blocked here, ask the user once for the images or a URL.
 - A4. Boot to `sys.boot_completed=1` with adb over vsock, with SwiftShader (software) graphics.
 - A5. Display and input: virtio-gpu 2D scanout, touch through virtio-input; then GPU acceleration through Venus on
-  WebGPU (task 6c).
+  WebGPU (task 5c).
 - A6. Sound, Wi-Fi over virtio-net, snapshots, a reboot. Check: v64's A9 scenario (launcher, an APK, input,
   reboot).
 - Later: the `ranchu` board (goldfish devices, the Android Emulator's images) as a second Android machine.
@@ -151,7 +148,7 @@ ARM track (after Android): v64's iPhone 4 plan on our AArch32 core, as a new `s5
 
 What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's docs):
 
-- ARM (task 7): PCIe/virtio-pci; virtio-gpu 3D and Venus on ARM (task 6); virtio-console, -input, -vsock, -snd;
+- ARM (task 6): PCIe/virtio-pci; virtio-gpu 3D and Venus on ARM (task 5); virtio-console, -input, -vsock, -snd;
   snapshots; RAM above 2 GiB; Android (Cuttlefish images and tooling, `ranchu`); the iPhone 4 machine (v64 has it
   only as a plan and tooling).
 - x86 devices: AHCI/SATA, e1000, SMBIOS, PCIe root ports, ICH9 TCO/SMBus; virtio-gpu and virtio-vsock.
@@ -165,6 +162,8 @@ What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's 
 
 ## Done
 
+- ✅ 2026-11-04 32-bit speed back to upstream's: the multicore loop kept the dispatcher of compiled code from being
+  inlined (`docs/releases.md`, speed note).
 - ✅ 2026-11-03 virtio-gpu 2D on arm64 over virtio-mmio (`tests/a64/virtio_gpu.mjs`, `alpine-arm64.html?gpu=1`).
 - ✅ 2026-11-03 virgl 3D on x86: kmscube on 32- and 64-bit Alpine with WebGPU (`tests/virtio_gpu_3d.mjs`,
   `tools/cube_disk.mjs`); the CPU wakes when the GPU answers.
