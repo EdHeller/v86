@@ -81,10 +81,17 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
      instructions each), 89 % of the exits leave for another page, and `main_loop` itself is 11 % of the time (about
      30 ns per round trip: an indirect call into another instance, registers loaded and stored at each end). Calls
      from compiled code into the main module (helpers) cost the same way: see task 6's SSE work.
-   - ⬜ Block chaining (compiled code tail-calls the next page's block itself; `set_jit_config(17, 1)`, from October,
-     then measured 8 % slower with the old dispatcher): works with today's code, within noise here; bench7 sent to
-     the user (`SCALE=4`, longer runs) to decide. If it pays: direct calls for exits with a known target page,
-     registers kept across chained blocks. Then the rdtsc clock read and the JavaScript devices' port I/O.
+   - ✅ Block chaining re-measured on the user's machine (bench7, `SCALE=4`): slower (loop +7.8 % against +6.2 %
+     without it, against upstream); stays off. A page change costs about 8 ns here (micro `page_hop`: the same loop
+     on one page takes a quarter of the time); upstream pays the same.
+   - ✅ The generated code against upstream's (`DUMP_WASM`, wasm2wat): the same apart from the inline indirect-jump
+     lookup and the loop limit, which was loaded from memory on every back edge (`a8ada50f`: a constant now; a tight
+     loop +10.5 % -> +2.8 %).
+   - ⬜ The CPUID features we report send the guest down other paths: 70,000 monitor/mwait (mwait is a no-op, so
+     Linux's idle loop spins), 1.7 M stac/clac (SMAP; each ends a compiled block), 25 M SHA-NI instructions
+     (sha256sum; each a call into the interpreter). `set_jit_config(62, bits)` hides groups; bench8 sent to measure
+     them. Then: compile the 0F 38 / 0F 3A instructions (SHA, pshufb, palignr, pclmulqdq) instead of interpreting
+     them, mwait as hlt when interrupts are on, the rdtsc clock read and the JavaScript devices' port I/O.
 4. ⬜ **The lazy-compile cost:** V8 compiles each jit64 module with Liftoff on its first call, 1-3 s of the main
    thread per boot. Smaller modules, or compiling off the main thread.
 5. ⬜ **v64 parity on x86.** See "Plan: v64 parity" (devices, firmware, memory above 4 GiB, disk formats and
