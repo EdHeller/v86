@@ -22,7 +22,11 @@ PREFIX_WORDS = {"data16", "data32", "addr16", "addr32", "lock", "rep", "repz", "
 
 def candidates(bits):
     out = []
-    for pfx in [b"", b"\x66", b"\xf2", b"\xf3"]:
+    # (64-bit code: also REX.W, the 64-bit operand size, after each legacy prefix; and REX.RB for r8..r15)
+    prefixes = [b"", b"\x66", b"\xf2", b"\xf3"]
+    if bits == 64:
+        prefixes += [b"\x48", b"\x66\x48", b"\xf2\x48", b"\xf3\x48", b"\x45", b"\x66\x45"]
+    for pfx in prefixes:
         # one-byte map (x87 included): every ModRM in the register form, the memory form per reg field
         for op in range(256):
             if op in PREFIX_BYTES:
