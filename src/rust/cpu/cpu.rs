@@ -3382,8 +3382,17 @@ pub static mut TRACE_BUF: [u32; TRACE_LEN * 4] = [0; TRACE_LEN * 4];
 pub static mut TRACE_POS: u32 = 0;
 
 #[inline(always)]
+#[inline(always)]
 pub unsafe fn trace_instruction() {
     if TRACE_ON {
+        trace_instruction_record();
+    }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn trace_instruction_record() {
+    {
         let i = (TRACE_POS as usize % TRACE_LEN) * 4;
         TRACE_POS = TRACE_POS.wrapping_add(1);
         let ip = if *is_64 { super::long_mem::rip() } else { *instruction_pointer as u32 as u64 };
@@ -3394,25 +3403,39 @@ pub unsafe fn trace_instruction() {
     }
 }
 
+/// The instruction after mov ss / pop ss / sti runs before any interrupt is taken, and a pending one is taken right
+/// after it (unless that instruction starts a shadow of its own). Out of line, like the other rare paths of
+/// cycle_internal: inlined, they kept cycle_internal from being inlined into the main loop
+#[cold]
+#[inline(never)]
+unsafe fn cycle_shadow_step() {
+    interrupt_shadow = false;
+    IN_SHADOW_STEP = true;
+    if *flags & FLAG_TRAP != 0 {
+        single_step_cycle();
+    }
+    else {
+        single_step_one();
+    }
+    IN_SHADOW_STEP = false;
+    handle_irqs();
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn cycle_trap_step() { single_step_cycle(); }
+
+/// (always inlined: upstream's has one caller, the main loop, and is inlined there; with the multicore and parallel
+/// loops as callers the compiler kept it out of line, a call per dispatch of compiled code)
+#[inline(always)]
 pub unsafe fn cycle_internal() {
     if interrupt_shadow {
-        // the instruction after mov ss / pop ss / sti runs before any interrupt is taken, and a pending
-        // one is taken right after it (unless that instruction starts a shadow of its own)
-        interrupt_shadow = false;
-        IN_SHADOW_STEP = true;
-        if *flags & FLAG_TRAP != 0 {
-            single_step_cycle();
-        }
-        else {
-            single_step_one();
-        }
-        IN_SHADOW_STEP = false;
-        handle_irqs();
+        cycle_shadow_step();
         return;
     }
 
     if *flags & FLAG_TRAP != 0 {
-        single_step_cycle();
+        cycle_trap_step();
         return;
     }
 
