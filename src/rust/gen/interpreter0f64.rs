@@ -4127,6 +4127,15 @@ match opcode {
                 }
                 after_block_boundary();
             },
+            7 => {
+                if modrm_byte < 0xC0 {
+                    instructions_0f::instr16_0FC7_7_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return });
+                }
+                else {
+                    instructions_0f::instr16_0FC7_7_reg((modrm_byte & 7 | rex_b()));
+                }
+                after_block_boundary();
+            },
             x => {
                 dbg_log!("#ud FC7/{} at {:x}", x, *instruction_pointer);
                 trigger_ud();
@@ -4150,6 +4159,15 @@ match opcode {
                 }
                 else {
                     instructions_0f::instr32_0FC7_6_reg((modrm_byte & 7 | rex_b()));
+                }
+                after_block_boundary();
+            },
+            7 => {
+                if modrm_byte < 0xC0 {
+                    instructions_0f::instr32_0FC7_7_mem(match modrm_resolve64(modrm_byte) { Ok(a) => a, Err(()) => return });
+                }
+                else {
+                    instructions_0f::instr32_0FC7_7_reg((modrm_byte & 7 | rex_b()));
                 }
                 after_block_boundary();
             },

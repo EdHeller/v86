@@ -1334,6 +1334,17 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
                     *reg_hi.offset(0) = 0;
                     *reg_hi.offset(2) = 0;
                 },
+                (1, Loc::Reg(n)) => {
+                    // monitor, mwait, clac, stac
+                    instructions_0f::instr_0F01_1_reg((n & 7) as i32);
+                },
+                (7, Loc::Reg(n)) if n & 7 == 1 => {
+                    // rdtscp: edx:eax and ecx, the high halves cleared
+                    instructions_0f::instr_0F01_7_reg(1);
+                    *reg_hi.offset(0) = 0;
+                    *reg_hi.offset(1) = 0;
+                    *reg_hi.offset(2) = 0;
+                },
                 (7, Loc::Reg(0)) => {
                     // swapgs
                     if *cpl != 0 || !*is_64 {
@@ -1492,8 +1503,8 @@ unsafe fn exec_0f(p: &Prefixes) -> OrPageFault<()> {
             let m = decode_modrm(p, 0)?;
             match (m.reg & 7, m.loc) {
                 (1, Loc::Mem(a)) => cmpxchg_double(p, a)?,
-                (6, Loc::Reg(n)) => {
-                    // rdrand
+                (6, Loc::Reg(n)) | (7, Loc::Reg(n)) => {
+                    // rdrand, rdseed
                     let bits = if p.w() { 64 } else if p.osz16 { 16 } else { 32 };
                     let v = js::get_rand_int() as u32 as u64 | (js::get_rand_int() as u32 as u64) << 32;
                     set_reg(n, bits, true, v & mask(bits));

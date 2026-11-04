@@ -6,7 +6,7 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 - 25116 forms probed, 4086 skipped (control flow, descriptor tables, control registers, MSR writes,
   waits: covered by the hand-written tests)
-- **272 forms of 23 mnemonics run in QEMU and are #UD in v86** (missing in v86)
+- **256 forms of 17 mnemonics run in QEMU and are #UD in v86** (missing in v86)
 - 40 forms of 6 mnemonics run in v86 and are #UD in QEMU
 - 1212 forms of 109 mnemonics are #UD in both (not on QEMU's CPU either: AMD-only,
   VMX/SVM outside a VM, encodings objdump accepts but CPUs do not)
@@ -22,21 +22,15 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 | `bndmk` | 8 | `f30f1b00` bndmk bnd0,[eax]<br>`f30f1b08` bndmk bnd1,[eax]<br>`f30f1b10` bndmk bnd2,[eax] |
 | `bndmov` | 32 | `660f1ac0` bndmov bnd0,bnd0<br>`660f1a00` bndmov bnd0,[eax]<br>`660f1ac8` bndmov bnd1,bnd0 |
 | `bndstx` | 8 | `0f1b00` bndstx [eax],bnd0<br>`0f1b08` bndstx [eax],bnd1<br>`0f1b10` bndstx [eax],bnd2 |
-| `clac` | 1 | `0f01ca` clac |
 | `extrq` | 24 | `660f78c0cccc` extrq xmm0,0xcc,0xcc<br>`660f7800` extrq (bad),0x78,0x0<br>`660f78c8cccc` extrq xmm0,0xcc,0xcc |
 | `fbld` | 4 | `df20` fbld TBYTE PTR [eax]<br>`66df20` fbld TBYTE PTR [eax]<br>`f2df20` fbld TBYTE PTR [eax] |
 | `femms` | 64 | `0f0e` femms<br>`0f0e` femms<br>`0f0e` femms |
 | `fnsavew` | 1 | `66dd30` fnsavew [eax] |
 | `frstorw` | 1 | `66dd20` frstorw [eax] |
 | `insertq` | 16 | `f20f78c0cccc` insertq xmm0,xmm0,0xcc,0xcc<br>`f20f78c8cccc` insertq xmm1,xmm0,0xcc,0xcc<br>`f20f78d0cccc` insertq xmm2,xmm0,0xcc,0xcc |
-| `monitor` | 4 | `0f01c8` monitor<br>`660f01c8` monitor<br>`f20f01c8` monitor |
 | `movntsd` | 8 | `f20f2b00` movntsd QWORD PTR [eax],xmm0<br>`f20f2b08` movntsd QWORD PTR [eax],xmm1<br>`f20f2b10` movntsd QWORD PTR [eax],xmm2 |
 | `movntss` | 8 | `f30f2b00` movntss DWORD PTR [eax],xmm0<br>`f30f2b08` movntss DWORD PTR [eax],xmm1<br>`f30f2b10` movntss DWORD PTR [eax],xmm2 |
 | `nop` | 24 | `0f1ac0` nop eax<br>`0f1ac8` nop eax<br>`0f1ad0` nop eax |
-| `rdpid` | 1 | `f30fc7f8` rdpid eax |
-| `rdseed` | 2 | `0fc7f8` rdseed eax<br>`660fc7f8` rdseed ax |
-| `rdtscp` | 4 | `0f01f9` rdtscp<br>`660f01f9` rdtscp<br>`f20f01f9` rdtscp |
-| `stac` | 4 | `0f01cb` stac<br>`660f01cb` stac<br>`f20f01cb` stac |
 | `xbeginw` | 2 | `66c7f8cccc` xbeginw 0x4b1<br>`66c738cc` xbeginw (bad),0x51c |
 
 ## Accepted by v86, #UD in QEMU
@@ -56,7 +50,7 @@ forms; no VEX), executed once in v86 and in QEMU (TCG, `-cpu max`), comparing wh
 
 ## Results that differ from QEMU's
 
-Where both ran a form without an exception (22625 forms; the time stamp counter, random numbers, cpuid, port input,
+Where both ran a form without an exception (22630 forms; the time stamp counter, random numbers, cpuid, port input,
 descriptor table addresses and FPU or XSAVE state images left out): the registers, xmm0..7 and the 64 bytes of memory
 the memory forms point at.
 

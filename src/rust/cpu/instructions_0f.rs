@@ -194,6 +194,39 @@ pub unsafe fn instr16_0F00_5_reg(r: i32) {
 pub unsafe fn instr32_0F00_5_reg(r: i32) { instr16_0F00_5_reg(r) }
 
 #[no_mangle]
+/// 0F 01 C8..CF: monitor, mwait (both may do nothing: mwait can always return at once), clac, stac (ring 0)
+pub unsafe fn instr_0F01_1_reg(rm: i32) {
+    match rm {
+        0 | 1 => {},
+        2 | 3 => {
+            if *cpl != 0 {
+                trigger_ud();
+                return;
+            }
+            const FLAG_AC: i32 = 1 << 18;
+            *flags = if rm == 2 { *flags & !FLAG_AC } else { *flags | FLAG_AC };
+        },
+        _ => trigger_ud(),
+    }
+}
+
+/// 0F 01 F8..FF: rdtscp (F9); swapgs (F8) is 64-bit only
+pub unsafe fn instr_0F01_7_reg(rm: i32) {
+    if rm == 1 {
+        if *cr.offset(4) & CR4_TSD != 0 && *cpl != 0 {
+            trigger_gp(0);
+            return;
+        }
+        let tsc = read_tsc();
+        write_reg32(EAX, tsc as i32);
+        write_reg32(EDX, (tsc >> 32) as i32);
+        write_reg32(ECX, TSC_AUX as i32);
+        return;
+    }
+    trigger_ud();
+}
+
+#[no_mangle]
 pub unsafe fn instr16_0F01_0_reg(_r: i32) { trigger_ud(); }
 #[no_mangle]
 pub unsafe fn instr32_0F01_0_reg(_r: i32) { trigger_ud(); }
@@ -209,9 +242,9 @@ pub unsafe fn instr16_0F01_0_mem(addr: i32) { sgdt(addr, 0xFFFFFF) }
 pub unsafe fn instr32_0F01_0_mem(addr: i32) { sgdt(addr, -1) }
 
 #[no_mangle]
-pub unsafe fn instr16_0F01_1_reg(_r: i32) { trigger_ud(); }
+pub unsafe fn instr16_0F01_1_reg(r: i32) { instr_0F01_1_reg(r) }
 #[no_mangle]
-pub unsafe fn instr32_0F01_1_reg(_r: i32) { trigger_ud(); }
+pub unsafe fn instr32_0F01_1_reg(r: i32) { instr_0F01_1_reg(r) }
 
 unsafe fn sidt(addr: i32, mask: i32) {
     return_on_pagefault!(writable_or_pagefault(addr, 6));
@@ -318,9 +351,9 @@ pub unsafe fn instr16_0F01_6_mem(addr: i32) {
 pub unsafe fn instr32_0F01_6_mem(addr: i32) { instr16_0F01_6_mem(addr) }
 
 #[no_mangle]
-pub unsafe fn instr16_0F01_7_reg(_r: i32) { trigger_ud(); }
+pub unsafe fn instr16_0F01_7_reg(r: i32) { instr_0F01_7_reg(r) }
 #[no_mangle]
-pub unsafe fn instr32_0F01_7_reg(_r: i32) { trigger_ud(); }
+pub unsafe fn instr32_0F01_7_reg(r: i32) { instr_0F01_7_reg(r) }
 
 #[no_mangle]
 pub unsafe fn instr16_0F01_7_mem(addr: i32) {
@@ -1207,6 +1240,10 @@ pub unsafe fn instr_660F2F_mem(addr: i32, r: i32) {
     instr_660F2F(return_on_pagefault!(safe_read64s(addr)), r)
 }
 
+/// IA32_TSC_AUX (rdtscp's ecx)
+pub static mut TSC_AUX: u32 = 0;
+const MSR_TSC_AUX: i32 = 0xC0000103u32 as i32;
+
 #[no_mangle]
 pub unsafe fn instr_0F30() {
     // wrmsr - write maschine specific register
@@ -1224,6 +1261,7 @@ pub unsafe fn instr_0F30() {
     }
 
     match index {
+        MSR_TSC_AUX => TSC_AUX = low as u32,
         MSR_EFER => {
             let value = (high as u64) << 32 | (low as u32) as u64;
             // LMA is read-only, set by the cpu when paging is enabled with LME set
@@ -1374,6 +1412,7 @@ pub unsafe fn instr_0F32() {
             low = v as i32;
             high = (v >> 32) as i32;
         },
+        MSR_TSC_AUX => low = TSC_AUX as i32,
         IA32_SYSENTER_CS => low = *sysenter_cs,
         IA32_SYSENTER_EIP => low = *sysenter_eip,
         IA32_SYSENTER_ESP => low = *sysenter_esp,
@@ -3350,6 +3389,7 @@ pub unsafe fn instr_0FA2() {
             ecx = 1 << 0 | 1 << 13 | 1 << 23 | 1 << 26 | 1 << 30; // sse3, cx16, popcnt, xsave, rdrand
             // pclmulqdq, movbe, aes (checked against QEMU by tools/x86_coverage)
             ecx |= 1 << 1 | 1 << 22 | 1 << 25;
+            ecx |= 1 << 3; // monitor / mwait
             // ssse3, sse4.1, sse4.2, in every mode (they were reported in long mode only while the 32-bit JIT lost
             // the prefixes of the 0F 38 / 0F 3A instructions: 32-bit Alpine's OpenSSL then failed its checks)
             ecx |= 1 << 9 | 1 << 19 | 1 << 20;
@@ -3419,7 +3459,7 @@ pub unsafe fn instr_0FA2() {
         7 => {
             if read_reg32(ECX) == 0 {
                 eax = 0; // maximum supported sub-level
-                ebx = 1 << 9 | 1 << 19 | 1 << 29; // enhanced REP MOVSB/STOSB, adx, sha
+                ebx = 1 << 9 | 1 << 18 | 1 << 19 | 1 << 20 | 1 << 29; // enhanced REP MOVSB/STOSB, rdseed, adx, smap, sha
                 ecx = 0;
                 edx = 0;
             }
@@ -3452,7 +3492,7 @@ pub unsafe fn instr_0FA2() {
             edx = (if true /* have fpu */ { 1 } else { 0 }) |      // fpu
                 vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
                 1 << 8 | 1 << 13 | 1 << 15 | 1 << 20 | // cx8, pge, cmov, nx
-                1 << 23 | 1 << 24 | // mmx, fxsr
+                1 << 23 | 1 << 24 | 1 << 27 | // mmx, fxsr, rdtscp
                 if LONG_MODE && long_mode_supported { 1 << 11 | 1 << 29 } else { 0 }; // syscall, long mode
             ecx = 1 << 5; // lzcnt (abm)
         },
@@ -4125,6 +4165,14 @@ pub unsafe fn instr32_0FC7_6_reg(r: i32) {
     *flags_changed = 0;
 }
 
+#[no_mangle]
+pub unsafe fn instr16_0FC7_7_reg(r: i32) { instr16_0FC7_6_reg(r) } // rdseed
+#[no_mangle]
+pub unsafe fn instr32_0FC7_7_reg(r: i32) { instr32_0FC7_6_reg(r) }
+#[no_mangle]
+pub unsafe fn instr16_0FC7_7_mem(_addr: i32) { trigger_ud(); }
+#[no_mangle]
+pub unsafe fn instr32_0FC7_7_mem(_addr: i32) { trigger_ud(); }
 #[no_mangle]
 pub unsafe fn instr16_0FC7_6_mem(_addr: i32) { trigger_ud(); }
 #[no_mangle]
