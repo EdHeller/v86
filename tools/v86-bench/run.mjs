@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // v86 speed comparison: boots 32-bit Alpine 3.24 in each build and times a few workloads in the guest.
 //
-//   node run.mjs [rounds] [builds...]        default: 3 rounds of base, upstream, ours (in alternating order)
+//   node run.mjs [rounds] [builds...]        default: 3 rounds of every build in builds/ (in rotating order)
 //
 // Each round boots every build once (a fresh process each) and runs, after logging in on the serial console:
 //   loop   a busybox shell loop of 100000 steps (the JIT's dispatch and the interpreter of ash)
@@ -32,13 +32,20 @@ if(process.argv[2] === "--child")
     const dir = path.join(here, "builds", build);
     const { V86 } = await import(url.pathToFileURL(path.join(dir, "libv86.mjs")).href);
     const buf = p => { const b = fs.readFileSync(path.join(here, p)); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
+    // options.json (optional): { "wasm": "file in builds/<name>", "v86": { extra V86 options }, "jit_config": { "1": 6 } }
+    const extra = fs.existsSync(path.join(dir, "options.json")) ? JSON.parse(fs.readFileSync(path.join(dir, "options.json"), "utf8")) : {};
     const e = new V86({
-        wasm_path: path.join(dir, "v86.wasm"),
+        wasm_path: path.join(dir, extra.wasm || "v86.wasm"),
         bios: { buffer: buf("bios/seabios.bin") }, vga_bios: { buffer: buf("bios/vgabios.bin") },
         bzimage: { buffer: buf("images/vmlinuz-x86") }, initrd: { buffer: buf("images/initramfs-x86") },
         cdrom: { buffer: buf("images/alpine-virt-3.24.3-x86.iso") },
         cmdline: "modules=loop,squashfs,sd-mod console=ttyS0,115200 tsc=reliable mitigations=off random.trust_cpu=on",
         memory_size: 512 << 20, cpu_type: "x86", autostart: true, log_level: 0,
+        ...(extra.v86 || {}),
+    });
+    // (JIT settings: set_jit_config(index, value) before the first compile)
+    e.add_listener("emulator-ready", () => {
+        for(const [k, v] of Object.entries(extra.jit_config || {})) e.v86.cpu.wm.exports["set_jit_config"](+k, +v);
     });
     let serial = "";
     e.add_listener("serial0-output-byte", b => { serial += String.fromCharCode(b); });
@@ -79,7 +86,9 @@ if(process.argv[2] === "--child")
 // ---------------------------------------------------------------------------------------------------------------
 // parent: the rounds and the summary
 const rounds = +process.argv[2] || 3;
-const builds = process.argv.slice(3).length ? process.argv.slice(3) : ["base", "upstream", "ours"];
+const all = fs.readdirSync(path.join(here, "builds")).filter(b => fs.existsSync(path.join(here, "builds", b, "libv86.mjs")));
+const first = ["base", "upstream", "ours"].filter(b => all.includes(b));
+const builds = process.argv.slice(3).length ? process.argv.slice(3) : first.concat(all.filter(b => !first.includes(b)).sort());
 const columns = ["login", ...TESTS.map(t => t[0])];
 const results = Object.fromEntries(builds.map(b => [b, []]));
 const fmt = v => v === undefined ? "    -  " : v.toFixed(2).padStart(7);
@@ -88,9 +97,9 @@ console.log("v86 speed comparison: " + rounds + " rounds of " + builds.join(", "
 for(const b of builds)
 {
     const info = path.join(here, "builds", b, "VERSION.txt");
-    if(fs.existsSync(info)) console.log("  " + b.padEnd(9) + fs.readFileSync(info, "utf8").trim());
+    if(fs.existsSync(info)) console.log("  " + b.padEnd(14) + fs.readFileSync(info, "utf8").trim());
 }
-console.log("seconds (wall clock):   " + "build".padEnd(9) + columns.map(c => c.padStart(7)).join(" "));
+console.log("seconds (wall clock):   " + "build".padEnd(14) + columns.map(c => c.padStart(7)).join(" "));
 
 for(let r = 0; r < rounds; r++)
 {
@@ -107,17 +116,17 @@ for(let r = 0; r < rounds; r++)
         let result;
         try { result = JSON.parse(line); } catch(e) { result = { build, error: "no result" }; }
         results[build].push(result);
-        console.log(("round " + (r + 1)).padEnd(24) + build.padEnd(9) + columns.map(c => fmt(result[c])).join(" ") +
+        console.log(("round " + (r + 1)).padEnd(24) + build.padEnd(14) + columns.map(c => fmt(result[c])).join(" ") +
             (result.error ? "   ERROR: " + result.error : ""));
     }
 }
 
 console.log("\nsummary (mean of the rounds; in brackets the change against upstream, negative is faster):");
-console.log("".padEnd(24) + "build".padEnd(9) + columns.map(c => c.padStart(15)).join(""));
+console.log("".padEnd(24) + "build".padEnd(14) + columns.map(c => c.padStart(15)).join(""));
 const mean = (b, c) => { const v = results[b].map(x => x[c]).filter(x => x !== undefined); return v.length ? v.reduce((a, x) => a + x, 0) / v.length : undefined; };
 for(const b of builds)
 {
-    console.log("".padEnd(24) + b.padEnd(9) + columns.map(c => {
+    console.log("".padEnd(24) + b.padEnd(14) + columns.map(c => {
         const m = mean(b, c), u = results["upstream"] ? mean("upstream", c) : undefined;
         if(m === undefined) return "-".padStart(15);
         const rel = u && b !== "upstream" ? " (" + (m > u ? "+" : "") + ((m / u - 1) * 100).toFixed(1) + "%)" : "";
