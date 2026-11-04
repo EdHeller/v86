@@ -3402,6 +3402,11 @@ pub unsafe fn instr32_0FA1() {
         return;
     };
 }
+/// CPUID features left out (set_jit_config(62, bits), to compare a guest's speed with and without them):
+/// 1 MONITOR/MWAIT (Linux then idles with hlt), 2 the leaf 7 features (ERMS, SMAP, SHA, RDSEED, ADX), 4 leaf 1 ECX
+/// as upstream v86 reports it (no SSSE3/SSE4, PCLMULQDQ, AES, MOVBE, CX16, XSAVE). The instructions keep working.
+pub static mut CPUID_HIDE: u32 = 0;
+
 #[no_mangle]
 pub unsafe fn instr_0FA2() {
     // cpuid
@@ -3440,6 +3445,12 @@ pub unsafe fn instr_0FA2() {
             ecx |= 1 << 9 | 1 << 19 | 1 << 20;
             if *cr.offset(4) & CR4_OSXSAVE != 0 {
                 ecx |= 1 << 27; // osxsave
+            }
+            if CPUID_HIDE & 1 != 0 {
+                ecx &= !(1 << 3);
+            }
+            if CPUID_HIDE & 4 != 0 {
+                ecx &= 1 << 0 | 1 << 23 | 1 << 30 | 1 << 31; // sse3, popcnt, rdrand, hypervisor
             }
             let vme = 0 << 1;
             if config::VMWARE_HYPERVISOR_PORT {
@@ -3505,6 +3516,9 @@ pub unsafe fn instr_0FA2() {
             if read_reg32(ECX) == 0 {
                 eax = 0; // maximum supported sub-level
                 ebx = 1 << 9 | 1 << 18 | 1 << 19 | 1 << 20 | 1 << 29; // enhanced REP MOVSB/STOSB, rdseed, adx, smap, sha
+                if CPUID_HIDE & 2 != 0 {
+                    ebx = 0;
+                }
                 ecx = 0;
                 edx = 0;
             }
