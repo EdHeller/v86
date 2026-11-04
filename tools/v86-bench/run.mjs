@@ -76,9 +76,12 @@ if(process.argv[2] === "--child")
         {
             serial = "";
             const from = performance.now();
+            const insn0 = e.v86.cpu.instruction_counter[0] >>> 0;
             e.serial0_send(command + "; echo DONE$((40+2))\n");
             await until(/DONE42/, 900);
             result[name] = (performance.now() - from) / 1000;
+            // (INSN=1: the guest instructions each workload ran, in millions: the same work should be the same count)
+            if(process.env.INSN) result[name + "_Minsn"] = Math.round(((e.v86.cpu.instruction_counter[0] >>> 0) - insn0 >>> 0) / 1e6);
         }
     }
     catch(error)
