@@ -178,6 +178,8 @@ export function V86(options)
                         }
                         catch(err)
                         {
+                            // (say why: the fallback, a build without SIMD for older browsers, must match libv86.js too)
+                            console.warn("v86: " + v86_bin + " did not start (" + err + "), trying " + v86_bin_fallback);
                             load_file(v86_bin_fallback, {
                                     done: async bytes => {
                                         const { instance } = await WebAssembly.instantiate(bytes, env);
