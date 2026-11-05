@@ -2721,10 +2721,12 @@ pub fn gen_move_registers_from_locals_to_memory(ctx: &mut JitContext) {
     }
 
     for i in 0..8 {
-        ctx.builder
-            .const_i32(global_pointers::get_reg32_offset(i as u32) as i32);
-        ctx.builder.get_local(&ctx.register_locals[i]);
-        ctx.builder.store_aligned_i32(0);
+        let local = ctx.register_locals[i].unsafe_clone();
+        ctx.builder.register_move(&local, true, |b| {
+            b.const_i32(global_pointers::get_reg32_offset(i as u32) as i32);
+            b.get_local_untracked(&local);
+            b.store_aligned_i32(0);
+        });
     }
 }
 pub fn gen_move_registers_from_memory_to_locals(ctx: &mut JitContext) {
@@ -2734,10 +2736,12 @@ pub fn gen_move_registers_from_memory_to_locals(ctx: &mut JitContext) {
     }
 
     for i in 0..8 {
-        ctx.builder
-            .const_i32(global_pointers::get_reg32_offset(i as u32) as i32);
-        ctx.builder.load_aligned_i32(0);
-        ctx.builder.set_local(&ctx.register_locals[i]);
+        let local = ctx.register_locals[i].unsafe_clone();
+        ctx.builder.register_move(&local, false, |b| {
+            b.const_i32(global_pointers::get_reg32_offset(i as u32) as i32);
+            b.load_aligned_i32(0);
+            b.set_local_untracked(&local);
+        });
     }
 }
 

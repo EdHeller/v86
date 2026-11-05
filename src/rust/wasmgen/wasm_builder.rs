@@ -94,6 +94,11 @@ pub struct WasmBuilder {
     free_locals_i64: Vec<WasmLocalI64>,
     free_locals_v128: Vec<WasmLocalV128>,
     local_count: u8,
+    /// i32 locals read (get) and written (set, tee) by the main body, by index (see drop_unused_register_moves)
+    locals_read: [u64; 4],
+    locals_written: [u64; 4],
+    /// the guest register loads and stores of the main body: (start, end, local index, is a store)
+    register_moves: Vec<(u32, u32, u8, bool)>,
     pub arg_local_initial_state: WasmLocal,
 
     /// functions of the module besides the main one: (key, write signature, body with its local
@@ -151,6 +156,9 @@ impl WasmBuilder {
             free_locals_i32: Vec::with_capacity(8),
             free_locals_i64: Vec::with_capacity(8),
             free_locals_v128: Vec::with_capacity(8),
+            locals_read: [0; 4],
+            locals_written: [0; 4],
+            register_moves: Vec::new(),
             local_count: 0,
             arg_local_initial_state: WasmLocal(0),
             internal: Vec::new(),
@@ -185,6 +193,9 @@ impl WasmBuilder {
         self.free_locals_i64.clear();
         self.free_locals_v128.clear();
         self.local_count = 0;
+        self.locals_read = [0; 4];
+        self.locals_written = [0; 4];
+        self.register_moves.clear();
         self.internal.clear();
         self.internal_calls.clear();
 
@@ -752,16 +763,54 @@ impl WasmBuilder {
         local
     }
     pub fn set_local(&mut self, local: &WasmLocal) {
+        self.locals_written[local.idx() as usize >> 6] |= 1 << (local.idx() & 63);
         self.instruction_body.push(op::OP_SETLOCAL);
         self.instruction_body.push(local.idx());
     }
     pub fn tee_local(&mut self, local: &WasmLocal) {
+        self.locals_written[local.idx() as usize >> 6] |= 1 << (local.idx() & 63);
         self.instruction_body.push(op::OP_TEELOCAL);
         self.instruction_body.push(local.idx());
     }
     pub fn get_local(&mut self, local: &WasmLocal) {
+        self.locals_read[local.idx() as usize >> 6] |= 1 << (local.idx() & 63);
         self.instruction_body.push(op::OP_GETLOCAL);
         self.instruction_body.push(local.idx());
+    }
+
+    /// A guest register's load into its local (`store` false) or its store from it (true), emitted by `gen`
+    /// with the untracked get/set below and recorded, so that drop_unused_register_moves can remove it
+    pub fn register_move(&mut self, local: &WasmLocal, store: bool, gen: impl FnOnce(&mut WasmBuilder)) {
+        let start = self.instruction_body.len() as u32;
+        gen(self);
+        self.register_moves.push((start, self.instruction_body.len() as u32, local.idx(), store));
+    }
+    pub fn set_local_untracked(&mut self, local: &WasmLocal) {
+        self.instruction_body.push(op::OP_SETLOCAL);
+        self.instruction_body.push(local.idx());
+    }
+    pub fn get_local_untracked(&mut self, local: &WasmLocal) {
+        self.instruction_body.push(op::OP_GETLOCAL);
+        self.instruction_body.push(local.idx());
+    }
+    /// After the main body is complete: the register moves it does not need become nops. A register's local
+    /// that nothing reads or writes needs neither its loads nor its stores; one that is only read needs no
+    /// stores (memory holds its value: after a helper that changes registers the locals are reloaded). A module
+    /// entered and left often (short blocks) then moves only the registers it uses, as an exit stores only the
+    /// ones it changed. (Functions of the module (call_internal) mark their own locals, by index: that only keeps
+    /// moves.)
+    pub fn drop_unused_register_moves(&mut self) {
+        let moves = std::mem::take(&mut self.register_moves);
+        for (start, end, idx, store) in moves {
+            let bit = 1u64 << (idx & 63);
+            let read = self.locals_read[idx as usize >> 6] & bit != 0;
+            let written = self.locals_written[idx as usize >> 6] & bit != 0;
+            if !written && (store || !read) {
+                for b in &mut self.instruction_body[start as usize..end as usize] {
+                    *b = op::OP_NOP;
+                }
+            }
+        }
     }
 
     #[must_use = "local allocated but not used"]

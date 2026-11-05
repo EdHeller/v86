@@ -79,6 +79,8 @@ pub const JIT_THRESHOLD: u32 = 200 * 1000;
 pub static mut INLINE_LOOKUP: bool = true;
 /// ... in a function of the module (true), or in the main function itself; set_jit_config(66, 0/1)
 pub static mut LOOKUP_IN_FUNCTION: bool = true;
+/// A module loads and stores only the guest registers it uses (set_jit_config(67, 0): all eight, as upstream)
+pub static mut DROP_REGISTER_MOVES: bool = true;
 
 /// The heat at which a page is compiled: JIT_THRESHOLD, lowered by tests through set_jit_config(59, ..)
 static mut JIT_THRESHOLD_NOW: u32 = JIT_THRESHOLD;
@@ -1239,10 +1241,16 @@ fn jit_generate_module(
 ) -> Vec<(u32, u16)> {
     builder.reset();
 
+    // (the guest registers in locals; loads and stores of the ones the module does not use are removed when it is
+    // complete: drop_unused_register_moves)
     let mut register_locals = (0..8)
         .map(|i| {
-            builder.load_fixed_i32(global_pointers::get_reg32_offset(i));
-            builder.set_new_local()
+            let local = builder.alloc_local();
+            builder.register_move(&local, false, |b| {
+                b.load_fixed_i32(global_pointers::get_reg32_offset(i));
+                b.set_local_untracked(&local);
+            });
+            local
         })
         .collect();
 
@@ -2083,6 +2091,9 @@ fn jit_generate_module(
     ctx.builder
         .free_local(ctx.instruction_counter.unsafe_clone());
 
+    if unsafe { DROP_REGISTER_MOVES } {
+        ctx.builder.drop_unused_register_moves();
+    }
     ctx.builder.finish();
 
     let entries = Vec::from_iter(entry_blocks.iter().map(|addr| {
@@ -2664,6 +2675,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         62 => crate::cpu::instructions_0f::CPUID_HIDE = value,
         65 => INLINE_LOOKUP = value != 0,
         66 => LOOKUP_IN_FUNCTION = value != 0,
+        67 => DROP_REGISTER_MOVES = value != 0,
         63 => crate::cpu::jit64::OUTLINE_MEM = value,
         64 => crate::cpu::jit64::SHARED_RETRY = value != 0,
         60 => crate::cpu::sse_fp::FAST_PATHS_OFF = value != 0,
