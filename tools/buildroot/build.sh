@@ -2093,6 +2093,9 @@ case ":$PATH:" in *:/usr/local/bin:*) ;; *) PATH="$PATH:/usr/local/bin" ;; esac
 if [ "$(id -u)" = 0 ] && [ "${HOME:-/}" = / ]; then HOME=/root; fi
 [ "$PWD" = / ] && cd "$HOME"
 export PATH TERM=${TERM:-linux}
+# COM1 is the page's xterm.js (getty sets TERM=xterm-256color): it shows 24-bit colour too, and scripts that look
+# at COLORTERM instead of terminfo (curl ysap.sh, ...) choose their full palette from it
+case "$(tty 2>/dev/null)" in /dev/ttyS*) export COLORTERM=${COLORTERM:-truecolor} ;; esac
 # UTF-8 everywhere (C.UTF-8 is generated at build time: BR2_GENERATE_LOCALE)
 export LANG=${LANG:-C.UTF-8}
 # Unicode on the text console: the kernel console holds only 512 glyphs, so logins on a
