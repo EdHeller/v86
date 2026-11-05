@@ -33,3 +33,4 @@ __pycache__/
 /tools/v86-bench/builds/
 /tools/v86-bench/bios
 /tools/v86-bench/images
+tools/buildroot/downloads/
