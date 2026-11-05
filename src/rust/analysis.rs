@@ -99,3 +99,17 @@ pub fn instr_F3_analyze(cpu: &mut CpuContext, analysis: &mut Analysis) {
 }
 
 pub fn modrm_analyze(ctx: &mut CpuContext, modrm_byte: u8) { modrm::skip(ctx, modrm_byte); }
+
+/// 0F 38 xx and 0F 3A xx (SSSE3, SSE4, SHA, AES-NI, crc32, movbe, adcx/adox, ...): the opcode byte, modrm and, for 0F
+/// 3A, an immediate byte; none of them jumps, so the block goes on after them (jit_instructions::instr_0F38_jit)
+pub fn instr_0F38_analyze(cpu: &mut CpuContext, _analysis: &mut Analysis) {
+    cpu.read_imm8();
+    let modrm_byte = cpu.read_imm8();
+    if modrm_byte < 0xC0 {
+        modrm::skip(cpu, modrm_byte);
+    }
+}
+pub fn instr_0F3A_analyze(cpu: &mut CpuContext, analysis: &mut Analysis) {
+    instr_0F38_analyze(cpu, analysis);
+    cpu.read_imm8();
+}

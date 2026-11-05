@@ -837,6 +837,7 @@ pub unsafe fn call_interrupt_vector(
     is_software_int: bool,
     error_code: Option<i32>,
 ) {
+    INTERRUPT_SEQ = INTERRUPT_SEQ.wrapping_add(1);
     if LONG_MODE && *efer & EFER_LMA != 0 {
         super::long_mode::call_interrupt_vector_64(interrupt_nr, is_software_int, error_code);
         handle_irqs();
@@ -2752,6 +2753,27 @@ pub unsafe fn read_imm32s() -> OrPageFault<i32> {
 /// Compiled code calls an interpreter instruction function that decodes the rest of the instruction itself
 /// (0F 38, 0F 3A): it reads the prefixes, which only the interpreter keeps in `prefixes` (the interpreter resets
 /// them before every instruction, so a page fault in the call leaves nothing stale)
+/// counts call_interrupt_vector: jit_instr_0F38 sees from it that the instruction raised an exception
+pub static mut INTERRUPT_SEQ: u32 = 0;
+
+/// 0F 38 / 0F 3A from compiled code (jit_instructions::gen_three_byte_call): eip is after the two opcode bytes,
+/// previous_ip at the instruction; true when the instruction raised an exception (delivered, the module returns)
+unsafe fn jit_three_byte(p: i32, end_low: i32, f: unsafe fn()) -> bool {
+    let seq = INTERRUPT_SEQ;
+    jit_interpreter_prefixes(p);
+    f();
+    jit_interpreter_prefixes_done();
+    INTERRUPT_SEQ != seq || *instruction_pointer & 0xFFF != end_low
+}
+#[no_mangle]
+pub unsafe fn jit_instr_0F38(p: i32, end_low: i32) -> bool {
+    jit_three_byte(p, end_low, super::instructions_0f::instr_0F38)
+}
+#[no_mangle]
+pub unsafe fn jit_instr_0F3A(p: i32, end_low: i32) -> bool {
+    jit_three_byte(p, end_low, super::instructions_0f::instr_0F3A)
+}
+
 #[no_mangle]
 pub unsafe fn jit_interpreter_prefixes(p: i32) {
     *prefixes = p as u8;

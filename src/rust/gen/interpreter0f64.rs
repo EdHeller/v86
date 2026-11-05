@@ -1110,7 +1110,6 @@ match opcode {
     },
     0x38 | 0x138 => {
         instructions_0f::instr_0F38();
-        after_block_boundary();
     },
     0x39 | 0x139 => {
         instructions_0f::instr_0F39();
@@ -1118,7 +1117,6 @@ match opcode {
     },
     0x3A | 0x13A => {
         instructions_0f::instr_0F3A();
-        after_block_boundary();
     },
     0x3B | 0x13B => {
         instructions_0f::instr_0F3B();

@@ -240,7 +240,7 @@ function gen_instruction_body_after_fixed_g(encoding, size)
         instruction_postfix.push("analysis.absolute_jump = true;");
     }
 
-    if(encoding.prefix)
+    if(encoding.prefix || encoding.custom_analyze)
     {
         const instruction_name = "analysis::" + make_instruction_name(encoding, size) + "_analyze";
         const args = ["cpu", "analysis"];

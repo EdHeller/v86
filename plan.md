@@ -106,7 +106,12 @@ libv86.js fails with "Missing import").
      -12.3 %, call_pages -9.9 %, call_near -9.8 %, call_deep -9.3 %, sse -8.9 %, call_far -8.3 %, pit -7.1 %.
      `ours11-allregs` (every register moved at each module boundary) loses most of it: page_hop +1.1 %, call_pages
      -6.8 %, spinlock +14.2 %, interrupt +5.3 %; moving only the registers a module uses stays.
-   - ⬜ Next: the dispatcher's own share (29 % of page_hop), then the CPUID item above.
+   - ✅ The dispatcher's own share (2026-11-05): its hot path is about 15 loads and the call; nothing left to cut
+     there. Fewer round trips need bigger modules, and those cost compile time: `set_jit_config(1, 4)` and `(1, 8)`
+     halve page_hop but log in 3 % and 18 % slower.
+   - ✅ 0F 38 / 0F 3A (SSSE3, SSE4, SHA, AES-NI, crc32, movbe) no longer end a compiled block: the module calls the
+     interpreter's function and leaves only on an exception (`jit_instr_0F38`). `run.mjs 32 jit`: 0 forms differ;
+     Alpine boots. ⬜ Measure with programs that use them (glibc's SSSE3/SSE4 string functions, sha256 with SHA-NI).
 4. ✅ **The lazy-compile cost** (measured 2026-11-04; Alpine x86_64 boot to login and the four workloads,
    `ARCH=x86_64 JIT64_STATS=1 node tools/v86-bench/run.mjs --child <build>`, `--trace-wasm-compilation-times`).
    - The main thread's Liftoff compiles: 3,633 functions, 45 MB of WebAssembly, **1.0 s** in a 95 s boot (about 1 %,

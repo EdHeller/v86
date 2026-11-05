@@ -8392,3 +8392,41 @@ pub fn instr_660FFE_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32)
 pub fn instr_660FFE_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     sse_read128_xmm_xmm(ctx, "instr_660FFE", r1, r2);
 }
+
+/// 0F 38 xx / 0F 3A xx: the interpreter's function runs the instruction (it decodes the opcode byte, modrm and
+/// immediate itself, with the prefixes stored here), and the module goes on unless it raised an exception: then the
+/// exception has been delivered and the registers in memory are the handler's, so the module returns without
+/// storing its locals. Before, these instructions ended the compiled block (a return to the dispatcher for each).
+fn gen_three_byte_call(ctx: &mut JitContext, name: &str, has_imm: bool) {
+    let after_opcode = ctx.cpu.eip;
+    ctx.cpu.read_imm8();
+    let modrm_byte = ctx.cpu.read_imm8();
+    if modrm_byte < 0xC0 {
+        crate::modrm::skip(ctx.cpu, modrm_byte);
+    }
+    if has_imm {
+        ctx.cpu.read_imm8();
+    }
+    let end = ctx.cpu.eip;
+    dbg_assert!(crate::page::Page::page_of(end) == crate::page::Page::page_of(ctx.start_of_current_instruction));
+
+    codegen::gen_set_previous_eip_offset_from_eip_with_low_bits(
+        ctx.builder,
+        ctx.start_of_current_instruction as i32 & 0xFFF,
+    );
+    codegen::gen_set_eip_low_bits(ctx.builder, after_opcode as i32 & 0xFFF);
+    codegen::gen_move_registers_from_locals_to_memory(ctx);
+    ctx.builder.const_i32(ctx.cpu.prefixes as i32);
+    ctx.builder.const_i32(end as i32 & 0xFFF);
+    ctx.builder.call_fn2_ret(name);
+    ctx.builder.if_void();
+    {
+        codegen::gen_debug_track_jit_exit(ctx.builder, ctx.start_of_current_instruction);
+        codegen::gen_update_instruction_counter(ctx);
+        ctx.builder.return_();
+    }
+    ctx.builder.block_end();
+    codegen::gen_move_registers_from_memory_to_locals(ctx);
+}
+pub fn instr_0F38_jit(ctx: &mut JitContext) { gen_three_byte_call(ctx, "jit_instr_0F38", false) }
+pub fn instr_0F3A_jit(ctx: &mut JitContext) { gen_three_byte_call(ctx, "jit_instr_0F3A", true) }
