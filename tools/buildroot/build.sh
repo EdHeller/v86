@@ -2096,6 +2096,14 @@ export PATH TERM=${TERM:-linux}
 # COM1 is the page's xterm.js (getty sets TERM=xterm-256color): it shows 24-bit colour too, and scripts that look
 # at COLORTERM instead of terminfo (curl ysap.sh, ...) choose their full palette from it
 case "$(tty 2>/dev/null)" in /dev/ttyS*) export COLORTERM=${COLORTERM:-truecolor} ;; esac
+# The desktop's terminals: their shells (and what runs in them) at nice 1, one step below xterm. At the same
+# priority a program that floods the terminal (yes) keeps xterm from reading the keyboard on the browser's slower
+# emulated CPU, Ctrl+C included; nice 1 is enough, and costs nothing while nothing else wants the CPU
+if [ -n "$DISPLAY" ]; then
+    case "$(tty 2>/dev/null)" in
+        /dev/pts/*) [ "$(cut -d' ' -f19 /proc/$$/stat 2>/dev/null)" = 0 ] && renice 1 -p $$ >/dev/null 2>&1 ;;
+    esac
+fi
 # UTF-8 everywhere (C.UTF-8 is generated at build time: BR2_GENERATE_LOCALE)
 export LANG=${LANG:-C.UTF-8}
 # Unicode on the text console: the kernel console holds only 512 glyphs, so logins on a
@@ -2828,6 +2836,8 @@ EOF
     # ── xterm: dark palette (each color >= 4.5:1 contrast on the background) ─
     put "$OVL/root/.Xdefaults" <<'EOF'
 XTerm*termName:    xterm-256color
+! login shells: they read /etc/profile.d/v86.sh, which runs them at nice 1 (see there)
+XTerm*loginShell:  true
 XTerm*locale:      false
 XTerm*utf8:        1
 XTerm*utf8Title:   true
