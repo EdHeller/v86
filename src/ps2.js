@@ -13,9 +13,13 @@ const PS2_LOG_VERBOSE = false;
  * @constructor
  * @param {CPU} cpu
  * @param {BusConnector} bus
+ * @param {boolean=} hide_mouse_while_cli
  */
-export function PS2(cpu, bus)
+export function PS2(cpu, bus, hide_mouse_while_cli)
 {
+    /** TempleOS's debugger polls the status port with interrupts off and reads mouse bytes as keys */
+    this.hide_mouse_while_cli = !!hide_mouse_while_cli;
+
     /** @const @type {CPU} */
     this.cpu = cpu;
 
@@ -501,7 +505,10 @@ PS2.prototype.port64_read = function()
     // pending byte as a keystroke, including the bytes of mouse packets, and shows them as
     // garbage text. Mouse data only becomes visible while interrupts are enabled, which is the
     // only situation in which the guest's mouse irq handler could read it anyway.
-    let hidden_mouse_byte = this.next_byte_is_aux && !(this.cpu.flags[0] & 0x200);
+    // Only with the option ps2_hide_mouse_while_cli (the TempleOS page): every other guest reads mouse bytes
+    // with interrupts disabled too, in its IRQ 12 handler and in Linux's i8042 probe (the AUX loopback), and
+    // hiding them made Linux decide that there is no mouse port, or fail to enable the mouse.
+    let hidden_mouse_byte = this.hide_mouse_while_cli && this.next_byte_is_aux && !(this.cpu.flags[0] & 0x200);
 
     if(hidden_mouse_byte && this.kbd_buffer.length)
     {

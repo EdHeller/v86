@@ -34,6 +34,7 @@ import { FS } from "../../lib/filesystem.js";
  *
  * @param {{
       disable_mouse: (boolean|undefined),
+      ps2_hide_mouse_while_cli: (boolean|undefined),
       disable_keyboard: (boolean|undefined),
       wasm_fn: (Function|undefined),
       screen: ({
@@ -275,6 +276,7 @@ V86.prototype.continue_init = async function(emulator, options)
     settings.jit64_threshold = options.jit64_threshold;
     settings.jit_chaining = options.jit_chaining;
     settings.sync_jit = options.sync_jit;
+    settings.ps2_hide_mouse_while_cli = options.ps2_hide_mouse_while_cli;
     settings.jit64_disable_mask = options.jit64_disable_mask;
     settings.load_devices = true;
     settings.memory_size = options.memory_size || 64 * 1024 * 1024;

@@ -76,6 +76,8 @@ document.getElementById("start").onclick = function()
         cdrom: hd_buffer ? undefined : { buffer: iso_buffer },
         hda: hd_buffer ? { buffer: hd_buffer } : undefined,
         boot_order: hd_buffer ? 0x213 : undefined,
+        // (TempleOS's debugger polls the PS/2 status port with interrupts off: mouse bytes would read as keys)
+        ps2_hide_mouse_while_cli: true,
         autostart: true,
     });
 

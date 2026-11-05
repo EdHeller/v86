@@ -1380,7 +1380,7 @@ CPU.prototype.init = function(settings, device_bus)
             this.devices.vga = new VGAScreen(this, device_bus, settings.screen, settings.vga_memory_size || 8 * 1024 * 1024);
         }
 
-        this.devices.ps2 = new PS2(this, device_bus);
+        this.devices.ps2 = new PS2(this, device_bus, settings.ps2_hide_mouse_while_cli);
         this.devices.vmware = new VMwareMouse(this, device_bus);
 
         this.devices.uart0 = new UART(this, 0x3F8, device_bus);
