@@ -2125,6 +2125,11 @@ EOF
 EOF
         fi
     } | put "$OVL/etc/inputrc"
+    # (Tab on an empty line would list every command: nothing instead; the first word completes commands, the
+    # others file names, as in any bash)
+    put "$OVL/etc/profile.d/v86-completion.sh" <<'EOF'
+[ -n "$BASH_VERSION" ] && shopt -s no_empty_cmd_completion
+EOF
     if ((BASHDEV)); then
         put "$OVL/etc/profile.d/v86-bashdev.sh" <<'EOF'
 # shell-script development helpers (--bash-dev); interactive bash only
