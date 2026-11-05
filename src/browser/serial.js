@@ -301,9 +301,52 @@ export function SerialAdapterXtermJS(element, bus, xterm_lib)
 
     var adapter = Reflect.construct(XtermJSAdapter, [element, xterm_lib], SerialAdapterXtermJS);
 
+    // The output goes to xterm.js once per frame, not a write per byte: a flood (yes, cat of a big file) used to
+    // queue more than xterm.js could draw, so the page stopped answering and ^C's effect showed only after
+    // megabytes of backlog. Of a flood, the newest OUTPUT_KEEP bytes are shown (from a line start), as a terminal
+    // that scrolls fast enough would leave them on the screen.
+    const OUTPUT_KEEP = 64 * 1024;
+    let pending = new Uint8Array(4096);
+    let pending_len = 0;
+    let flush_scheduled = false;
+    const flush = function()
+    {
+        flush_scheduled = false;
+        if(!pending_len) return;
+        let start = 0;
+        if(pending_len > OUTPUT_KEEP)
+        {
+            start = pending_len - OUTPUT_KEEP;
+            const nl = pending.indexOf(10, start);
+            if(nl !== -1 && nl < pending_len - 1) start = nl + 1;
+        }
+        adapter.term.write(pending.slice(start, pending_len));
+        pending_len = 0;
+    };
+    const schedule = typeof requestAnimationFrame === "function" ? requestAnimationFrame : f => setTimeout(f, 16);
     bus.register("serial0-output-byte", function(utf8_byte)
     {
-        adapter.term.write(Uint8Array.of(utf8_byte));
+        if(pending_len === pending.length)
+        {
+            if(pending.length < 4 * OUTPUT_KEEP)
+            {
+                const bigger = new Uint8Array(pending.length * 2);
+                bigger.set(pending);
+                pending = bigger;
+            }
+            else
+            {
+                // (more than four times what is shown has piled up in one frame: keep the newest half)
+                pending.copyWithin(0, pending_len - 2 * OUTPUT_KEEP, pending_len);
+                pending_len = 2 * OUTPUT_KEEP;
+            }
+        }
+        pending[pending_len++] = utf8_byte;
+        if(!flush_scheduled)
+        {
+            flush_scheduled = true;
+            schedule(flush);
+        }
     }, adapter);
 
     const utf8_encoder = new TextEncoder();

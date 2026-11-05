@@ -2108,15 +2108,24 @@ case "$(tty 2>/dev/null)" in
 esac
 EOF
 
-    if ((BASHDEV)); then
-        put "$OVL/etc/inputrc" <<'EOF'
+    # Tab completion (bash's readline reads /etc/inputrc): the choices on the first Tab, not only on a second
+    # one, any case, directories marked with a /
+    {
+        cat <<'EOF'
 set show-all-if-ambiguous on
 set completion-ignore-case on
 set colored-stats on
+set mark-directories on
 set mark-symlinked-directories on
+EOF
+        if ((BASHDEV)); then
+            cat <<'EOF'
 "\e[A": history-search-backward
 "\e[B": history-search-forward
 EOF
+        fi
+    } | put "$OVL/etc/inputrc"
+    if ((BASHDEV)); then
         put "$OVL/etc/profile.d/v86-bashdev.sh" <<'EOF'
 # shell-script development helpers (--bash-dev); interactive bash only
 [ -n "$BASH_VERSION" ] || return 0
@@ -2169,8 +2178,10 @@ EOF
     fi
 
     # ── nano: darker interface (syntax colors are toned down in post-build) ──
-    put "$OVL/root/.nanorc" <<'EOF'
+    # (/etc/nanorc: every user's, not only root's; autoindent: a new line starts at the previous one's indent)
+    put "$OVL/etc/nanorc" <<'EOF'
 include "/usr/share/nano/*.nanorc"
+set autoindent
 set constantshow
 set softwrap
 set titlecolor white,blue
