@@ -2197,6 +2197,7 @@ EOF
     # (/etc/nanorc: every user's, not only root's; autoindent: a new line starts at the previous one's indent)
     put "$OVL/etc/nanorc" <<'EOF'
 include "/usr/share/nano/*.nanorc"
+set tabsize 4
 set autoindent
 set constantshow
 set softwrap
