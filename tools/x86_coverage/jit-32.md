@@ -1,7 +1,7 @@
 # 32-bit: the interpreter against the JIT
 
 `run.mjs 32 jit`: 300 passes over the probes interpreted (disable_jit) and 300 compiled (the pages
-compiled after little heat); the last passes compared. Interpreted 22.3 s, compiled 29.4 s.
+compiled after little heat); the last passes compared. Interpreted 21.5 s, compiled 25.7 s.
 Left out: time stamps, random numbers, port input, saved FPU environments (their instruction pointers differ).
 Dump offsets: eax..edi at 0..31, eflags 32, xmm0..7 at 48, memory at 176.
 
