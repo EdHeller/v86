@@ -12,7 +12,7 @@
   `docs/android-images-plan.md`, `docs/gpu-devices.md`, `docs/gfxstream-plan.md`, `docs/glbridge.md`, `docs/uefi.md`.
 - When you finish an item, check it off here, add a dated line under "Done", and commit.
 
-## State (2026-11-04)
+## State (2026-11-05)
 
 - **32-bit x86 (`v86.wasm`):** SSE3/SSSE3/SSE4 in every mode; as fast as upstream v86 again (`docs/releases.md`, speed note).
 - **x86_64 (`v64.wasm`, `libv64.js`):** faster than v64: Alpine x86_64 to login in about 40 s against v64's 44.5 s.
@@ -100,7 +100,13 @@ libv86.js fails with "Missing import").
    - ✅ The indirect-jump lookup in a function of the module (`8c2cfe12`): in the main function it slowed every
      loop of the module on the user's CPU (code16 +96 %, segment +13 %); through upstream's call it is slow itself.
    - ✅ Modules move only the registers they use (`9727e77e`): page_hop -11 %, call_pages -13 % against upstream here.
-   - ⬜ bench11 (`REPEAT=50`, `SCALE=8`) on the user's machine; then the dispatcher's own share (29 % of page_hop).
+   - ✅ bench11 on the user's machine (2026-11-05, `REPEAT=50`, 5 rounds, medians against upstream): nothing slower
+     beyond noise (worst: spinlock +4.1 %, smc +3.2 %, bitops +3.2 %). Faster: unaligned -56.5 %, pagewalk -42.7 %,
+     page_hop -35.9 %, tlb4k -19.9 %, cpuid -18.9 %, indirect -16.4 %, pagefault -16.2 %, scalar_fp -15.9 %, sysenter
+     -12.3 %, call_pages -9.9 %, call_near -9.8 %, call_deep -9.3 %, sse -8.9 %, call_far -8.3 %, pit -7.1 %.
+     `ours11-allregs` (every register moved at each module boundary) loses most of it: page_hop +1.1 %, call_pages
+     -6.8 %, spinlock +14.2 %, interrupt +5.3 %; moving only the registers a module uses stays.
+   - ⬜ Next: the dispatcher's own share (29 % of page_hop), then the CPUID item above.
 4. ✅ **The lazy-compile cost** (measured 2026-11-04; Alpine x86_64 boot to login and the four workloads,
    `ARCH=x86_64 JIT64_STATS=1 node tools/v86-bench/run.mjs --child <build>`, `--trace-wasm-compilation-times`).
    - The main thread's Liftoff compiles: 3,633 functions, 45 MB of WebAssembly, **1.0 s** in a 95 s boot (about 1 %,
@@ -139,8 +145,9 @@ libv86.js fails with "Missing import").
        with the flag set, as in real programs: sse -4 %, scalar_fp +5 %). `tests/x64/js/sse_fast_paths.js` checks
        45 forms against the host CPU bit for bit and found three old flag bugs (sums with far apart exponents,
        underflowing double products, conversions without flags), fixed.
-     - ⬜ Next: the user's numbers for bench6; then spinlock (+28 %: xchg with memory), rep_small, interrupt; more
-       SSE inline (movaps/movdqa, comparisons, shuffles, the remaining conversions, divs/sqrt).
+     - ✅ bench11 (task 3): sse -8.9 %, scalar_fp -15.9 %, rep_small -4.9 %, interrupt +0.3 %, spinlock +4.1 %
+       against upstream (were +34 %, +19 %, +8.5 %, +6 %, +28 %).
+     - ⬜ Next: spinlock, smc and bitops (+3 to 4 %, near noise); more SSE inline (movaps/movdqa, comparisons, shuffles, the remaining conversions, divs/sqrt).
 7. ⬜ **virtio-gpu, the rest.**
    - ⬜ a. The ARM machine through `new V86({ cpu_type: "arm64", graphics_adapter: "virtio_gpu" })` (today only
      `examples/alpine-arm64.html?gpu=1`).
@@ -154,6 +161,30 @@ libv86.js fails with "Missing import").
 10. ⬜ **Buildroot: an x86_64 build and multicore** (`tools/buildroot/build.sh`): a 64-bit kernel and userland next to
    the 32-bit one; ACPI, SMP with the local and I/O APIC, HPET and TSC; the matching v86 options in the run
    instructions (`acpi`, `cpu_cores`, `cpu_type: "x86_64"`, the worker build). Check: `nproc` shows the cores.
+11. ⬜ **The JavaScript devices in Rust** (added 2026-11-05). About 98,000 lines of device and machine code in
+   `src/` (`cpu.js`, IDE, floppy, VGA, NE2000, virtio, SB16, HDA, USB, PS/2, the graphics adapters) become Rust in
+   the wasm module; `src/browser/` (13,000 lines: DOM, canvas, WebGPU, Web Audio, fetch, WebSocket, files) stays
+   JavaScript, since only JavaScript reaches those APIs. Expect: task 3 measured JavaScript at 1.2 % of the time,
+   so the speed comes from the hot paths (port I/O and MMIO from compiled code, timers, interrupts), not the line
+   count; the rest is for one language and fewer boundaries (snapshots, workers).
+   - a. The boundary first: one Rust device trait (port and MMIO handlers, a timer callback, save/restore state),
+     a table of devices in Rust that the I/O dispatch calls without leaving wasm, and a small import set for what
+     must stay in JavaScript (a frame ready, audio samples, a network packet, a disk block request). Every device
+     moves behind this one at a time, each build passing the tests before the next.
+   - b. Timers and the clock (task 3's item): PIT, RTC/CMOS, HPET, ACPI PM timer, `run_hardware_timers` in Rust;
+     `performance.now` once per slice.
+   - c. The hot devices: PS/2, the serial UART, DMA, the PCI configuration space, IDE/ATAPI's register file (the
+     data comes asynchronously from JavaScript buffers), NE2000 and virtio's rings (packets handed to JavaScript).
+   - d. VGA and the graphics adapters' register and memory paths in Rust (task 6c's VGA memory writes), the drawing
+     to canvas and WebGPU stays JavaScript and reads the framebuffer from wasm memory.
+   - e. Sound (SB16, HDA, the AC97 family) and USB (UHCI/EHCI/xHCI): emulation in Rust, sample output stays in
+     JavaScript.
+   - f. The large protocol tables (`venus_protocol.js`, `gfxstream_protocol.js`, `svga_constants.js`): generated
+     code, move only with the device that uses them; the WebGPU side stays JavaScript.
+   - g. `cpu.js` last: machine setup, memory map, snapshots; `starter.js`'s API (`new V86({...})`) unchanged.
+   - Check per step: `make all`, the boot tests (`tests/full/run.js`, `tests/x64/run.js`, `tests/uefi.mjs`,
+     `tests/a64/boot.mjs`, `tests/virtio_gpu.mjs`), snapshots from the step before restore, and the micro benchmarks
+     (`port`, `pit`, `interrupt`, `rdtsc`) against the JavaScript version. Same rule for ARM (`src/arm/`) after x86.
 
 ## Plan: Android
 
