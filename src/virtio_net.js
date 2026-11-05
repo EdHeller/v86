@@ -27,12 +27,13 @@ const VIRTIO_NET_CTRL_MAC_ADDR_SET = 1;
  * @param {BusConnector} bus
  * @param {Boolean} preserve_mac_from_state_image
  * @param {number} mtu
+ * @param {number=} id the bus channel (net<id>-*): from net_devices, else 1 beside an NE2000
  */
-export function VirtioNet(cpu, bus, preserve_mac_from_state_image, mtu = MTU_DEFAULT)
+export function VirtioNet(cpu, bus, preserve_mac_from_state_image, mtu = MTU_DEFAULT, id = undefined)
 {
     /** @const @type {BusConnector} */
     this.bus = bus;
-    this.id = cpu.devices.net ? 1 : 0;
+    this.id = id !== undefined ? id : cpu.devices.net ? 1 : 0;
     this.pairs = 1;
     this.status = 1;
     this.preserve_mac_from_state_image = preserve_mac_from_state_image;

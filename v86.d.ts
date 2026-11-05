@@ -601,6 +601,12 @@ export interface V86Options {
     net_device?: V86NetworkDevice;
 
     /**
+     * Two network cards at most, one NE2000 and one virtio-net, each with its own relay_url (e.g. the internet
+     * through a relay on the first and "inbrowser" on the second). Replaces net_device.
+     */
+    net_devices?: V86NetworkDevice[];
+
+    /**
      * Enable serial port 1
      * @default false
      */

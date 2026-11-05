@@ -1428,13 +1428,17 @@ CPU.prototype.init = function(settings, device_bus)
             this.devices.usb = this.create_usb_plugin(settings, device_bus);
         }
 
-        if(settings.net_device.type === "ne2k")
+        // (net_devices: one NE2000 and one virtio-net at most, each on the bus channel of its place in the list)
+        for(const net_device of settings.net_devices || [settings.net_device])
         {
-            this.devices.net = new Ne2k(this, device_bus, settings.preserve_mac_from_state_image, settings.mac_address_translation);
-        }
-        else if(settings.net_device.type === "virtio")
-        {
-            this.devices.virtio_net = new VirtioNet(this, device_bus, settings.preserve_mac_from_state_image, settings.net_device.mtu);
+            if(net_device.type === "ne2k" && !this.devices.net)
+            {
+                this.devices.net = new Ne2k(this, device_bus, settings.preserve_mac_from_state_image, settings.mac_address_translation, net_device.id || 0);
+            }
+            else if(net_device.type === "virtio" && !this.devices.virtio_net)
+            {
+                this.devices.virtio_net = new VirtioNet(this, device_bus, settings.preserve_mac_from_state_image, net_device.mtu, net_device.id || 0);
+            }
         }
 
         if(settings.fs9p)

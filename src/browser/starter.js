@@ -299,32 +299,45 @@ V86.prototype.continue_init = async function(emulator, options)
     settings.virtio_balloon = options.virtio_balloon;
     settings.virtio_console = !!options.virtio_console;
 
-    const relay_url = options.network_relay_url || options.net_device && options.net_device.relay_url;
-    if(relay_url)
+    // net_devices: up to two cards, one NE2000 and one virtio-net, each with its own relay (net0-*, net1-* on the bus,
+    // in the list's order); net_device / network_relay_url: one card, as before
+    const net_devices = options.net_devices && options.net_devices.length ?
+        options.net_devices.slice(0, 2).map((d, i) => Object.assign({ type: "ne2k" }, d, { id: i })) :
+        [Object.assign({ type: "ne2k" }, options.net_device, { id: 0 },
+            options.network_relay_url ? { relay_url: options.network_relay_url } : {})];
+    const create_network_adapter = device =>
     {
+        const relay_url = device.relay_url;
+        if(!relay_url)
+        {
+            return null;
+        }
         // TODO: remove bus, use direct calls instead
         if(relay_url === "fetch")
         {
-            this.network_adapter = new FetchNetworkAdapter(this.bus, options.net_device);
+            return new FetchNetworkAdapter(this.bus, device);
         }
         else if(relay_url === "inbrowser")
         {
             // NOTE: experimental, will change when usage of options.net_device gets refactored in favour of emulator.bus
-            this.network_adapter = new InBrowserNetworkAdapter(this.bus, options.net_device);
+            return new InBrowserNetworkAdapter(this.bus, device);
         }
         else if(relay_url.startsWith("wisp://") || relay_url.startsWith("wisps://"))
         {
-            this.network_adapter = new WispNetworkAdapter(relay_url, this.bus, options.net_device);
+            return new WispNetworkAdapter(relay_url, this.bus, device);
         }
         else
         {
-            this.network_adapter = new NetworkAdapter(relay_url, this.bus);
+            return new NetworkAdapter(relay_url, this.bus, device.id);
         }
-    }
+    };
+    this.network_adapters = net_devices.map(create_network_adapter).filter(a => a);
+    this.network_adapter = this.network_adapters[0] || null;
 
     // Enable unconditionally, so that state images don't miss hardware
     // TODO: Should be properly fixed in restore_state
-    settings.net_device = Object.assign({ type: "ne2k" }, options.net_device);
+    settings.net_device = net_devices[0];
+    settings.net_devices = net_devices;
 
     const screen_options = options.screen || {};
     if(options.screen_container)
@@ -1089,7 +1102,10 @@ V86.prototype.destroy = async function()
 
     this.v86 && this.v86.destroy();
     this.keyboard_adapter && this.keyboard_adapter.destroy();
-    this.network_adapter && this.network_adapter.destroy();
+    for(const adapter of this.network_adapters || [])
+    {
+        adapter.destroy && adapter.destroy();
+    }
     this.mouse_adapter && this.mouse_adapter.destroy();
     this.screen_adapter && this.screen_adapter.destroy();
     this.serial_adapter && this.serial_adapter.destroy();

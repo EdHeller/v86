@@ -24,7 +24,8 @@ export function InBrowserNetworkAdapter(bus, config)
     this.bus = bus;
     this.bus_send_msgid = `net${id}-send`;
     this.bus_recv_msgid = `net${id}-receive`;
-    this.channel = new BroadcastChannel(`v86-inbrowser-${id}`);
+    // (one hub for every page, whichever card of it is in-browser; config.channel picks another one)
+    this.channel = new BroadcastChannel(config.channel || "v86-inbrowser-0");
     this.is_open = true;
 
     // forward ethernet frames from emulated NIC to hub
