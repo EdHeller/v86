@@ -40,6 +40,11 @@
 
 The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab's. Finished items move to "Done" below.
 
+**Packages for the user** (benchmarks, releases): every README starts with the reminder to clear the browser cache
+(Ctrl+Shift+R, or DevTools > Network > "Disable cache") and unregister old service workers before trying a new
+build; a release always ships v86-fallback.wasm / v64-fallback.wasm with libv86.js (an old fallback beside a new
+libv86.js fails with "Missing import").
+
 1. ✅ **32-bit speed back to upstream's** (2026-11-04; `docs/releases.md`, speed note).
 
 2. ✅ **Full instruction coverage on x86: 16-bit, 32-bit and x86_64** (2026-11-04). The tool: `tools/x86_coverage`
