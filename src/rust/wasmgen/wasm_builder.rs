@@ -98,7 +98,7 @@ pub struct WasmBuilder {
 
     /// functions of the module besides the main one: (key, write signature, body with its local
     /// declarations), and where the main body calls them (patched once the import count is final)
-    internal: Vec<(u32, bool, Vec<u8>)>,
+    internal: Vec<(u32, u8, Vec<u8>)>,
     internal_calls: Vec<(usize, usize)>,
 }
 
@@ -619,8 +619,7 @@ impl WasmBuilder {
         self.output.push(1 + n as u8); // count of signature indices
         self.output.push(FunctionType::FN1.to_u8());
         for i in 0..n {
-            let t = if self.internal[i].1 { FunctionType::FN3_I64_I64_I32 } else { FunctionType::FN2_I64_I32_RET_I64 };
-            self.output.push(t.to_u8());
+            self.output.push(self.internal[i].1);
         }
     }
 
@@ -628,6 +627,16 @@ impl WasmBuilder {
     /// `write`, of type (i64, i64, i32) -> (), else (i64, i32) -> i64. Its locals after the
     /// parameters are `i32_locals` i32s; `gen` emits the body (without the final end).
     pub fn call_internal(&mut self, key: u32, write: bool, i32_locals: u8, gen: impl FnOnce(&mut WasmBuilder)) {
+        let ty = if write { FunctionType::FN3_I64_I64_I32 } else { FunctionType::FN2_I64_I32_RET_I64 };
+        self.call_internal_typed(key, ty, i32_locals, gen)
+    }
+
+    /// As call_internal, with the function's type (its parameters are its first locals)
+    pub fn call_internal_i32_to_i32(&mut self, key: u32, i32_locals: u8, gen: impl FnOnce(&mut WasmBuilder)) {
+        self.call_internal_typed(key, FunctionType::FN1_RET, i32_locals, gen)
+    }
+
+    fn call_internal_typed(&mut self, key: u32, ty: FunctionType, i32_locals: u8, gen: impl FnOnce(&mut WasmBuilder)) {
         let k = match self.internal.iter().position(|f| f.0 == key) {
             Some(k) => k,
             None => {
@@ -650,7 +659,7 @@ impl WasmBuilder {
                 }
                 f.extend_from_slice(&code);
                 f.push(op::OP_END);
-                self.internal.push((key, write, f));
+                self.internal.push((key, ty.to_u8(), f));
                 self.internal.len() - 1
             },
         };
@@ -710,7 +719,7 @@ impl WasmBuilder {
     }
 
     #[must_use = "local allocated but not used"]
-    fn alloc_local(&mut self) -> WasmLocal {
+    pub fn alloc_local(&mut self) -> WasmLocal {
         match self.free_locals_i32.pop() {
             Some(local) => local,
             None => {

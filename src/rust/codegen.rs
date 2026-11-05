@@ -2760,6 +2760,31 @@ pub fn gen_debug_track_jit_exit(builder: &mut WasmBuilder, address: u32) {
 /// Indirect jumps (ret, call/jmp through a register or memory) do this every time; as a call out of the module it
 /// was about 4 % of a shell loop on 32-bit Linux. The parallel build keeps the call: its tables are per instance.
 pub fn gen_find_entry_in_page(builder: &mut WasmBuilder, eip: &WasmLocal, wasm_table_index: u16, state_flags: u8) {
+    let code = builder.alloc_local();
+    let state = builder.alloc_local();
+    gen_find_entry_in_page_body(builder, eip, &code, &state, wasm_table_index, state_flags);
+    builder.free_local(code);
+    builder.free_local(state);
+}
+
+/// The same as a function of the module (one per module: its table index and state flags are fixed), called with
+/// eip on the stack: the lookup's code and locals stay out of the main function, whose hot loops V8 then compiles
+/// as before (on some CPUs a loop of a module with lookups ran at half speed), and the call stays inside the module
+pub fn gen_find_entry_in_page_call(builder: &mut WasmBuilder, wasm_table_index: u16, state_flags: u8) {
+    builder.call_internal_i32_to_i32(0x4C4B5550, 2, |b| {
+        let (eip, code, state) = (WasmBuilder::raw_local(0), WasmBuilder::raw_local(1), WasmBuilder::raw_local(2));
+        gen_find_entry_in_page_body(b, &eip, &code, &state, wasm_table_index, state_flags);
+    });
+}
+
+fn gen_find_entry_in_page_body(
+    builder: &mut WasmBuilder,
+    eip: &WasmLocal,
+    code: &WasmLocal,
+    state: &WasmLocal,
+    wasm_table_index: u16,
+    state_flags: u8,
+) {
     use crate::cpu::cpu::{tlb_code, Code};
     use std::mem::offset_of;
 
@@ -2772,16 +2797,16 @@ pub fn gen_find_entry_in_page(builder: &mut WasmBuilder, eip: &WasmLocal, wasm_t
     builder.const_i32(2);
     builder.shl_i32();
     builder.load_aligned_i32(tlb_code_base);
-    let code = builder.set_new_local();
+    builder.set_local(code);
 
-    builder.get_local(&code);
+    builder.get_local(code);
     builder.if_i32();
     {
-        builder.get_local(&code);
+        builder.get_local(code);
         builder.load_aligned_u16(offset_of!(Code, wasm_table_index) as u32);
         builder.const_i32(wasm_table_index as i32);
         builder.eq_i32();
-        builder.get_local(&code);
+        builder.get_local(code);
         builder.load_u8(offset_of!(Code, state_flags) as u32);
         builder.const_i32(state_flags as i32);
         builder.eq_i32();
@@ -2794,17 +2819,16 @@ pub fn gen_find_entry_in_page(builder: &mut WasmBuilder, eip: &WasmLocal, wasm_t
             builder.and_i32();
             builder.const_i32(1);
             builder.shl_i32();
-            builder.get_local(&code);
+            builder.get_local(code);
             builder.add_i32();
             builder.load_aligned_u16(offset_of!(Code, state_table) as u32);
-            let state = builder.set_new_local();
-            builder.get_local(&state);
+            builder.set_local(state);
+            builder.get_local(state);
             builder.const_i32(-1);
-            builder.get_local(&state);
+            builder.get_local(state);
             builder.const_i32(0xFFFF);
             builder.ne_i32();
             builder.select();
-            builder.free_local(state);
         }
         builder.else_();
         builder.const_i32(-1);
@@ -2813,7 +2837,6 @@ pub fn gen_find_entry_in_page(builder: &mut WasmBuilder, eip: &WasmLocal, wasm_t
     builder.else_();
     builder.const_i32(-1);
     builder.block_end();
-    builder.free_local(code);
 }
 
 /// Called at the end of a compiled module after registers and the instruction counter have been

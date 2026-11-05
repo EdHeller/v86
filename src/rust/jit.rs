@@ -77,6 +77,8 @@ pub const JIT_THRESHOLD: u32 = 200 * 1000;
 /// Indirect jumps look up their target inline (else through jit_find_cache_entry_in_page, as upstream);
 /// set_jit_config(65, 0) for comparisons
 pub static mut INLINE_LOOKUP: bool = true;
+/// ... in a function of the module (true), or in the main function itself; set_jit_config(66, 0/1)
+pub static mut LOOKUP_IN_FUNCTION: bool = true;
 
 /// The heat at which a page is compiled: JIT_THRESHOLD, lowered by tests through set_jit_config(59, ..)
 static mut JIT_THRESHOLD_NOW: u32 = JIT_THRESHOLD;
@@ -1422,6 +1424,14 @@ fn jit_generate_module(
                             ctx.builder.const_i32(state_flags.to_u32() as i32);
                             ctx.builder.call_fn3_ret("jit_find_cache_entry_in_page");
                         }
+                        else if unsafe { LOOKUP_IN_FUNCTION } {
+                            codegen::gen_get_eip(ctx.builder);
+                            codegen::gen_find_entry_in_page_call(
+                                ctx.builder,
+                                wasm_table_index.to_u16(),
+                                state_flags.to_u32() as u8,
+                            );
+                        }
                         else {
                             codegen::gen_get_eip(ctx.builder);
                             let eip = ctx.builder.set_new_local();
@@ -2653,6 +2663,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         59 => JIT_THRESHOLD_NOW = value.max(1),
         62 => crate::cpu::instructions_0f::CPUID_HIDE = value,
         65 => INLINE_LOOKUP = value != 0,
+        66 => LOOKUP_IN_FUNCTION = value != 0,
         63 => crate::cpu::jit64::OUTLINE_MEM = value,
         64 => crate::cpu::jit64::SHARED_RETRY = value != 0,
         60 => crate::cpu::sse_fp::FAST_PATHS_OFF = value != 0,
