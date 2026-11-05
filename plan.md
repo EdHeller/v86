@@ -92,6 +92,10 @@ The user's order (2026-11-04): ⬜ open, ✅ done; the numbers are the Tasks tab
      (sha256sum; each a call into the interpreter). `set_jit_config(62, bits)` hides groups; bench8 sent to measure
      them. Then: compile the 0F 38 / 0F 3A instructions (SHA, pshufb, palignr, pclmulqdq) instead of interpreting
      them, mwait as hlt when interrupts are on, the rdtsc clock read and the JavaScript devices' port I/O.
+   - ✅ The indirect-jump lookup in a function of the module (`8c2cfe12`): in the main function it slowed every
+     loop of the module on the user's CPU (code16 +96 %, segment +13 %); through upstream's call it is slow itself.
+   - ✅ Modules move only the registers they use (`9727e77e`): page_hop -11 %, call_pages -13 % against upstream here.
+   - ⬜ bench11 (`REPEAT=50`, `SCALE=8`) on the user's machine; then the dispatcher's own share (29 % of page_hop).
 4. ✅ **The lazy-compile cost** (measured 2026-11-04; Alpine x86_64 boot to login and the four workloads,
    `ARCH=x86_64 JIT64_STATS=1 node tools/v86-bench/run.mjs --child <build>`, `--trace-wasm-compilation-times`).
    - The main thread's Liftoff compiles: 3,633 functions, 45 MB of WebAssembly, **1.0 s** in a 95 s boot (about 1 %,
