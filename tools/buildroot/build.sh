@@ -2015,11 +2015,13 @@ CONFIG_PCI=y
 # CONFIG_SND_PCI is not set
 # CONFIG_SND_PCMCIA is not set
 # CONFIG_SND_X86 is not set
-# input: PS/2 keyboard + mouse only
+# input: PS/2 keyboard + mouse, and the PC speaker (the text console's bell; v86 plays it
+# from the PIT's channel 2)
 # CONFIG_INPUT_JOYSTICK is not set
 # CONFIG_INPUT_TABLET is not set
 # CONFIG_INPUT_TOUCHSCREEN is not set
-# CONFIG_INPUT_MISC is not set
+CONFIG_INPUT_MISC=y
+CONFIG_INPUT_PCSPKR=y
 # CONFIG_INPUT_LEDS is not set
 # CONFIG_VIRTIO_INPUT is not set
 # serial: one plain 16550
@@ -2205,6 +2207,7 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
   sudo <command>    run a command as root (your password: $DEFAULT_USER)
   su -              become root (password: root)
   openssl version   OpenSSL; https works with the CA certificates in /etc/ssl/certs
+  beep off          silence the bell (beep on turns it back on)
 EOF
         if ((GUI)); then
             cat >> "$OVL$UHOME/readme.txt" <<'EOF'
@@ -2251,6 +2254,10 @@ fi
 export EDITOR=nano VISUAL=nano
 # fontsize remembers each xterm's size by its terminal: a new xterm starts afresh
 [ -n "$XTERM_VERSION" ] && rm -f "/tmp/fontsize-$(id -u)-$(tty | tr -c 'a-z0-9\n' _)"
+# "beep off": no bell on this text console either (the PC speaker; 0 ms long)
+if [ -e "$HOME/.nobeep" ]; then
+    case "$(tty 2>/dev/null)" in /dev/tty[0-9]*) printf '\033[11;0]' ;; esac
+fi
 # UTF-8 everywhere (C.UTF-8 is generated at build time: BR2_GENERATE_LOCALE)
 export LANG=${LANG:-C.UTF-8}
 # Unicode on the text console: the kernel console holds only 512 glyphs, so logins on a
@@ -2399,6 +2406,26 @@ set selectedcolor black,cyan
 EOF
 
     # ── helpers ──────────────────────────────────────────────────────────────
+    # beep: the bell on or off, for this user (~/.nobeep). The text consoles' bell is the PC
+    # speaker; its length is set per console (ESC [ 11 ; ms ], 0 = silent, the kernel's
+    # default 125), here and at each login (profile.d/v86.sh). The desktop's bell (xterm)
+    # plays on the sound card through v86-bell, which checks ~/.nobeep each time.
+    putx "$OVL/usr/bin/beep" <<'EOF'
+#!/bin/sh
+# beep          say whether the bell is on
+# beep off      silence it: the text consoles' (PC speaker) and xterm's (sound card)
+# beep on       turn it back on
+# beep test     ring it
+f=$HOME/.nobeep
+console() { case "$(tty 2>/dev/null)" in /dev/tty[0-9]*) printf '\033[11;%s]' "$1" ;; esac; }
+case "$1" in
+    "")   if [ -e "$f" ]; then echo "beep: off"; else echo "beep: on"; fi ;;
+    off)  touch "$f" && console 0 && echo "beep: off (text consoles and xterm; beep on turns it back on)" ;;
+    on)   rm -f "$f" && console 125 && echo "beep: on" ;;
+    test) printf '\a' ;;
+    *)    sed -n '2,5s/^# //p' "$0"; exit 1 ;;
+esac
+EOF
     putx "$OVL/usr/bin/netup" <<'EOF'
 #!/bin/sh
 # netup: bring up the network cards (v86: net_device.relay_url, or net_devices for two)
@@ -3009,7 +3036,9 @@ Bell()          shell "v86-bell"
 EOF
     putx "$OVL/usr/bin/v86-bell" <<'EOF'
 #!/bin/sh
-# v86-bell: the X bell's sound (xkbevd runs it); one at a time, extra bells are dropped
+# v86-bell: the X bell's sound (xkbevd runs it); one at a time, extra bells are dropped.
+# "beep off" (~/.nobeep) silences it
+[ -e "$HOME/.nobeep" ] && exit 0
 exec flock -n "/tmp/.v86-bell-$(id -u)" aplay -q /usr/share/sounds/v86-bell.wav 2>/dev/null
 EOF
     # 880 Hz for 0.12 s, 44.1 kHz mono 16-bit (dmix's rate: no resampling), 5 ms fades
@@ -4396,6 +4425,7 @@ lint_tree() {
         fi
     fi
     grep -q 'snd_sb16.isapnp=0' "$EXT/linux.fragment" || { warn "SB16 isapnp=0 missing from cmdline"; bad=1; }
+    grep -qx 'CONFIG_INPUT_PCSPKR=y' "$EXT/linux.fragment" || { warn "PC speaker (console bell) missing from the kernel"; bad=1; }
     if [[ "$MODE" == vesa ]]; then
         grep -q "u16 mode = $VID_MODE;" "$EXT/external.mk" && grep -qx 'CONFIG_FB_VESA=y' "$EXT/linux.fragment" \
             || { warn "VESA boot mode $VID_MODE not wired up"; bad=1; }
@@ -4574,7 +4604,7 @@ verify_image() {
     ((WINCC)) && want+=('usr/bin/i386-win32-tcc' 'usr/bin/x86_64-win32-tcc' 'usr/bin/wincc'
                         'usr/lib/tcc/win32/lib/i386-win32-libtcc1\.a' 'usr/lib/tcc/win32/lib/x86_64-win32-libtcc1\.a'
                         'usr/lib/tcc/win32/lib/kernel32\.def' 'usr/lib/tcc/win32/include/winapi/windows\.h' 'usr/lib/tcc/win32/include/stdarg\.h')
-    want+=('etc/profile\.d/v86-prompt\.sh' 'root/\.bashrc' "${UHOME#/}/\\.bashrc")
+    want+=('usr/bin/beep' 'etc/profile\.d/v86-prompt\.sh' 'root/\.bashrc' "${UHOME#/}/\\.bashrc")
     ((GUI)) && want+=('usr/bin/xkbevd' 'usr/bin/v86-bell' 'usr/share/sounds/v86-bell\.wav' 'usr/bin/fontsize' 'usr/bin/xsession' "${UHOME#/}/\\.xinitrc" "${UHOME#/}/\\.fluxbox/menu" 'etc/sudoers\.d/v86-emojistyle')
     ((GUI)) && want+=('usr/bin/Xorg' 'usr/bin/fluxbox' 'usr/bin/xterm' 'usr/bin/xfe' 'usr/share/fluxbox/styles/V86-Dark'
                       "usr/lib/xorg/modules/drivers/$([[ $MODE == qemu ]] && echo modesetting || echo fbdev)_drv\.so")
