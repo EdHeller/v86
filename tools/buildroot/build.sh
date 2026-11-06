@@ -2112,18 +2112,14 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
   openssl version   OpenSSL; https works with the CA certificates in /etc/ssl/certs
 
 Font size
-  Ctrl + / Ctrl -   your browser's zoom: the whole v86 screen bigger or smaller (unless the
-                    page is set to send these keys to v86; then use the browser's menu)
+  browser zoom      the whole v86 screen bigger or smaller: Zoom in your browser's menu
 EOF
         if ((GUI)); then
             cat >> "$OVL$UHOME/readme.txt" <<'EOF'
-  Shift + numpad +  xterm: larger font (Shift + numpad - smaller). Ctrl + / Ctrl - / Ctrl 0
-                    too, when the page sends Ctrl +/- to v86 instead of zooming. Or hold Ctrl and
-                    right-click in xterm: the VT Fonts menu lists every size
-                    (Unreadable 4x6 ... Huge 10x20)
-  xterm -fs 13.5 &  a new xterm with a bigger font (the sizes below)
-  ~/.Xdefaults      the size new xterms start with: XTerm*faceSize: 9.75 (points;
-                    9.75 = the 6x13 font, 10.5 = 7x14, 13.5 = 9x18, 15 = 10x20)
+  fontsize 18       xterm's font size, in pixels: 6 9 12 13 14 18 20 (13 is the default)
+  fontsize + / -    one size bigger / smaller; fontsize alone shows the size
+  fontsize 18 save  also the size new xterms start with
+  Ctrl + / Ctrl -   the same in xterm, as keys (Ctrl 0: back to the default)
 EOF
         fi
     else
@@ -2149,6 +2145,8 @@ if [ -n "$DISPLAY" ]; then
 fi
 # nano edits text files (Buildroot's /etc/profile says vi): git, crontab, sudoedit, less's v...
 export EDITOR=nano VISUAL=nano
+# fontsize remembers each xterm's size by its terminal: a new xterm starts afresh
+[ -n "$XTERM_VERSION" ] && rm -f "/tmp/fontsize-$(id -u)-$(tty | tr -c 'a-z0-9\n' _)"
 # UTF-8 everywhere (C.UTF-8 is generated at build time: BR2_GENERATE_LOCALE)
 export LANG=${LANG:-C.UTF-8}
 # Unicode on the text console: the kernel console holds only 512 glyphs, so logins on a
@@ -2956,9 +2954,11 @@ XTerm*faceSize4:   10.5
 XTerm*faceSize5:   13.5
 XTerm*faceSize6:   15
 Xft.dpi:           96
+! the fontsize command sets the font through an escape sequence (OSC 50), which xterm
+! refuses unless allowed
+XTerm*allowFontOps: true
 ! Ctrl + / Ctrl - / Ctrl 0: font size, as in most terminals (Ctrl = and Ctrl Shift = both
-! count as Ctrl +). They reach the VM only when the web page sends them to it instead of
-! zooming the browser; Shift + numpad +/- work either way
+! count as Ctrl +). v86 passes Ctrl +/- to the VM, so the browser doesn't zoom
 XTerm*VT100.translations: #override \n\
     Ctrl <Key>equal: larger-vt-font() \n\
     Ctrl <Key>plus: larger-vt-font() \n\
@@ -3765,6 +3765,42 @@ awk -v w="$neww" -v h="$newh" '
 echo "$wantw $wanth $neww $newh" > "$state"
 EOF
 
+    # fontsize: xterm's font size from the command line. xterm sets a font sent to it in an
+    # escape sequence (OSC 50; XTerm*allowFontOps in ~/.Xdefaults lets it). The sizes are
+    # misc-fixed's: 6 (4x6) 9 (6x9) 12 (6x12) 13 (6x13, the default) 14 (7x14) 18 (9x18) 20 (10x20)
+    putx "$OVL/usr/bin/fontsize" <<'EOF'
+#!/bin/sh
+# fontsize             show this xterm's font size
+# fontsize SIZE        set it, in pixels: 6 9 12 13 14 18 20 (13 is the default)
+# fontsize + | -       one size bigger / smaller
+# fontsize SIZE save   also make it the size new xterms start with (~/.Xdefaults)
+sizes="6 9 12 13 14 18 20"
+usage() { sed -n '2,5s/^# //p' "$0"; exit 1; }
+[ -n "$XTERM_VERSION" ] || { echo "fontsize: works in xterm; here use your browser's zoom (its menu)"; exit 1; }
+xd=$HOME/.Xdefaults
+# the size new xterms start with: XTerm*faceSize in points, 3/4 of the pixels
+start=$(awk '/^XTerm\*faceSize:/ { printf "%d", $2 * 4 / 3 + 0.5; exit }' "$xd" 2>/dev/null)
+state=/tmp/fontsize-$(id -u)-$(tty | tr -c 'a-z0-9\n' _)
+cur=$(cat "$state" 2>/dev/null); cur=${cur:-${start:-13}}
+case "$1" in
+    "")  echo "font size $cur (sizes: $sizes)"; exit 0 ;;
+    +)   new=$(for s in $sizes; do [ "$s" -gt "$cur" ] && { echo "$s"; break; }; done); new=${new:-20} ;;
+    -)   new=$(for s in $sizes; do [ "$s" -lt "$cur" ] && echo "$s"; done | tail -n 1); new=${new:-6} ;;
+    *[!0-9]*) usage ;;
+    *)   case " $sizes " in *" $1 "*) new=$1 ;; *) echo "fontsize: the sizes are $sizes"; exit 1 ;; esac ;;
+esac
+case "$2" in ""|save) ;; *) usage ;; esac
+# emoji in colour (Twemoji) unless "emojistyle mono" took it out of xterm's fonts
+emoji=; grep -q '^XTerm\*faceName:.*Twemoji' "$xd" 2>/dev/null && emoji=",Twemoji Mozilla:pixelsize=$new"
+# (to the terminal itself, so it works with the output redirected too)
+printf '\033]50;xft:Fixed:foundry=Misc:width=87:weight=medium:pixelsize=%s%s\007' "$new" "$emoji" > /dev/tty
+echo "$new" > "$state"
+if [ "$2" = save ]; then
+    pt=$(awk -v p="$new" 'BEGIN { print p * 3 / 4 }')
+    sed -i "s/^XTerm\*faceSize:.*/XTerm*faceSize:    $pt/" "$xd" && echo "fontsize: new xterms start at $new"
+fi
+EOF
+
     putx "$OVL/usr/bin/xlog" <<'EOF'
 #!/bin/sh
 tail -n 15 /var/log/xstart.log; tail -n 40 /var/log/Xorg.0.log
@@ -4396,7 +4432,7 @@ verify_image() {
                         'usr/lib/tcc/win32/lib/i386-win32-libtcc1\.a' 'usr/lib/tcc/win32/lib/x86_64-win32-libtcc1\.a'
                         'usr/lib/tcc/win32/lib/kernel32\.def' 'usr/lib/tcc/win32/include/winapi/windows\.h' 'usr/lib/tcc/win32/include/stdarg\.h')
     want+=('etc/profile\.d/v86-prompt\.sh' 'root/\.bashrc' "${UHOME#/}/\\.bashrc")
-    ((GUI)) && want+=('usr/bin/xsession' "${UHOME#/}/\\.xinitrc" "${UHOME#/}/\\.fluxbox/menu" 'etc/sudoers\.d/v86-emojistyle')
+    ((GUI)) && want+=('usr/bin/fontsize' 'usr/bin/xsession' "${UHOME#/}/\\.xinitrc" "${UHOME#/}/\\.fluxbox/menu" 'etc/sudoers\.d/v86-emojistyle')
     ((GUI)) && want+=('usr/bin/Xorg' 'usr/bin/fluxbox' 'usr/bin/xterm' 'usr/bin/xfe' 'usr/share/fluxbox/styles/V86-Dark'
                       "usr/lib/xorg/modules/drivers/$([[ $MODE == qemu ]] && echo modesetting || echo fbdev)_drv\.so")
     [[ "$MODE" == vesa ]] && want+=('usr/lib/xorg/modules/drivers/vesa_drv\.so' 'usr/bin/xmode' 'usr/bin/Xvesa')

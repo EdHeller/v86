@@ -45,14 +45,6 @@ export function KeyboardAdapter(bus)
      */
     this.emu_enabled = true;
 
-    /**
-     * Ctrl + / Ctrl - / Ctrl 0 (the browser's zoom): sent to the guest when true; when false
-     * (the default) the browser gets them and zooms the page.
-     * Set by emulator (keyboard_set_zoom_keys)
-     * @type {boolean}
-     */
-    this.capture_zoom_keys = false;
-
     // Format:
     // Javascript event.keyCode -> make code
     const charmap = new Uint16Array([
@@ -307,15 +299,6 @@ export function KeyboardAdapter(bus)
         }
     };
 
-    // the browser's zoom keys: Ctrl (Cmd on macOS) with = + - 0 or the numpad's + - 0.
-    // Not with Alt: Windows reports AltGr as Ctrl+Alt, and AltGr+0 etc. type characters.
-    const ZOOM_CODES = new Set(["Equal", "Minus", "Digit0", "NumpadAdd", "NumpadSubtract", "Numpad0"]);
-
-    function is_zoom_key(e)
-    {
-        return (e.ctrlKey || e.metaKey) && !e.altKey && ZOOM_CODES.has(e.code);
-    }
-
     function may_handle(e)
     {
         if(e.shiftKey && e.ctrlKey && (e.keyCode === 73 || e.keyCode === 74 || e.keyCode === 75))
@@ -323,12 +306,6 @@ export function KeyboardAdapter(bus)
               // don't prevent opening chromium dev tools
               // maybe add other important combinations here, too
               return false;
-        }
-
-        if(!keyboard.capture_zoom_keys && is_zoom_key(e))
-        {
-            // left to the browser (page zoom); keyboard_set_zoom_keys(true) sends them to the guest
-            return false;
         }
 
         if(!keyboard.emu_enabled)

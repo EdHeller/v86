@@ -1491,20 +1491,6 @@ V86.prototype.keyboard_set_enabled = function(enabled)
 V86.prototype.keyboard_set_status = V86.prototype.keyboard_set_enabled;
 
 /**
- * Whether Ctrl + / Ctrl - / Ctrl 0 go to the guest (true) or to the browser, which zooms the
- * page (false, the default).
- *
- * @param {boolean} capture
- */
-V86.prototype.keyboard_set_zoom_keys = function(capture)
-{
-    if(this.keyboard_adapter)
-    {
-        this.keyboard_adapter.capture_zoom_keys = !!capture;
-    }
-};
-
-/**
  * Send a string to the first emulated serial terminal.
  *
  * @param {string} data
