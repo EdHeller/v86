@@ -3115,8 +3115,10 @@ fi
 # fluxbox's log, written by the user
 touch /var/log/fluxbox.log && chown "$U" /var/log/fluxbox.log
 # su without -l: HOME, USER, LOGNAME and SHELL become the user's; DISPLAY, PATH, LANG and
-# XAUTHORITY stay
-exec su -s /bin/sh "$U" -c 'cd && exec sh ./.xinitrc'
+# XAUTHORITY stay. -s /bin/sh runs .xinitrc, but it also sets SHELL=/bin/sh for the whole
+# desktop: give it the user's own shell from /etc/passwd back, or the xterms, uim-fep (ja,
+# whose shell then shows sh-5.2$) and neofetch would all see sh
+exec su -s /bin/sh "$U" -c "cd && SHELL=\$(grep '^$U:' /etc/passwd | cut -d: -f7) && export SHELL=\${SHELL:-/bin/sh} && exec sh ./.xinitrc"
 EOF
     } | putx "$OVL/usr/bin/xsession"
 
