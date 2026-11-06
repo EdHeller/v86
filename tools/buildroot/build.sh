@@ -88,6 +88,10 @@
 #                         shell, make, Python, asm, HTML/CSS/JS, JSON, Markdown, YAML, Lua...
 #                         nano stays the default editor in the shell ($EDITOR)
 #   --no-vim              leave it out (the default; undoes an earlier --vim)
+#   --kbd                 keyboard layouts, as on Arch: kbd's loadkeys + the PC keymaps for the
+#                         text consoles (sudo loadkeys de), dumpkeys, showkey, setfont; GUI
+#                         images also get setxkbmap for the desktop (setxkbmap de). ~1-2 MB
+#   --no-kbd              leave it out (the default: BusyBox's loadkmap, with no keymaps)
 #   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
 #                         coreutils (sort, date, stat...) and diffutils instead of BusyBox's
 #                         look-alikes; bash-completion, a script-friendly prompt/history/inputrc,
@@ -200,7 +204,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -259,6 +263,8 @@ while (($#)); do
         --no-wincc)       WINCC=0 ;;
         --upx)            UPX=1 ;;
         --vim)            VIM=1 ;;
+        --kbd)            KBD=1 ;;
+        --no-kbd)         KBD=0 ;;
         --no-vim)         VIM=0 ;;
         --bash-dev)       BASHDEV=1 ;;
         --bashdb)         BASHDB=1 ;;
@@ -377,7 +383,7 @@ if [[ "$MODE" == smoke ]] || ((MIN)); then MAN_DEFAULT=0; fi
 SDL_DEFAULT=1
 [[ "$MODE" == nogui ]] && SDL_DEFAULT=0
 [[ -n "$SDL" ]] || SDL=$SDL_DEFAULT
-[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 BASHDEV=0 BASHDB=0 GDB=0
+[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 KBD=0 BASHDEV=0 BASHDB=0 GDB=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
     if ((SDLNET)); then NAME+="-sdl3net"                  # (implies SDL3)
@@ -390,6 +396,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((WINCC)) && NAME+="-wincc"
     ((UPX)) || NAME+="-noupx"
     ((VIM)) && NAME+="-vim"
+    ((KBD)) && NAME+="-kbd"
     ((BASHDEV)) && NAME+="-bashdev"
     ((BASHDB)) && NAME+="-bashdb"
     ((GDB)) && NAME+="-gdb"
@@ -3817,6 +3824,15 @@ for VR in "$TARGET"/usr/share/vim/vim[0-9]*; do
     done
 done
 
+# kbd (--kbd): only the PC keymaps (i386 + the files they include); v86 is a PC, so
+# the Amiga, Atari, Mac, PowerPC and Sun keyboards' maps go
+for KM in "$TARGET/usr/share/keymaps" "$TARGET/usr/share/kbd/keymaps"; do
+    [ -d "$KM/i386" ] || continue
+    for d in "$KM"/*; do
+        case "${d##*/}" in i386|include) ;; *) rm -rf "$d" ;; esac
+    done
+done
+
 # On-target compiler: put headers and dev files back (not with --no-gcc).
 # Headers are MERGED into usr/include (copying the folder into an existing one
 # would nest it as usr/include/include). Libraries: only what the target lacks
@@ -4006,6 +4022,8 @@ EOF
         if ((WINCC)); then echo 'BR2_PACKAGE_TINYCC_WIN=y'; fi
         if ((UPX)); then echo 'BR2_PACKAGE_UPX_TARGET=y'; fi
         if ((VIM)); then printf '%s\n' BR2_PACKAGE_VIM=y BR2_PACKAGE_VIM_RUNTIME=y; fi
+        if ((KBD)); then echo 'BR2_PACKAGE_KBD=y'; fi
+        if ((KBD && GUI)); then echo 'BR2_PACKAGE_XAPP_SETXKBMAP=y'; fi
         if ((BASHDB)); then echo 'BR2_PACKAGE_BASHDB=y'; fi
         if ((GDB)); then printf '%s\n' BR2_PACKAGE_GDB=y BR2_PACKAGE_GDB_SERVER=y BR2_PACKAGE_GDB_DEBUGGER=y; fi
         if ((BASHDEV)); then printf '%s\n' BR2_PACKAGE_COREUTILS=y BR2_PACKAGE_GAWK=y BR2_PACKAGE_GREP=y \
@@ -4329,6 +4347,8 @@ verify_image() {
     ((SHELLCHECK)) && want+=('usr/bin/shellcheck')
     ((TCC)) && want+=('usr/bin/tcc' 'usr/lib/tcc/libtcc1\.a' 'usr/lib/tcc/bt-exe\.o' 'usr/lib/tcc/include/stdarg\.h')
     ((UPX)) && want+=('usr/bin/upx')
+    ((KBD)) && want+=('usr/bin/loadkeys' 'usr/bin/dumpkeys')
+    ((KBD && GUI)) && want+=('usr/bin/setxkbmap')
     ((VIM)) && want+=('usr/bin/vim' 'usr/share/vim/vim[0-9]+/syntax/c\.vim' 'usr/share/vim/vim[0-9]+/filetype\.vim')
     ((WINCC)) && want+=('usr/bin/i386-win32-tcc' 'usr/bin/x86_64-win32-tcc' 'usr/bin/wincc'
                         'usr/lib/tcc/win32/lib/i386-win32-libtcc1\.a' 'usr/lib/tcc/win32/lib/x86_64-win32-libtcc1\.a'
@@ -4357,6 +4377,7 @@ verify_image() {
     ((WINCC)) || ! grep -qE '(^|/)usr/bin/(wincc|i386-win32-tcc|x86_64-win32-tcc)$' <<<"$list" || { warn "image without --wincc contains wincc"; ok=0; }
     ((UPX)) || ! grep -qE '(^|/)usr/bin/upx$' <<<"$list" || { warn "--no-upx image contains upx"; ok=0; }
     ((VIM)) || ! grep -qE '(^|/)usr/bin/vim$' <<<"$list" || { warn "image without --vim contains vim"; ok=0; }
+    ((KBD)) || ! grep -qE '(^|/)usr/bin/loadkeys$' <<<"$list" || { warn "image without --kbd contains loadkeys"; ok=0; }
     ((GUI && ADIE)) || ! grep -qE '(^|/)usr/bin/adie$' <<<"$list" || { warn "image without Adie contains adie"; ok=0; }
     ((ok)) || die "the packed image is incomplete (see above)"
     mb=$(( $("$z" -dc "$img" | wc -c) / 1048576 ))
@@ -4553,7 +4574,7 @@ EOF
     msg "sizes are in bytes: update them if you rebuild the files"
     cat <<EOF
 
-In the guest: $( ((RELEASE)) || echo 'selftest · soundtest · unitest · ')$( ((RELEASE || !GUI)) || echo 'emojitest · symboltest · ')$( ((RELEASE || !GCC)) || echo 'devcheck · ')netup/netdown$( ((SHELLCHECK)) && echo ' · shellcheck')$( ((TCC)) && echo ' · tcc')$( ((WINCC)) && echo ' · wincc')$( ((UPX)) && echo ' · upx')$( ((VIM)) && echo ' · vim')$( ((GUI)) && echo ' · xlog · xmode')$( ((MAN)) && echo ' · man/apropos')
+In the guest: $( ((RELEASE)) || echo 'selftest · soundtest · unitest · ')$( ((RELEASE || !GUI)) || echo 'emojitest · symboltest · ')$( ((RELEASE || !GCC)) || echo 'devcheck · ')netup/netdown$( ((SHELLCHECK)) && echo ' · shellcheck')$( ((TCC)) && echo ' · tcc')$( ((WINCC)) && echo ' · wincc')$( ((UPX)) && echo ' · upx')$( ((VIM)) && echo ' · vim')$( ((KBD)) && echo ' · loadkeys')$( ((KBD && GUI)) && echo ' · setxkbmap')$( ((GUI)) && echo ' · xlog · xmode')$( ((MAN)) && echo ' · man/apropos')
 $( ((SDL && GCC)) && echo 'SDL3: #include <SDL3/SDL.h>   gcc app.c $(pkg-config --cflags --libs sdl3)')$( ((SDLNET && GCC)) && echo '
 SDL3_net: #include <SDL3_net/SDL_net.h>   gcc app.c $(pkg-config --cflags --libs sdl3-net)')
 EOF
