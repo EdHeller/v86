@@ -21,8 +21,9 @@
 # Named builds (shortcuts; the same options spelled out get the same short name):
 #   --dev-env             --min --SDL3-net --man --no-shellcheck --upx --gdb --smp -> v86-dev-env-*
 #   --bash-env            --min --no-SDL3 --man --tcc --wincc --smp   -> v86-bash-env-*
-#   --max-env             both together: --min --SDL3-net --man --tcc --wincc --upx --gdb
-#                         --bash-dev --smp (ShellCheck stays in, as in --bash-env) -> v86-max-env-*
+#   --max-env             both together, plus keyboard layouts: --min --SDL3-net --man --tcc
+#                         --wincc --upx --kbd --gdb --bash-dev --smp (ShellCheck stays in, as in
+#                         --bash-env) -> v86-max-env-*
 #                         With --release: v86-dev-env-release-*, v86-bash-env-release-*,
 #                         v86-max-env-release-*.
 #                         Other options added after one change the build and give it the
@@ -238,7 +239,7 @@ while (($#)); do
         # named builds: the options they stand for, in their place (later options still apply)
         --dev-env)        shift; set -- --min --SDL3-net --man --no-shellcheck --upx --gdb --smp "$@"; continue ;;
         --bash-env)       shift; set -- --min --no-SDL3 --man --tcc --wincc --bash-dev --smp "$@"; continue ;;
-        --max-env)        shift; set -- --min --SDL3-net --man --tcc --wincc --upx --gdb --bash-dev --smp "$@"; continue ;;
+        --max-env)        shift; set -- --min --SDL3-net --man --tcc --wincc --upx --kbd --gdb --bash-dev --smp "$@"; continue ;;
         --smoke)          set_mode smoke ;;
         --all)            ALL=1 ;;
         --no-SDL3|--no-sdl3)   SDL=0 SDLNET=0 ;;   # last one wins
@@ -411,7 +412,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     case "${NAME%-release}" in
         min-sdl3net-noshellcheck-gdb-man-smp)     NAME=dev-env${NAME#min-sdl3net-noshellcheck-gdb-man-smp} ;;
         min-nosdl3-tcc-wincc-bashdev-man-smp)     NAME=bash-env${NAME#min-nosdl3-tcc-wincc-bashdev-man-smp} ;;
-        min-sdl3net-tcc-wincc-bashdev-gdb-man-smp) NAME=max-env${NAME#min-sdl3net-tcc-wincc-bashdev-gdb-man-smp} ;;
+        min-sdl3net-tcc-wincc-kbd-bashdev-gdb-man-smp) NAME=max-env${NAME#min-sdl3net-tcc-wincc-kbd-bashdev-gdb-man-smp} ;;
     esac
 fi
 [[ "$MODE" == smoke ]] && XZ=0
