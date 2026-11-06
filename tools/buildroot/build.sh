@@ -2076,9 +2076,9 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
 /home/$DEFAULT_USER, is your home: your files go here.
 
   neofetch          show the system
-  curl <url>        fetch a web page or file (needs v86's networking on the page)
-  netup             start the network (v86 networking on the page; netdown stops it)
   nano <file>       edit a file
+  netup             start the network (v86 networking on the page; netdown stops it)
+  curl <url>        fetch a web page or file (needs v86's networking on the page)
   sudo <command>    run a command as root (your password: $DEFAULT_USER)
   su -              become root (password: root)
   openssl version   OpenSSL; https works with the CA certificates in /etc/ssl/certs
