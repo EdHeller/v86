@@ -2062,7 +2062,7 @@ EOF
     printf '#!/bin/sh\nexec /bin/login -f %s\n' "$DEFAULT_USER" | putx "$OVL/usr/bin/autologin"
     # after each login: the default user's password (its name; root's is "root" either way,
     # BR2_TARGET_GENERIC_ROOT_PASSWD)
-    printf 'v86 %s\nthe %s password is "%s"\n\n' "$NAME" "$DEFAULT_USER" "$DEFAULT_USER" | put "$OVL/etc/motd"
+    printf 'v86 %s\nThe %s password is "%s"\n\n' "$NAME" "$DEFAULT_USER" "$DEFAULT_USER" | put "$OVL/etc/motd"
 
     # The default user (BR2_ROOTFS_USERS_TABLES, Buildroot's makeusers): its home is
     # /home/<name>, which makeusers creates and gives to it, with what the overlay puts there
