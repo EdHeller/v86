@@ -98,6 +98,10 @@
 #                         console, fbterm on tty2-6; not VGA text mode). Type ja to start it,
 #                         Ctrl+Space switches between Japanese and Latin input. ~10-20 MB
 #   --no-ja               leave it out (the default)
+#   --no-beep             the bell starts off for root and the default user (as if each had
+#                         run "beep off"); "beep on" in the guest turns it back on
+#   --beep                the bell starts on (the default: text consoles beep through the
+#                         PC speaker, xterm through the sound card)
 #   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
 #                         coreutils (sort, date, stat...) and diffutils instead of BusyBox's
 #                         look-alikes; bash-completion, a script-friendly prompt/history/inputrc,
@@ -210,7 +214,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD=0 JA=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD=0 JA=0 BEEP=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -271,6 +275,8 @@ while (($#)); do
         --vim)            VIM=1 ;;
         --kbd)            KBD=1 ;;
         --ja)             JA=1 ;;
+        --beep)           BEEP=1 ;;
+        --no-beep)        BEEP=0 ;;
         --no-ja)          JA=0 ;;
         --no-kbd)         KBD=0 ;;
         --no-vim)         VIM=0 ;;
@@ -406,6 +412,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((VIM)) && NAME+="-vim"
     ((KBD)) && NAME+="-kbd"
     ((JA)) && NAME+="-ja"
+    ((BEEP)) || NAME+="-nobeep"
     ((BASHDEV)) && NAME+="-bashdev"
     ((BASHDB)) && NAME+="-bashdb"
     ((GDB)) && NAME+="-gdb"
@@ -2410,6 +2417,11 @@ EOF
     # speaker; its length is set per console (ESC [ 11 ; ms ], 0 = silent, the kernel's
     # default 125), here and at each login (profile.d/v86.sh). The desktop's bell (xterm)
     # plays on the sound card through v86-bell, which checks ~/.nobeep each time.
+    # --no-beep: both users start with the bell off
+    if ((!BEEP)); then
+        : | put "$OVL/root/.nobeep"
+        : | put "$OVL$UHOME/.nobeep"
+    fi
     putx "$OVL/usr/bin/beep" <<'EOF'
 #!/bin/sh
 # beep          say whether the bell is on
@@ -4597,6 +4609,8 @@ verify_image() {
     ((TCC)) && want+=('usr/bin/tcc' 'usr/lib/tcc/libtcc1\.a' 'usr/lib/tcc/bt-exe\.o' 'usr/lib/tcc/include/stdarg\.h')
     ((UPX)) && want+=('usr/bin/upx')
     ((KBD)) && want+=('usr/bin/loadkeys' 'usr/bin/dumpkeys')
+    ((BEEP)) || want+=('root/\.nobeep' "${UHOME#/}/\\.nobeep")
+    ((BEEP)) && grep -qE '(^|/)\.nobeep$' <<<"$list" && { warn "image without --no-beep has a .nobeep file"; ok=0; }
     ((JA)) && want+=('usr/bin/uim-fep' 'usr/bin/ja' 'usr/share/anthy-unicode/anthy\.dic' 'etc/anthy-unicode\.conf'
                      'usr/share/uim/installed-modules\.scm' 'usr/share/uim/loader\.scm' 'usr/share/uim/anthy-utf8\.scm')
     ((KBD && GUI)) && want+=('usr/bin/setxkbmap')
