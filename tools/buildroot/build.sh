@@ -93,7 +93,7 @@
 #                         off); programs built on the target with gcc -g can then be debugged
 #   --no-gdb              leave it out (the default, except --dev-env)
 #   --no-bash-dev         leave it out (the default, except --bash-env and --max-env; undoes --bash-dev)
-#   --no-upx              leave it out (the default, except --dev-env; undoes an earlier --upx)
+#   --no-upx              leave it out (the default, except --dev-env and --max-env; undoes an earlier --upx)
 #   --xz                  compress kernel + rootfs with xz instead of zstd: ~12% smaller for
 #                         small images, up to ~35% for images with gcc, but 7-11x slower to
 #                         unpack at every boot (seconds for small images, much more for big
