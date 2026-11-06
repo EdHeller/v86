@@ -2205,16 +2205,14 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
   sudo <command>    run a command as root (your password: $DEFAULT_USER)
   su -              become root (password: root)
   openssl version   OpenSSL; https works with the CA certificates in /etc/ssl/certs
-
-Font size
-  browser zoom      the whole v86 screen bigger or smaller: Zoom in your browser's menu
 EOF
         if ((GUI)); then
             cat >> "$OVL$UHOME/readme.txt" <<'EOF'
+
+Font size
   fontsize 18       xterm's font size, in pixels: 6 9 12 13 14 18 20 (13 is the default)
   fontsize + / -    one size bigger / smaller; fontsize alone shows the size
   fontsize 18 save  also the size new xterms start with
-  Ctrl + / Ctrl -   the same in xterm, as keys (Ctrl 0: back to the default)
 EOF
         fi
         if ((JA)); then
