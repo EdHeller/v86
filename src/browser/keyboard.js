@@ -186,7 +186,6 @@ export function KeyboardAdapter(bus)
         "Comma": 0x0033,
         "Period": 0x0034,
         "Slash": 0x0035,
-        "IntlRo": 0x0035,
         "ShiftRight": 0x0036,
         "NumpadMultiply": 0x0037,
         "AltLeft": 0x0038,
@@ -220,6 +219,16 @@ export function KeyboardAdapter(bus)
         "IntlBackslash": 0x0056,
         "F11": 0x0057,
         "F12": 0x0058,
+        // Japanese (JIS) and Brazilian (ABNT2) keyboards' extra keys. Linux: KEY_KATAKANAHIRAGANA,
+        // KEY_RO, KEY_HENKAN, KEY_MUHENKAN, KEY_YEN, KEY_KPJPCOMMA (the ABNT2 numpad's '.').
+        // Ro was sent as Slash before: with a Japanese or Brazilian layout in the guest it now
+        // types its own characters (\ _ or / ?)
+        "KanaMode": 0x0070,
+        "IntlRo": 0x0073,
+        "Convert": 0x0079,
+        "NonConvert": 0x007b,
+        "IntlYen": 0x007d,
+        "NumpadComma": 0x007e,
 
         "NumpadEnter": 0xe01c,
         "ControlRight": 0xe01d,
