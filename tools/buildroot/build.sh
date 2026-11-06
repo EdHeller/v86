@@ -156,9 +156,10 @@
 #   USE_CCACHE=1              compiler cache in $WORK/ccache (default on; 0 turns it off).
 #                             The first build fills it; later fresh builds reuse it.
 #   USER_OVERLAY=~/test/overlay   extra files copied into the image, if the folder exists
-#   DEFAULT_USER=student      the user the text console (tty1) and the serial port log in as,
-#                             with its home /home/<name> and a readme.txt there; its password is
-#                             its name. DEFAULT_USER=root: log in as root, as before
+#   DEFAULT_USER=guest        the user the text console (tty1) and the serial port log in as,
+#                             and the user the desktop (fluxbox, xterm, XFE) runs as; its home is
+#                             /home/<name>, with a readme.txt there; its password is its name.
+#                             DEFAULT_USER=root: log in as root, home /root
 #   BR_SRC=<dir>              use an existing Buildroot 2026.08 tree
 #   DL_RETRIES=6              download retries (DNS failures, flaky mirrors)
 #   ALLOW_ROOT=1              allow building as root
@@ -400,11 +401,13 @@ WORK=$(readlink -m "${WORK:-$HOME/test}")
 DL_DIR=$(readlink -m "${DL_DIR:-$SCRIPT_DIR/downloads}")
 BR_SRC=$(readlink -m "${BR_SRC:-$WORK/buildroot-$BR_VER}")
 USER_OVERLAY=$(readlink -m "${USER_OVERLAY:-$WORK/overlay}")
-DEFAULT_USER=${DEFAULT_USER:-student}
+DEFAULT_USER=${DEFAULT_USER:-guest}
 if ! [[ "$DEFAULT_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
     echo "DEFAULT_USER: a user name (lower case letters, digits, _ and -), got '$DEFAULT_USER'" >&2
     exit 1
 fi
+# the default user's home: where its shells, XFE and the desktop's settings start
+if [[ "$DEFAULT_USER" == root ]]; then UHOME=/root; else UHOME=/home/$DEFAULT_USER; fi
 HOST_CACHE_DIR=$(readlink -m "${HOST_CACHE_DIR:-$WORK/host-cache}")
 if [[ -z "$IMAGE_DIR" ]]; then
     if [[ -d /mnt/c ]]; then IMAGE_DIR=/mnt/c/Projects; else IMAGE_DIR=$SCRIPT_DIR/images; fi
@@ -2057,12 +2060,9 @@ EOF
     # themselves: getty -n -l runs this instead of asking for a name. login -f skips the
     # password and still shows /etc/motd.
     printf '#!/bin/sh\nexec /bin/login -f %s\n' "$DEFAULT_USER" | putx "$OVL/usr/bin/autologin"
-    # root's password is "root" (BR2_TARGET_GENERIC_ROOT_PASSWD): say so after each login
-    {
-        printf '%s\n' "v86 $NAME" 'The root password is "root" (change it with: passwd)'
-        [[ "$DEFAULT_USER" == root ]] || printf 'You are "%s" (password "%s"); sudo runs a command as root, su - gives a root shell\n' "$DEFAULT_USER" "$DEFAULT_USER"
-        echo
-    } | put "$OVL/etc/motd"
+    # after each login: the default user's password (its name; root's is "root" either way,
+    # BR2_TARGET_GENERIC_ROOT_PASSWD)
+    printf 'v86 %s\nthe %s password is "%s"\n\n' "$NAME" "$DEFAULT_USER" "$DEFAULT_USER" | put "$OVL/etc/motd"
 
     # The default user (BR2_ROOTFS_USERS_TABLES, Buildroot's makeusers): its home is
     # /home/<name>, which makeusers creates and gives to it, with what the overlay puts there
@@ -2141,6 +2141,29 @@ EOF
     put "$OVL/etc/profile.d/v86-completion.sh" <<'EOF'
 [ -n "$BASH_VERSION" ] && shopt -s no_empty_cmd_completion
 EOF
+    # Prompt: user@v86:dir, then $ (or # for root: bash's \$). Buildroot's /etc/profile sets a bare
+    # "$ " / "# "; this runs after it (profile.d). ~/.bashrc reads it too, for shells that aren't
+    # login shells (sudo -s, bash). --bash-dev adds the exit status of a failed command first.
+    {
+        cat <<'EOF'
+# the shell prompt: user@host:dir$ (# for root); interactive bash only
+[ -n "$BASH_VERSION" ] || return 0
+case $- in *i*) ;; *) return 0 ;; esac
+EOF
+        if ((BASHDEV)); then
+            echo 'PS1='"'"'$(s=$?; [ $s -ne 0 ] && printf "[%s] " $s)\u@\h:\w\$ '"'"
+        else
+            echo 'PS1='"'"'\u@\h:\w\$ '"'"
+        fi
+    } | put "$OVL/etc/profile.d/v86-prompt.sh"
+    local h
+    for h in /root "$UHOME"; do
+        put "$OVL$h/.bashrc" <<'EOF'
+# interactive shells that aren't login shells (sudo -s, bash, xterm without -ls): the same prompt
+[ -f /etc/profile.d/v86-prompt.sh ] && . /etc/profile.d/v86-prompt.sh
+EOF
+    done
+
     if ((BASHDEV)); then
         put "$OVL/etc/profile.d/v86-bashdev.sh" <<'EOF'
 # shell-script development helpers (--bash-dev); interactive bash only
@@ -2149,8 +2172,6 @@ case $- in *i*) ;; *) return 0 ;; esac
 export HISTSIZE=5000 HISTCONTROL=ignoreboth:erasedups HISTFILE=$HOME/.bash_history
 export INPUTRC=/etc/inputrc LESS=-R PAGER=less
 shopt -s histappend checkwinsize globstar extglob
-# prompt: exit status of the last command when it failed, then user@host:dir
-PS1='$(s=$?; [ $s -ne 0 ] && printf "[%s] " $s)\u@\h:\w\$ '
 # "bash -x" / set -x traces show file:line and function
 export PS4='+ ${BASH_SOURCE##*/}:${LINENO}${FUNCNAME:+ ${FUNCNAME}()}: '
 alias ll='ls -lah --color=auto' ls='ls --color=auto' grep='grep --color=auto'
@@ -2191,6 +2212,8 @@ history-lines=1000
 cursor-shape=0
 cursor-interval=500
 EOF
+        # (the default user logs in on tty2-6 too)
+        [[ "$UHOME" == /root ]] || { mkdir -p "$OVL$UHOME"; cp "$OVL/root/.fbtermrc" "$OVL$UHOME/.fbtermrc"; }
     fi
 
     # ── nano: darker interface (syntax colors are toned down in post-build) ──
@@ -2222,6 +2245,8 @@ EOF
 #                          on the drivers (virtio before NE2000), not on v86's card order.
 #   netup 10.0.0.1         fixed address (/24 unless given) on the first card
 #   netup eth1 [ADDRESS]   one card: DHCP, or the fixed address
+# needs root: the desktop and the logins run as the default user, so ask sudo
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 ip link set lo up
 cards=""
 for i in /sys/class/net/*; do [ "${i##*/}" = lo ] || cards="$cards ${i##*/}"; done
@@ -2264,6 +2289,8 @@ EOF
     putx "$OVL/usr/bin/netdown" <<'EOF'
 #!/bin/sh
 # netdown [CARD]: take one card down, or all of them
+# needs root: the desktop and the logins run as the default user, so ask sudo
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 killall udhcpc 2>/dev/null
 for i in /sys/class/net/*; do
     c=${i##*/}
@@ -2618,6 +2645,8 @@ write_xmode() {
 CONF=${XMODE_CONF:-/etc/X11/xorg.conf}
 XV=${CONF%/*}/xvesa.args       # present = xstart runs Xvesa with these arguments
 usage() { sed -n '2,5s/^# //p' "$0"; exit 1; }
+# setting a mode needs root (/etc/X11, restarting X): ask sudo; showing it doesn't
+case "$1" in ""|-*|help) ;; *) [ -n "$XMODE_CONF" ] || [ "$(id -u)" = 0 ] || exec sudo "$0" "$@" ;; esac
 case "$1" in
     "")
         # what is set, and what is running: WxHxBPP + which X server drives it
@@ -2781,10 +2810,10 @@ if [ -f "$XV" ] && [ -x /usr/bin/Xvesa ]; then
     # kernel refuses those reads (EIO): mouse works, keyboard dead. Without a vt option
     # Xvesa takes a free console (VT_OPENQRY), like DSL and Tiny Core do.
     # shellcheck disable=SC2046  # xvesa.args holds several arguments
-    xinit "$HOME/.xinitrc" -- /usr/bin/Xvesa :0 $(cat "$XV") >>"$LOG" 2>&1
+    xinit /usr/bin/xsession -- /usr/bin/Xvesa :0 $(cat "$XV") >>"$LOG" 2>&1
 else
     echo "xstart: $(date) starting X" >>"$LOG"
-    startx -- :0 vt1 -nolisten tcp >>"$LOG" 2>&1
+    startx /usr/bin/xsession -- :0 vt1 -nolisten tcp >>"$LOG" 2>&1
 fi
 rc=$?
 echo "xstart: X exited ($rc), see /var/log/Xorg.0.log" >>"$LOG"
@@ -2808,7 +2837,7 @@ EOF
 # screensaver          show whether the screen saver / blanking is on
 # screensaver on|off   switch it (remembered across X restarts, e.g. by xmode)
 # Off by default: the screen never goes black. Works with Xorg and Xvesa.
-STATE=/root/.screensaver-on
+STATE=$HOME/.screensaver-on
 apply() {
     if [ -f "$STATE" ]; then
         xset s 600 600 s blank 2>/dev/null; xset +dpms 2>/dev/null
@@ -2825,7 +2854,7 @@ case "$1" in
     *)     sed -n '2,4s/^# //p' "$0"; exit 1 ;;
 esac
 EOF
-    putx "$OVL/root/.xinitrc" <<'EOF'
+    putx "$OVL$UHOME/.xinitrc" <<'EOF'
 #!/bin/sh
 xsetroot -solid '#232831'
 screensaver apply                     # off unless "screensaver on" was chosen
@@ -2833,9 +2862,29 @@ xfe-fit                               # keep XFE's remembered size within this s
 xterm -geometry 80x24+30+30 &
 while :; do fluxbox -log /var/log/fluxbox.log; sleep 1; done
 EOF
+    # xsession: X's first client. xstart runs the X server as root (it needs the console
+    # and the framebuffer); the desktop itself (~/.xinitrc: fluxbox, xterm, XFE...) runs as
+    # the default user, in its home, so XFE and the terminals start there.
+    {
+        printf '#!/bin/sh\nU=%s H=%s\n' "$DEFAULT_USER" "$UHOME"
+        cat <<'EOF'
+cd "$H" || cd /
+[ "$U" = root ] && exec env HOME="$H" sh "$H/.xinitrc"
+# startx's cookie (xauth) is in root's ~/.Xauthority: give the user a copy to connect with
+if [ -n "$XAUTHORITY" ] && [ -f "$XAUTHORITY" ]; then
+    cp "$XAUTHORITY" "$H/.Xauthority" && chown "$U" "$H/.Xauthority" && chmod 600 "$H/.Xauthority"
+    export XAUTHORITY="$H/.Xauthority"
+fi
+# fluxbox's log, written by the user
+touch /var/log/fluxbox.log && chown "$U" /var/log/fluxbox.log
+# su without -l: HOME, USER, LOGNAME and SHELL become the user's; DISPLAY, PATH, LANG and
+# XAUTHORITY stay
+exec su -s /bin/sh "$U" -c 'cd && exec sh ./.xinitrc'
+EOF
+    } | putx "$OVL/usr/bin/xsession"
 
     # ── xterm: dark palette (each color >= 4.5:1 contrast on the background) ─
-    put "$OVL/root/.Xdefaults" <<'EOF'
+    put "$OVL$UHOME/.Xdefaults" <<'EOF'
 XTerm*termName:    xterm-256color
 ! login shells: they read /etc/profile.d/v86.sh, which runs them at nice 1 (see there)
 XTerm*loginShell:  true
@@ -3239,8 +3288,8 @@ EOF
         # other fonts by itself, but would pick the misc-fixed bitmap font (which it
         # can't draw) for some ranges: those are pinned to Unifont. Same palette as xterm.
         if ((MLTERM)); then
-        mkdir -p "$OVL/root/.mlterm"
-        put "$OVL/root/.mlterm/main" <<'EOF'
+        mkdir -p "$OVL$UHOME/.mlterm"
+        put "$OVL$UHOME/.mlterm/main" <<'EOF'
 type_engine = cairo
 termtype = xterm-256color
 use_anti_alias = true
@@ -3253,7 +3302,7 @@ cursor_bg_color = #e5e9f0
 scrollbar_mode = none
 geometry = 80x24
 EOF
-        put "$OVL/root/.mlterm/aafont" <<'EOF'
+        put "$OVL$UHOME/.mlterm/aafont" <<'EOF'
 DEFAULT = Liberation Mono
 U+0600-06FF = Unifont
 U+0750-077F = Unifont
@@ -3268,7 +3317,7 @@ U+2600-27BF = Twemoji Mozilla
 U+2300-23FF = Twemoji Mozilla
 U+2B1B-2B55 = Twemoji Mozilla
 EOF
-        put "$OVL/root/.mlterm/color" <<'EOF'
+        put "$OVL$UHOME/.mlterm/color" <<'EOF'
 0 = #3b4252
 1 = #e5848e
 2 = #a3be8c
@@ -3302,15 +3351,27 @@ f=$HOME/.Xdefaults
 ml=$HOME/.mlterm/aafont
 rule=/etc/fonts/conf.d/66-v86-colour-emoji.conf
 nocolour=/etc/fonts/conf.d/65-v86-mono-emoji.conf
-fresh() { rm -rf /var/cache/fontconfig/* "$HOME/.cache/fontconfig"; }   # rescan with the new rule
+# The font rule and the shared font cache are root's: the default user switches them
+# through sudo (no password for exactly this: /etc/sudoers.d/v86-emojistyle)
+system() {
+    if [ "$(id -u)" = 0 ]; then "$0" --system "$1"
+    else sudo -n "$0" --system "$1" || { echo "emojistyle: sudo refused to switch the font rule"; exit 1; }; fi
+}
+fresh() { rm -rf "$HOME/.cache/fontconfig"; }   # rescan with the new rule
 case "$1" in
-    colour|color)  ln -sf ../conf.avail/66-v86-colour-emoji.conf "$rule"; rm -f "$nocolour"
+    --system)      case "$2" in
+                       colour) ln -sf ../conf.avail/66-v86-colour-emoji.conf "$rule"; rm -f "$nocolour" ;;
+                       mono)   rm -f "$rule"; ln -sf ../conf.avail/65-v86-mono-emoji.conf "$nocolour" ;;
+                       *)      exit 1 ;;
+                   esac
+                   rm -rf /var/cache/fontconfig/* ;;
+    colour|color)  system colour
                    ps=$(sed -n 's/^XTerm\*faceName:[^,]*pixelsize=\([0-9]*\).*/\1/p' "$f" | head -n 1)
                    sed -i "/^XTerm\\*faceName:/{/Twemoji Mozilla/!s/\$/,Twemoji Mozilla:pixelsize=${ps:-13}/}" "$f"
                    [ -f "$ml" ] && sed -i '/^U+1F000-1FAFF\|^U+2600-27BF\|^U+2300-23FF\|^U+2B1B-2B55/s/= .*/= Twemoji Mozilla/' "$ml"
                    sed -i '/^XTerm\*faceNameDoublesize:/d' "$f"; fresh
                    echo "emojistyle: colour (programs started from now on)" ;;
-    mono)          rm -f "$rule"; ln -sf ../conf.avail/65-v86-mono-emoji.conf "$nocolour"
+    mono)          system mono
                    sed -i '/^XTerm\*faceName:/s/,Twemoji Mozilla[^,]*$//' "$f"
                    [ -f "$ml" ] && sed -i '/^U+1F000-1FAFF\|^U+2600-27BF\|^U+2300-23FF\|^U+2B1B-2B55/s/= .*/= Unifont/' "$ml"
                    sed -i '/^XTerm\*faceNameDoublesize:/d' "$f"; fresh
@@ -3319,6 +3380,11 @@ case "$1" in
     *)             echo "usage: emojistyle [colour|mono]"; exit 1 ;;
 esac
 EOF
+        # (sudoers.d files must not be writable by others; 0440 as sudo wants them)
+        printf '%s\n' '# emojistyle (the Fluxbox Emoji menu) switches the font rule without a password' \
+            'ALL ALL=(root) NOPASSWD: /usr/bin/emojistyle --system colour, /usr/bin/emojistyle --system mono' \
+            | put "$OVL/etc/sudoers.d/v86-emojistyle"
+        chmod 0440 "$OVL/etc/sudoers.d/v86-emojistyle"
 
     fi
 
@@ -3341,11 +3407,11 @@ EOF
   </match>
 </fontconfig>
 EOF
-        printf 'Xft.antialias: 0\nXft.rgba: none\nXft.hinting: 1\nXft.hintstyle: hintfull\n' >> "$OVL/root/.Xdefaults"
+        printf 'Xft.antialias: 0\nXft.rgba: none\nXft.hinting: 1\nXft.hintstyle: hintfull\n' >> "$OVL$UHOME/.Xdefaults"
     fi
 
     # ── Fluxbox ──────────────────────────────────────────────────────────────
-    put "$OVL/root/.fluxbox/menu" <<'EOF'
+    put "$OVL$UHOME/.fluxbox/menu" <<'EOF'
 [begin] (Fluxbox)
   [submenu] (Terminal)
     [exec] (xterm) {xterm}
@@ -3381,11 +3447,11 @@ EOF
 EOF
     # --release: no test programs, so the Emoji menu only switches the emoji font
     if ((RELEASE)); then
-        sed -i -e '/(Show emoji test)/d' -e '/(Show all symbols, paged)/d' "$OVL/root/.fluxbox/menu"
+        sed -i -e '/(Show emoji test)/d' -e '/(Show all symbols, paged)/d' "$OVL$UHOME/.fluxbox/menu"
     fi
     # --no-mlterm: one terminal, so no Terminal submenu: xterm goes first in the menu
-    ((MLTERM)) || sed -i '/^  \[submenu\] (Terminal)$/,/^  \[end\]$/c\  [exec] (xterm) {xterm}' "$OVL/root/.fluxbox/menu"
-    ((ADIE)) || sed -i '/{adie}$/d' "$OVL/root/.fluxbox/menu"      # --no-adie
+    ((MLTERM)) || sed -i '/^  \[submenu\] (Terminal)$/,/^  \[end\]$/c\  [exec] (xterm) {xterm}' "$OVL$UHOME/.fluxbox/menu"
+    ((ADIE)) || sed -i '/{adie}$/d' "$OVL$UHOME/.fluxbox/menu"      # --no-adie
     {
         cat <<'EOF'
 session.menuFile: ~/.fluxbox/menu
@@ -3402,11 +3468,11 @@ session.screen0.showwindowposition: true
 session.screen0.antialias: false
 EOF
         else printf 'session.screen0.workspaces: 2\nsession.screen0.opaqueMove: true\n'; fi
-    } | put "$OVL/root/.fluxbox/init"
+    } | put "$OVL$UHOME/.fluxbox/init"
 
     # DejaVu fonts (Fluxbox segfaults with no usable font); 'background: unset' stops
     # styles from repainting the desktop (xinitrc sets it once).
-    put "$OVL/root/.fluxbox/overlay" <<'EOF'
+    put "$OVL$UHOME/.fluxbox/overlay" <<'EOF'
 *.font:          DejaVu Sans-9
 menu.title.font: DejaVu Sans Bold-9
 background:      unset
@@ -3652,6 +3718,10 @@ STAGING="${STAGING_DIR:?post-build: STAGING_DIR not set (run from Buildroot)}"
 
 grep -q '^root:\$' "$TARGET/etc/shadow" || { echo "post-build: root has no password hash"; exit 1; }
 rm -f "$TARGET/etc/init.d/S40xorg"        # would start a second X server on :0
+# sudo reads /etc/sudoers.d (emojistyle's rule); sudo's own sudoers has the line already
+if [ -f "$TARGET/etc/sudoers" ] && ! grep -q '^[@#]includedir /etc/sudoers.d' "$TARGET/etc/sudoers"; then
+    echo '@includedir /etc/sudoers.d' >> "$TARGET/etc/sudoers"
+fi
 
 # Xlib's UTF-8 locale: Buildroot's locale purge (whitelist "C en_US") deletes the
 # en_US.UTF-8 folder and locale.alias, so Xlib can't use LANG=C.UTF-8 ("locale not
@@ -4020,24 +4090,24 @@ lint_tree() {
         fi
         grep -q "Driver *\"$want\"" "$conf" || { warn "${conf##*/} doesn't use the $want driver"; bad=1; }
         # the Terminal submenu (xterm, mlterm) only with mlterm; without it, xterm comes first
-        local first; first=$(sed -n '2p' "$OVL/root/.fluxbox/menu")
+        local first; first=$(sed -n '2p' "$OVL$UHOME/.fluxbox/menu")
         if ((MLTERM)); then
-            [[ "$first" == '  [submenu] (Terminal)' ]] && grep -q '^    \[exec\] (mlterm) {mlterm}$' "$OVL/root/.fluxbox/menu" \
+            [[ "$first" == '  [submenu] (Terminal)' ]] && grep -q '^    \[exec\] (mlterm) {mlterm}$' "$OVL$UHOME/.fluxbox/menu" \
                 || { warn "menu: no Terminal submenu with mlterm"; bad=1; }
         else
-            [[ "$first" == '  [exec] (xterm) {xterm}' ]] && ! grep -q '(Terminal)\|mlterm' "$OVL/root/.fluxbox/menu" \
+            [[ "$first" == '  [exec] (xterm) {xterm}' ]] && ! grep -q '(Terminal)\|mlterm' "$OVL$UHOME/.fluxbox/menu" \
                 || { warn "menu: --no-mlterm should put xterm first, with no Terminal submenu"; bad=1; }
         fi
         # every command the Fluxbox menu runs must exist in the image
         local cmd known=" xterm xfe nano vi mlterm adie "
         while read -r cmd; do
             [[ "$known" == *" $cmd "* || -x "$OVL/usr/bin/$cmd" ]] || { warn "menu runs unknown command: $cmd"; bad=1; }
-        done < <(sed -n 's/.*\[exec\][^{]*{\([^}]*\)}.*/\1/p' "$OVL/root/.fluxbox/menu" \
+        done < <(sed -n 's/.*\[exec\][^{]*{\([^}]*\)}.*/\1/p' "$OVL$UHOME/.fluxbox/menu" \
                  | awk '{ print ($1 == "xterm" && $NF != "xterm") ? $NF : $1 }')
-        grep -q '^session.styleFile: /usr/share/fluxbox/styles/V86-Dark$' "$OVL/root/.fluxbox/init" \
+        grep -q '^session.styleFile: /usr/share/fluxbox/styles/V86-Dark$' "$OVL$UHOME/.fluxbox/init" \
             && [[ -f "$OVL/usr/share/fluxbox/styles/V86-Dark" ]] || { warn "dark style not wired up"; bad=1; }
         if ((MIN)); then
-            grep -q 'opaqueMove: false' "$OVL/root/.fluxbox/init" || { warn "--min without outline moving"; bad=1; }
+            grep -q 'opaqueMove: false' "$OVL$UHOME/.fluxbox/init" || { warn "--min without outline moving"; bad=1; }
             grep -q '<bool>false</bool>' "$OVL/etc/fonts/conf.d/99-v86-min.conf" 2>/dev/null \
                 && python3 -I -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$OVL/etc/fonts/conf.d/99-v86-min.conf" \
                 || { warn "--min fontconfig rule missing or not valid XML"; bad=1; }
@@ -4204,7 +4274,7 @@ verify_image() {
     ((RELEASE || !GUI)) || want+=('usr/bin/emojitest' 'usr/bin/symboltest' 'usr/share/fonts/twemoji/v86-ranges\.txt' 'usr/share/fonts/unifont/v86-symbols\.txt')
     ((RELEASE || !GCC)) || want+=('usr/bin/devcheck')
     ((GUI && ADIE)) && want+=('usr/bin/adie' 'usr/share/adie/Adie\.stx' 'etc/foxrc/Adie')
-    ((GUI && MLTERM)) && want+=('usr/bin/mlterm' 'usr/lib/mlterm/libtype_cairo\.so' 'usr/lib/mlterm/libotl\.so' 'root/\.mlterm/aafont'
+    ((GUI && MLTERM)) && want+=('usr/bin/mlterm' 'usr/lib/mlterm/libtype_cairo\.so' 'usr/lib/mlterm/libotl\.so' "${UHOME#/}/\\.mlterm/aafont"
                                 'etc/fonts/conf\.d/72-v86-mlterm-fallback\.conf')
     ((GUI)) && want+=('usr/bin/fbterm' 'root/\.fbtermrc' 'usr/share/fonts/unifont/unifont\.otf' 'usr/share/fonts/unifont/unifont_upper\.otf'
                       'usr/share/fonts/twemoji/Twemoji\.Mozilla\.ttf'
@@ -4217,6 +4287,8 @@ verify_image() {
     ((WINCC)) && want+=('usr/bin/i386-win32-tcc' 'usr/bin/x86_64-win32-tcc' 'usr/bin/wincc'
                         'usr/lib/tcc/win32/lib/i386-win32-libtcc1\.a' 'usr/lib/tcc/win32/lib/x86_64-win32-libtcc1\.a'
                         'usr/lib/tcc/win32/lib/kernel32\.def' 'usr/lib/tcc/win32/include/winapi/windows\.h' 'usr/lib/tcc/win32/include/stdarg\.h')
+    want+=('etc/profile\.d/v86-prompt\.sh' 'root/\.bashrc' "${UHOME#/}/\\.bashrc")
+    ((GUI)) && want+=('usr/bin/xsession' "${UHOME#/}/\\.xinitrc" "${UHOME#/}/\\.fluxbox/menu" 'etc/sudoers\.d/v86-emojistyle')
     ((GUI)) && want+=('usr/bin/Xorg' 'usr/bin/fluxbox' 'usr/bin/xterm' 'usr/bin/xfe' 'usr/share/fluxbox/styles/V86-Dark'
                       "usr/lib/xorg/modules/drivers/$([[ $MODE == qemu ]] && echo modesetting || echo fbdev)_drv\.so")
     [[ "$MODE" == vesa ]] && want+=('usr/lib/xorg/modules/drivers/vesa_drv\.so' 'usr/bin/xmode' 'usr/bin/Xvesa')
