@@ -98,6 +98,10 @@
 #                         console, fbterm on tty2-6; not VGA text mode). Type ja to start it,
 #                         Ctrl+Space switches between Japanese and Latin input. ~10-20 MB
 #   --no-ja               leave it out (the default)
+#   --no-words            leave out /usr/share/dict/words, the English word list (Debian's
+#                         wamerican: 104,334 words, one per line, ~1 MB of RAM; for look,
+#                         grep -f, spell-check scripts and word games)
+#   --words               keep it (the default; undoes an earlier --no-words)
 #   --no-beep             the bell starts off for root and the default user (as if each had
 #                         run "beep off"); "beep on" in the guest turns it back on
 #   --beep                the bell starts on (the default: text consoles beep through the
@@ -135,6 +139,7 @@
 #   These add a suffix to the image name (e.g. v86-qemu-sdl3net-release-*); man pages
 #   only when not the default: v86-min-man-*, v86-qemu-noman-*; -nogcc for --no-gcc,
 #   -nomlterm for --no-mlterm, -noadie for --no-adie, -noshellcheck for --no-shellcheck, -tcc for --tcc, -wincc for --wincc, -noupx for --no-upx,
+#   -nowords for --no-words,
 #   -xz for --xz, -apic for --apic, -smp for --smp.
 #   Smallest image: --no-gui --no-man --no-gcc --no-shellcheck --no-upx --release --xz
 #
@@ -214,7 +219,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD=0 JA=0 BEEP=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD=0 JA=0 WORDS=1 BEEP=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -278,6 +283,8 @@ while (($#)); do
         --beep)           BEEP=1 ;;
         --no-beep)        BEEP=0 ;;
         --no-ja)          JA=0 ;;
+        --words)          WORDS=1 ;;
+        --no-words)       WORDS=0 ;;
         --no-kbd)         KBD=0 ;;
         --no-vim)         VIM=0 ;;
         --bash-dev)       BASHDEV=1 ;;
@@ -397,7 +404,7 @@ if [[ "$MODE" == smoke ]] || ((MIN)); then MAN_DEFAULT=0; fi
 SDL_DEFAULT=1
 [[ "$MODE" == nogui ]] && SDL_DEFAULT=0
 [[ -n "$SDL" ]] || SDL=$SDL_DEFAULT
-[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 KBD=0 JA=0 BASHDEV=0 BASHDB=0 GDB=0
+[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 KBD=0 JA=0 WORDS=0 BASHDEV=0 BASHDB=0 GDB=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
     if ((SDLNET)); then NAME+="-sdl3net"                  # (implies SDL3)
@@ -412,6 +419,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((VIM)) && NAME+="-vim"
     ((KBD)) && NAME+="-kbd"
     ((JA)) && NAME+="-ja"
+    ((WORDS)) || NAME+="-nowords"
     ((BEEP)) || NAME+="-nobeep"
     ((BASHDEV)) && NAME+="-bashdev"
     ((BASHDB)) && NAME+="-bashdb"
@@ -533,7 +541,7 @@ show_settings() {
     else cc="off - compiler cache disabled"; fi
     msg "environment   $NAME: $what"
     msg "run           $run, JOBS=$JOBS (${SET_BY[JOBS]})"
-    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo on || echo "off (--no-upx)"), compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
+    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo on || echo "off (--no-upx)"), word list $( ((WORDS)) && echo on || echo "off (--no-words)"), compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
     printf '%s[cache]%s DL_DIR        %s  - download cache: %s files, %s (%s)\n' "$C1" "$C0" "$DL_DIR" "$files" "${size:-0}" "${SET_BY[DL_DIR]}"
     printf '%s[cache]%s ccache        %s (USE_CCACHE=%s, %s)\n' "$C1" "$C0" "$cc" "$USE_CCACHE" "${SET_BY[USE_CCACHE]}"
     local hc="off - host-tool cache disabled"
@@ -567,6 +575,7 @@ preflight() {
 
     local tools=(wget curl tar gzip make gcc g++ cpio unzip rsync bc gawk file python3 perl patch bzip2 bison flex) missing=() c
     ((SHELLCHECK)) && tools+=(ar readelf xz)     # unpacking Debian's shellcheck package
+    ((WORDS)) && tools+=(ar)                      # unpacking Debian's wamerican package
     for c in "${tools[@]}"; do have "$c" || missing+=("$c"); done
     if ((${#missing[@]})); then
         ((DRY)) && { warn "missing host tools (needed for a real build): ${missing[*]}"; return 0; }
@@ -744,6 +753,7 @@ source "$BR2_EXTERNAL_V86_PATH/package/tinycc/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/upx-target/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/anthy-unicode/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/uim/Config.in"
+source "$BR2_EXTERNAL_V86_PATH/package/words/Config.in"
 EOF
     # Buildroot only includes external.mk; it registers our packages and tweaks.
     put "$EXT/external.mk" <<'EOF'
@@ -1375,6 +1385,36 @@ $(eval $(cmake-package))
 EOF
     put "$EXT/package/upx-target/upx-target.hash" <<'EOF'
 sha256  5ed6561607d27fb4ef346fc19f08a93696fa8fa127081e7a7114068306b8e1c4  upx-ucl_4.2.4.orig.tar.xz
+EOF
+
+    # ── words: /usr/share/dict/words (default on; --no-words leaves it out) ──
+    # Debian's wamerican (SCOWL size 50, American English; Ubuntu's copy): 104,334 words,
+    # 985 KB. The source is the .deb itself (architecture "all"): only the list is kept,
+    # words -> american-english as on Debian.
+    put "$EXT/package/words/Config.in" <<'EOF'
+config BR2_PACKAGE_WORDS
+	bool "words"
+	help
+	  /usr/share/dict/words: Debian's American English word list (SCOWL).
+EOF
+    put "$EXT/package/words/words.mk" <<'EOF'
+WORDS_VERSION = 2020.12.07-4build1
+WORDS_SOURCE = wamerican_$(WORDS_VERSION)_all.deb
+WORDS_SITE = https://archive.ubuntu.com/ubuntu/pool/main/s/scowl
+WORDS_LICENSE = SCOWL (MIT-like, per word list source)
+WORDS_EXTRACT_DEPENDENCIES = host-zstd
+define WORDS_EXTRACT_CMDS
+	cd $(@D) && ar p $(WORDS_DL_DIR)/$(WORDS_SOURCE) data.tar.zst \
+		| $(HOST_DIR)/bin/zstd -dc | $(TAR) -xf - ./usr/share/dict/american-english
+endef
+define WORDS_INSTALL_TARGET_CMDS
+	$(INSTALL) -D -m 0644 $(@D)/usr/share/dict/american-english $(TARGET_DIR)/usr/share/dict/american-english
+	ln -sf american-english $(TARGET_DIR)/usr/share/dict/words
+endef
+$(eval $(generic-package))
+EOF
+    put "$EXT/package/words/words.hash" <<'EOF'
+sha256  69cb601ca0aa3a0750026a81d97b591431047a3823d785a5cc972235ecee69cc  wamerican_2020.12.07-4build1_all.deb
 EOF
 
     # ── --ja: Japanese input. Neither is in Buildroot; sources are Ubuntu's copies ──
@@ -2636,6 +2676,9 @@ else
 fi
 chk "network interface present"       sh -c 'ls /sys/class/net | grep -qv "^lo$"'
 chk "nano installed"                  command -v nano
+if [ -e /usr/share/dict/words ]; then
+    chk "word list: /usr/share/dict/words" sh -c '[ "$(wc -l < /usr/share/dict/words)" -gt 100000 ] && grep -qx hello /usr/share/dict/words'
+fi
 if command -v tcc >/dev/null; then
     cat > /tmp/t.c <<'C'
 #include <stdio.h>
@@ -4299,6 +4342,7 @@ EOF
         if ((VIM)); then printf '%s\n' BR2_PACKAGE_VIM=y BR2_PACKAGE_VIM_RUNTIME=y; fi
         if ((KBD)); then echo 'BR2_PACKAGE_KBD=y'; fi
         if ((JA)); then echo 'BR2_PACKAGE_UIM=y'; fi
+        if ((WORDS)); then echo 'BR2_PACKAGE_WORDS=y'; fi
         if ((KBD && GUI)); then echo 'BR2_PACKAGE_XAPP_SETXKBMAP=y'; fi
         if ((BASHDB)); then echo 'BR2_PACKAGE_BASHDB=y'; fi
         if ((GDB)); then printf '%s\n' BR2_PACKAGE_GDB=y BR2_PACKAGE_GDB_SERVER=y BR2_PACKAGE_GDB_DEBUGGER=y; fi
@@ -4625,6 +4669,7 @@ verify_image() {
     ((SHELLCHECK)) && want+=('usr/bin/shellcheck')
     ((TCC)) && want+=('usr/bin/tcc' 'usr/lib/tcc/libtcc1\.a' 'usr/lib/tcc/bt-exe\.o' 'usr/lib/tcc/include/stdarg\.h')
     ((UPX)) && want+=('usr/bin/upx')
+    ((WORDS)) && want+=('usr/share/dict/words' 'usr/share/dict/american-english')
     ((KBD)) && want+=('usr/bin/loadkeys' 'usr/bin/dumpkeys')
     ((BEEP)) || want+=('root/\.nobeep' "${UHOME#/}/\\.nobeep")
     ((BEEP)) && grep -qE '(^|/)\.nobeep$' <<<"$list" && { warn "image without --no-beep has a .nobeep file"; ok=0; }
@@ -4660,6 +4705,7 @@ verify_image() {
     ((UPX)) || ! grep -qE '(^|/)usr/bin/upx$' <<<"$list" || { warn "--no-upx image contains upx"; ok=0; }
     ((VIM)) || ! grep -qE '(^|/)usr/bin/vim$' <<<"$list" || { warn "image without --vim contains vim"; ok=0; }
     ((KBD)) || ! grep -qE '(^|/)usr/bin/loadkeys$' <<<"$list" || { warn "image without --kbd contains loadkeys"; ok=0; }
+    ((WORDS)) || ! grep -qE '(^|/)usr/share/dict/words$' <<<"$list" || { warn "--no-words image contains /usr/share/dict/words"; ok=0; }
     ((GUI && ADIE)) || ! grep -qE '(^|/)usr/bin/adie$' <<<"$list" || { warn "image without Adie contains adie"; ok=0; }
     ((ok)) || die "the packed image is incomplete (see above)"
     mb=$(( $("$z" -dc "$img" | wc -c) / 1048576 ))
