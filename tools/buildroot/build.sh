@@ -2110,7 +2110,20 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
   sudo <command>    run a command as root (your password: $DEFAULT_USER)
   su -              become root (password: root)
   openssl version   OpenSSL; https works with the CA certificates in /etc/ssl/certs
+
+Font size
+  browser zoom      the whole v86 screen bigger or smaller: Zoom in your browser's menu
+                    (Ctrl + / Ctrl - go to v86 while it has the keyboard, not the browser)
 EOF
+        if ((GUI)); then
+            cat >> "$OVL$UHOME/readme.txt" <<'EOF'
+  Shift + numpad +  xterm: larger font (Shift + numpad - smaller). Or hold Ctrl and
+                    right-click in xterm: the VT Fonts menu lists every size
+                    (Unreadable 4x6 ... Huge 10x20)
+  ~/.Xdefaults      the size new xterms start with: XTerm*faceSize: 9.75 (points;
+                    9.75 = the 6x13 font, 10.5 = 7x14, 13.5 = 9x18, 15 = 10x20)
+EOF
+        fi
     else
         : | put "$EXT/users.txt"
     fi
@@ -2927,7 +2940,20 @@ XTerm*utf8Title:   true
 ! Twemoji's characters from misc-fixed and Unifont, so ❤ ☀ ✈ come out in colour too.
 ! emojiWidth: an emoji followed by VS16 (❤️) takes two cells; useClipping off lets the
 ! colour glyph use both. "emojistyle mono" = everything from Unifont, monochrome.
-XTerm*faceName:    Fixed:foundry=Misc:pixelsize=13:width=87:weight=medium,Twemoji Mozilla:pixelsize=13
+! Size: faceSize, not a pixelsize in faceName (that pins it: Shift + numpad +/- and the
+! VT Fonts menu would do nothing). 9.75 pt at 96 dpi = 13 px, misc-fixed's 6x13. The
+! menu's sizes (Ctrl + right-click), which Shift + numpad +/- step through, are misc-fixed's
+! other sizes: 4x6, 6x9, 6x12, 7x14, 9x18, 10x20 (without them a step can take 9x15 from
+! Twemoji's metrics)
+XTerm*faceName:    Fixed:foundry=Misc:width=87:weight=medium,Twemoji Mozilla
+XTerm*faceSize:    9.75
+XTerm*faceSize1:   4.5
+XTerm*faceSize2:   6.75
+XTerm*faceSize3:   9
+XTerm*faceSize4:   10.5
+XTerm*faceSize5:   13.5
+XTerm*faceSize6:   15
+Xft.dpi:           96
 XTerm*emojiWidth:  true
 XTerm*useClipping: false
 ! near-black, not Nord's #2e3440: Twemoji draws ♠ ✔ ✖ ⬛ 🖤 🕷... in #292f33, which vanishes
@@ -2959,7 +2985,7 @@ EOF
         put "$OVL/etc/fonts/conf.d/71-v86-misc-fixed.conf" <<'EOF'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<!-- v86: accept xterm's 6x13 font (the ISO 10646 files only, not the 8-bit code pages).
+<!-- v86: accept xterm's misc-fixed fonts (the ISO 10646 files only, not the 8-bit code pages).
      fontconfig 2.17 names it family "Fixed", foundry "Misc" -->
 <fontconfig>
   <selectfont>
@@ -2969,6 +2995,9 @@ EOF
     <rejectfont>
       <glob>/usr/share/fonts/X11/misc/*-ISO8859-*</glob>
       <glob>/usr/share/fonts/X11/misc/*-KOI8-*</glob>
+      <!-- and the CJK bitmaps (18x18ja...): xterm's larger font step would land on them -->
+      <glob>/usr/share/fonts/X11/misc/*ja.pcf*</glob>
+      <glob>/usr/share/fonts/X11/misc/*ko.pcf*</glob>
     </rejectfont>
   </selectfont>
 </fontconfig>
@@ -3396,8 +3425,7 @@ case "$1" in
                    esac
                    rm -rf /var/cache/fontconfig/* ;;
     colour|color)  system colour
-                   ps=$(sed -n 's/^XTerm\*faceName:[^,]*pixelsize=\([0-9]*\).*/\1/p' "$f" | head -n 1)
-                   sed -i "/^XTerm\\*faceName:/{/Twemoji Mozilla/!s/\$/,Twemoji Mozilla:pixelsize=${ps:-13}/}" "$f"
+                   sed -i '/^XTerm\*faceName:/{/Twemoji Mozilla/!s/$/,Twemoji Mozilla/}' "$f"
                    [ -f "$ml" ] && sed -i '/^U+1F000-1FAFF\|^U+2600-27BF\|^U+2300-23FF\|^U+2B1B-2B55/s/= .*/= Twemoji Mozilla/' "$ml"
                    sed -i '/^XTerm\*faceNameDoublesize:/d' "$f"; fresh
                    echo "emojistyle: colour (programs started from now on)" ;;
