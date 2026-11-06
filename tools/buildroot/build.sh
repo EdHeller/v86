@@ -21,7 +21,10 @@
 # Named builds (shortcuts; the same options spelled out get the same short name):
 #   --dev-env             --min --SDL3-net --man --no-shellcheck --upx --gdb --smp -> v86-dev-env-*
 #   --bash-env            --min --no-SDL3 --man --tcc --wincc --smp   -> v86-bash-env-*
-#                         With --release: v86-dev-env-release-*, v86-bash-env-release-*.
+#   --max-env             both together: --min --SDL3-net --man --tcc --wincc --upx --gdb
+#                         --bash-dev --smp (ShellCheck stays in, as in --bash-env) -> v86-max-env-*
+#                         With --release: v86-dev-env-release-*, v86-bash-env-release-*,
+#                         v86-max-env-release-*.
 #                         Other options added after one change the build and give it the
 #                         usual long name, e.g. --dev-env --xz -> min-sdl3net-...-xz
 #
@@ -86,10 +89,10 @@
 #   --bashdb              add bashdb 5.2-1.2.0, a debugger for bash scripts: bashdb script.sh
 #                         (only bash scripts, under 1 MB)
 #   --no-bashdb           leave it out (the default)
-#   --gdb                 (always in --dev-env, never in --bash-env) add gdb and gdbserver (about 12 MB installed in Alpine; with python
+#   --gdb                 (in --dev-env and --max-env, not --bash-env) add gdb and gdbserver (about 12 MB installed in Alpine; with python
 #                         off); programs built on the target with gcc -g can then be debugged
 #   --no-gdb              leave it out (the default, except --dev-env)
-#   --no-bash-dev         leave it out (the default, except --bash-env; undoes --bash-dev)
+#   --no-bash-dev         leave it out (the default, except --bash-env and --max-env; undoes --bash-dev)
 #   --no-upx              leave it out (the default, except --dev-env; undoes an earlier --upx)
 #   --xz                  compress kernel + rootfs with xz instead of zstd: ~12% smaller for
 #                         small images, up to ~35% for images with gcc, but 7-11x slower to
@@ -104,7 +107,7 @@
 #   --smp                 a kernel for several cores: SMP (up to 8 CPUs), ACPI, the local and
 #                         I/O APIC, the HPET (implies --apic). Run it with acpi: true and
 #                         cpu_cores: N (and cpu_workers for Web Workers). Part of --dev-env and
-#                         --bash-env. One core still works: the kernel runs on the one it finds.
+#                         --bash-env and --max-env. One core still works: the kernel runs on the one it finds.
 #   --no-smp              single-CPU kernel without ACPI (the default otherwise)
 #   Last one wins: --no-SDL3 also drops SDL3_net, --SDL3-net brings SDL3 back.
 #   These add a suffix to the image name (e.g. v86-qemu-sdl3net-release-*); man pages
@@ -223,6 +226,7 @@ while (($#)); do
         # named builds: the options they stand for, in their place (later options still apply)
         --dev-env)        shift; set -- --min --SDL3-net --man --no-shellcheck --upx --gdb --smp "$@"; continue ;;
         --bash-env)       shift; set -- --min --no-SDL3 --man --tcc --wincc --bash-dev --smp "$@"; continue ;;
+        --max-env)        shift; set -- --min --SDL3-net --man --tcc --wincc --upx --gdb --bash-dev --smp "$@"; continue ;;
         --smoke)          set_mode smoke ;;
         --all)            ALL=1 ;;
         --no-SDL3|--no-sdl3)   SDL=0 SDLNET=0 ;;   # last one wins
@@ -312,7 +316,7 @@ fi
 # ── --all: run this script once per image, then summarise ───────────────────
 ALL_TARGETS=("--dev-env --release" "--dev-env" "--bash-env --release" "--bash-env")
 if ((ALL)); then
-    [[ -z "$MODE" ]] || die "--all builds dev-env and bash-env: leave out --no-gui / --qemu / --vesa / --min / --smoke / --dev-env / --bash-env"
+    [[ -z "$MODE" ]] || die "--all builds dev-env and bash-env: leave out --no-gui / --qemu / --vesa / --min / --smoke / --dev-env / --bash-env / --max-env"
     [[ -z "${PICKED:-}" ]] || die "--all builds both release and debug images: leave out --$PICKED"
     pass=() i=0
     while ((i < ${#ARGS[@]})); do               # everything except --all is passed on
@@ -385,6 +389,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     case "${NAME%-release}" in
         min-sdl3net-noshellcheck-upx-gdb-man-smp) NAME=dev-env${NAME#min-sdl3net-noshellcheck-upx-gdb-man-smp} ;;
         min-nosdl3-tcc-wincc-bashdev-man-smp)     NAME=bash-env${NAME#min-nosdl3-tcc-wincc-bashdev-man-smp} ;;
+        min-sdl3net-tcc-wincc-upx-bashdev-gdb-man-smp) NAME=max-env${NAME#min-sdl3net-tcc-wincc-upx-bashdev-gdb-man-smp} ;;
     esac
 fi
 [[ "$MODE" == smoke ]] && XZ=0
