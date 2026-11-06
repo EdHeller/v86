@@ -81,6 +81,11 @@
 #   --no-wincc            leave them out (the default; undoes an earlier --wincc)
 #   --upx                 add UPX, the program packer: upx prog shrinks a Linux program or a
 #                         Windows .exe/.dll, which unpacks itself when run (~2.6 MB)
+#   --vim                 add Vim (vim, and vi becomes Vim instead of BusyBox's vi): ~3 MB
+#                         program + a trimmed runtime with syntax highlighting for C/C++,
+#                         shell, make, Python, asm, HTML/CSS/JS, JSON, Markdown, YAML, Lua...
+#                         nano stays the default editor ($EDITOR, XFE's text editor)
+#   --no-vim              leave it out (the default; undoes an earlier --vim)
 #   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
 #                         coreutils (sort, date, stat...) and diffutils instead of BusyBox's
 #                         look-alikes; bash-completion, a script-friendly prompt/history/inputrc,
@@ -192,7 +197,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 VIM=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -250,6 +255,8 @@ while (($#)); do
         --wincc)          WINCC=1 ;;
         --no-wincc)       WINCC=0 ;;
         --upx)            UPX=1 ;;
+        --vim)            VIM=1 ;;
+        --no-vim)         VIM=0 ;;
         --bash-dev)       BASHDEV=1 ;;
         --bashdb)         BASHDB=1 ;;
         --no-bashdb)      BASHDB=0 ;;
@@ -363,7 +370,7 @@ esac
 MAN_DEFAULT=1
 if [[ "$MODE" == smoke ]] || ((MIN)); then MAN_DEFAULT=0; fi
 [[ -n "$MAN" ]] || MAN=$MAN_DEFAULT
-[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 BASHDEV=0 BASHDB=0 GDB=0
+[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 BASHDEV=0 BASHDB=0 GDB=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
     ((SDL)) || NAME+="-nosdl3"
@@ -375,6 +382,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((TCC)) && NAME+="-tcc"
     ((WINCC)) && NAME+="-wincc"
     ((UPX)) && NAME+="-upx"
+    ((VIM)) && NAME+="-vim"
     ((BASHDEV)) && NAME+="-bashdev"
     ((BASHDB)) && NAME+="-bashdb"
     ((GDB)) && NAME+="-gdb"
@@ -2109,6 +2117,8 @@ if [ -n "$DISPLAY" ]; then
         /dev/pts/*) [ "$(cut -d' ' -f19 /proc/$$/stat 2>/dev/null)" = 0 ] && renice 1 -p $$ >/dev/null 2>&1 ;;
     esac
 fi
+# nano edits text files (Buildroot's /etc/profile says vi): git, crontab, sudoedit, less's v...
+export EDITOR=nano VISUAL=nano
 # UTF-8 everywhere (C.UTF-8 is generated at build time: BR2_GENERATE_LOCALE)
 export LANG=${LANG:-C.UTF-8}
 # Unicode on the text console: the kernel console holds only 512 glyphs, so logins on a
@@ -3457,6 +3467,7 @@ EOF
     # --no-mlterm: one terminal, so no Terminal submenu: xterm goes first in the menu
     ((MLTERM)) || sed -i '/^  \[submenu\] (Terminal)$/,/^  \[end\]$/c\  [exec] (xterm) {xterm}' "$OVL$UHOME/.fluxbox/menu"
     ((ADIE)) || sed -i '/{adie}$/d' "$OVL$UHOME/.fluxbox/menu"      # --no-adie
+    ((VIM)) && sed -i 's/^    \[exec\] (vi) {xterm -e vi}$/    [exec] (vim) {xterm -e vim}/' "$OVL$UHOME/.fluxbox/menu"
     {
         cat <<'EOF'
 session.menuFile: ~/.fluxbox/menu
@@ -3767,16 +3778,36 @@ if [ -f "$XFERC" ]; then
     ' "$XFERC" > "$XFERC.tmp" && mv "$XFERC.tmp" "$XFERC"
     rm -rf "$TARGET"/usr/share/xfe/icons/gnome-theme "$TARGET"/usr/share/xfe/icons/kde-theme \
            "$TARGET"/usr/share/xfe/icons/xfce-theme
-    # Adie (not with --no-adie) as XFE's text editor: Open and Edit on .c, .h, .sh... use it
-    if [ -x "$TARGET/usr/bin/adie" ]; then
-        awk '
-            /^\[/ { if (sec == "[PROGS]" && !done) { print "txteditor=adie"; done = 1 } sec = $0 }
-            sec == "[PROGS]" && /^txteditor=/ { next }
-            { print }
-            END { if (!done) { if (sec != "[PROGS]") print "[PROGS]"; print "txteditor=adie" } }
-        ' "$XFERC" > "$XFERC.tmp" && mv "$XFERC.tmp" "$XFERC"
-    fi
+    # nano (in an xterm) as XFE's text editor: Open and Edit on .txt, .c, .h, .sh... use it.
+    # Adie (not with --no-adie) stays in the Fluxbox menu and XFE's Open with
+    awk '
+        /^\[/ { if (sec == "[PROGS]" && !done) { print "txteditor=xterm -e nano"; done = 1 } sec = $0 }
+        sec == "[PROGS]" && /^txteditor=/ { next }
+        { print }
+        END { if (!done) { if (sec != "[PROGS]") print "[PROGS]"; print "txteditor=xterm -e nano" } }
+    ' "$XFERC" > "$XFERC.tmp" && mv "$XFERC.tmp" "$XFERC"
 fi
+
+# Vim (--vim): its runtime trimmed to what a terminal editor here uses. Syntax, indent and
+# filetype plugins only for these languages (+ the core files); no tutor, spell, keymaps,
+# translations, print or compiler files. Buildroot already leaves out the help files.
+for VR in "$TARGET"/usr/share/vim/vim[0-9]*; do
+    [ -d "$VR" ] || continue
+    rm -rf "$VR/tutor" "$VR/spell" "$VR/lang" "$VR/keymap" "$VR/print" "$VR/tools" "$VR/compiler" \
+           "$VR/menu.vim" "$VR/synmenu.vim" "$VR/delmenu.vim" "$VR/gvimrc_example.vim"
+    keep=" syntax synload syncolor nosyntax manual shared c cpp sh bash zsh make automake cmake python
+           asm nasm gas html css javascript typescript json jsonc markdown yaml toml lua awk sed perl
+           vim diff gitcommit gitrebase gitconfig conf dosini cfg xml dtd readline nanorc help man
+           sql rust go java php ruby tcl m4 config lex yacc doxygen"
+    keep=" $(echo $keep) "        # one line, one space between names
+    for d in syntax indent ftplugin; do
+        [ -d "$VR/$d" ] || continue
+        for f in "$VR/$d"/*; do
+            n=${f##*/}; n=${n%.vim}
+            case "$keep" in *" $n "*) ;; *) rm -rf "$f" ;; esac
+        done
+    done
+done
 
 # On-target compiler: put headers and dev files back (not with --no-gcc).
 # Headers are MERGED into usr/include (copying the folder into an existing one
@@ -3966,6 +3997,7 @@ EOF
         if ((TCC)); then echo 'BR2_PACKAGE_TINYCC_LINUX=y'; fi
         if ((WINCC)); then echo 'BR2_PACKAGE_TINYCC_WIN=y'; fi
         if ((UPX)); then echo 'BR2_PACKAGE_UPX_TARGET=y'; fi
+        if ((VIM)); then printf '%s\n' BR2_PACKAGE_VIM=y BR2_PACKAGE_VIM_RUNTIME=y; fi
         if ((BASHDB)); then echo 'BR2_PACKAGE_BASHDB=y'; fi
         if ((GDB)); then printf '%s\n' BR2_PACKAGE_GDB=y BR2_PACKAGE_GDB_SERVER=y BR2_PACKAGE_GDB_DEBUGGER=y; fi
         if ((BASHDEV)); then printf '%s\n' BR2_PACKAGE_COREUTILS=y BR2_PACKAGE_GAWK=y BR2_PACKAGE_GREP=y \
@@ -4104,7 +4136,7 @@ lint_tree() {
                 || { warn "menu: --no-mlterm should put xterm first, with no Terminal submenu"; bad=1; }
         fi
         # every command the Fluxbox menu runs must exist in the image
-        local cmd known=" xterm xfe nano vi mlterm adie "
+        local cmd known=" xterm xfe nano vi vim mlterm adie "
         while read -r cmd; do
             [[ "$known" == *" $cmd "* || -x "$OVL/usr/bin/$cmd" ]] || { warn "menu runs unknown command: $cmd"; bad=1; }
         done < <(sed -n 's/.*\[exec\][^{]*{\([^}]*\)}.*/\1/p' "$OVL$UHOME/.fluxbox/menu" \
@@ -4289,6 +4321,7 @@ verify_image() {
     ((SHELLCHECK)) && want+=('usr/bin/shellcheck')
     ((TCC)) && want+=('usr/bin/tcc' 'usr/lib/tcc/libtcc1\.a' 'usr/lib/tcc/bt-exe\.o' 'usr/lib/tcc/include/stdarg\.h')
     ((UPX)) && want+=('usr/bin/upx')
+    ((VIM)) && want+=('usr/bin/vim' 'usr/share/vim/vim[0-9]+/syntax/c\.vim' 'usr/share/vim/vim[0-9]+/filetype\.vim')
     ((WINCC)) && want+=('usr/bin/i386-win32-tcc' 'usr/bin/x86_64-win32-tcc' 'usr/bin/wincc'
                         'usr/lib/tcc/win32/lib/i386-win32-libtcc1\.a' 'usr/lib/tcc/win32/lib/x86_64-win32-libtcc1\.a'
                         'usr/lib/tcc/win32/lib/kernel32\.def' 'usr/lib/tcc/win32/include/winapi/windows\.h' 'usr/lib/tcc/win32/include/stdarg\.h')
@@ -4315,6 +4348,7 @@ verify_image() {
     ((TCC)) || ! grep -qE '(^|/)usr/bin/tcc$' <<<"$list" || { warn "image without --tcc contains tcc"; ok=0; }
     ((WINCC)) || ! grep -qE '(^|/)usr/bin/(wincc|i386-win32-tcc|x86_64-win32-tcc)$' <<<"$list" || { warn "image without --wincc contains wincc"; ok=0; }
     ((UPX)) || ! grep -qE '(^|/)usr/bin/upx$' <<<"$list" || { warn "image without --upx contains upx"; ok=0; }
+    ((VIM)) || ! grep -qE '(^|/)usr/bin/vim$' <<<"$list" || { warn "image without --vim contains vim"; ok=0; }
     ((GUI && ADIE)) || ! grep -qE '(^|/)usr/bin/adie$' <<<"$list" || { warn "image without Adie contains adie"; ok=0; }
     ((ok)) || die "the packed image is incomplete (see above)"
     mb=$(( $("$z" -dc "$img" | wc -c) / 1048576 ))
@@ -4511,7 +4545,7 @@ EOF
     msg "sizes are in bytes: update them if you rebuild the files"
     cat <<EOF
 
-In the guest: $( ((RELEASE)) || echo 'selftest · soundtest · unitest · ')$( ((RELEASE || !GUI)) || echo 'emojitest · symboltest · ')$( ((RELEASE || !GCC)) || echo 'devcheck · ')netup/netdown$( ((SHELLCHECK)) && echo ' · shellcheck')$( ((TCC)) && echo ' · tcc')$( ((WINCC)) && echo ' · wincc')$( ((UPX)) && echo ' · upx')$( ((GUI)) && echo ' · xlog · xmode')$( ((MAN)) && echo ' · man/apropos')
+In the guest: $( ((RELEASE)) || echo 'selftest · soundtest · unitest · ')$( ((RELEASE || !GUI)) || echo 'emojitest · symboltest · ')$( ((RELEASE || !GCC)) || echo 'devcheck · ')netup/netdown$( ((SHELLCHECK)) && echo ' · shellcheck')$( ((TCC)) && echo ' · tcc')$( ((WINCC)) && echo ' · wincc')$( ((UPX)) && echo ' · upx')$( ((VIM)) && echo ' · vim')$( ((GUI)) && echo ' · xlog · xmode')$( ((MAN)) && echo ' · man/apropos')
 $( ((SDL && GCC)) && echo 'SDL3: #include <SDL3/SDL.h>   gcc app.c $(pkg-config --cflags --libs sdl3)')$( ((SDLNET && GCC)) && echo '
 SDL3_net: #include <SDL3_net/SDL_net.h>   gcc app.c $(pkg-config --cflags --libs sdl3-net)')
 EOF
