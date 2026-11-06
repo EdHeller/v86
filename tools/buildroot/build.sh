@@ -93,6 +93,11 @@
 #                         text consoles (sudo loadkeys de), dumpkeys, showkey, setfont; GUI
 #                         images also get setxkbmap for the desktop (setxkbmap de). ~1-2 MB
 #   --no-kbd              leave it out (the default: BusyBox's loadkmap, with no keymaps)
+#   --ja                  Japanese input (experimental): uim-fep with the Anthy kana-kanji
+#                         converter, in any terminal that shows Japanese (xterm, the serial
+#                         console, fbterm on tty2-6; not VGA text mode). Type ja to start it,
+#                         Ctrl+Space switches between Japanese and Latin input. ~10-20 MB
+#   --no-ja               leave it out (the default)
 #   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
 #                         coreutils (sort, date, stat...) and diffutils instead of BusyBox's
 #                         look-alikes; bash-completion, a script-friendly prompt/history/inputrc,
@@ -205,7 +210,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD=0 JA=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -265,6 +270,8 @@ while (($#)); do
         --upx)            UPX=1 ;;
         --vim)            VIM=1 ;;
         --kbd)            KBD=1 ;;
+        --ja)             JA=1 ;;
+        --no-ja)          JA=0 ;;
         --no-kbd)         KBD=0 ;;
         --no-vim)         VIM=0 ;;
         --bash-dev)       BASHDEV=1 ;;
@@ -384,7 +391,7 @@ if [[ "$MODE" == smoke ]] || ((MIN)); then MAN_DEFAULT=0; fi
 SDL_DEFAULT=1
 [[ "$MODE" == nogui ]] && SDL_DEFAULT=0
 [[ -n "$SDL" ]] || SDL=$SDL_DEFAULT
-[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 KBD=0 BASHDEV=0 BASHDB=0 GDB=0
+[[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 KBD=0 JA=0 BASHDEV=0 BASHDB=0 GDB=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
     if ((SDLNET)); then NAME+="-sdl3net"                  # (implies SDL3)
@@ -398,6 +405,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((UPX)) || NAME+="-noupx"
     ((VIM)) && NAME+="-vim"
     ((KBD)) && NAME+="-kbd"
+    ((JA)) && NAME+="-ja"
     ((BASHDEV)) && NAME+="-bashdev"
     ((BASHDB)) && NAME+="-bashdb"
     ((GDB)) && NAME+="-gdb"
@@ -727,6 +735,8 @@ source "$BR2_EXTERNAL_V86_PATH/package/twemoji/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/mlterm/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/tinycc/Config.in"
 source "$BR2_EXTERNAL_V86_PATH/package/upx-target/Config.in"
+source "$BR2_EXTERNAL_V86_PATH/package/anthy-unicode/Config.in"
+source "$BR2_EXTERNAL_V86_PATH/package/uim/Config.in"
 EOF
     # Buildroot only includes external.mk; it registers our packages and tweaks.
     put "$EXT/external.mk" <<'EOF'
@@ -1358,6 +1368,91 @@ $(eval $(cmake-package))
 EOF
     put "$EXT/package/upx-target/upx-target.hash" <<'EOF'
 sha256  5ed6561607d27fb4ef346fc19f08a93696fa8fa127081e7a7114068306b8e1c4  upx-ucl_4.2.4.orig.tar.xz
+EOF
+
+    # ── --ja: Japanese input. Neither is in Buildroot; sources are Ubuntu's copies ──
+    # anthy-unicode (fujiwarat's UTF-8 Anthy; Ubuntu's "anthy" 1.0.0.x is this source).
+    # Its dictionary is made at build time by tools it has just built (mkworddic, calctrans,
+    # mkfiledic), which can't run in a cross build: host-anthy-unicode builds everything and
+    # makes anthy.dic (byte order fixed: htonl/ntohl), the target build only the library.
+    put "$EXT/package/anthy-unicode/Config.in" <<'EOF'
+config BR2_PACKAGE_ANTHY_UNICODE
+	bool "anthy-unicode"
+	depends on BR2_USE_WCHAR
+	help
+	  Anthy (UTF-8): Japanese kana-kanji conversion library and its dictionary.
+EOF
+    put "$EXT/package/anthy-unicode/anthy-unicode.mk" <<'EOF'
+ANTHY_UNICODE_VERSION = 1.0.0.20260213
+ANTHY_UNICODE_SOURCE = anthy_$(ANTHY_UNICODE_VERSION).orig.tar.gz
+ANTHY_UNICODE_SITE = https://archive.ubuntu.com/ubuntu/pool/universe/a/anthy
+ANTHY_UNICODE_LICENSE = LGPL-2.1+ (library), GPL-2.0+ (dictionary)
+ANTHY_UNICODE_LICENSE_FILES = COPYING
+ANTHY_UNICODE_INSTALL_STAGING = YES
+ANTHY_UNICODE_DEPENDENCIES = host-anthy-unicode
+ANTHY_UNICODE_CONF_OPTS = -Demacs=disabled
+HOST_ANTHY_UNICODE_CONF_OPTS = -Demacs=disabled
+# target: the library only (the dictionary tools and tests are left out)
+define ANTHY_UNICODE_LIBRARY_ONLY
+	$(SED) "/^subdir('\(depgraph\|mkworddic\|calctrans\|mkanthydic\|test\)')/d" $(@D)/meson.build
+endef
+ANTHY_UNICODE_POST_PATCH_HOOKS += ANTHY_UNICODE_LIBRARY_ONLY
+define ANTHY_UNICODE_INSTALL_DICTIONARY
+	$(INSTALL) -D -m 0644 $(HOST_DIR)/share/anthy-unicode/anthy.dic $(TARGET_DIR)/usr/share/anthy-unicode/anthy.dic
+	$(INSTALL) -D -m 0644 $(HOST_DIR)/share/anthy-unicode/zipcode.t $(TARGET_DIR)/usr/share/anthy-unicode/zipcode.t
+endef
+ANTHY_UNICODE_POST_INSTALL_TARGET_HOOKS += ANTHY_UNICODE_INSTALL_DICTIONARY
+$(eval $(meson-package))
+$(eval $(host-meson-package))
+EOF
+    put "$EXT/package/anthy-unicode/anthy-unicode.hash" <<'EOF'
+sha256  77163ede4f6f946487a73794301ba4ac6e9079dce8e0b3a396c13c2ed06ad280  anthy_1.0.0.20260213.orig.tar.gz
+EOF
+    # uim 1.9.9: the input method framework, with Anthy (UTF-8) and uim-fep, its terminal
+    # front end; no X (no XIM bridge, no GTK/Qt). Its build writes scm/installed-modules.scm
+    # and loader.scm with its own uim-module-manager, which can't run in a cross build:
+    # host-uim (same options, so the same modules) makes them, and they are Scheme, the same
+    # on any CPU. sigscheme's function tables come pre-generated in the tarball.
+    put "$EXT/package/uim/Config.in" <<'EOF'
+config BR2_PACKAGE_UIM
+	bool "uim"
+	depends on BR2_USE_WCHAR
+	select BR2_PACKAGE_ANTHY_UNICODE
+	select BR2_PACKAGE_NCURSES
+	help
+	  uim input method framework with Anthy (Japanese) and uim-fep, an input
+	  method for terminals.
+EOF
+    put "$EXT/package/uim/uim.mk" <<'EOF'
+UIM_VERSION = 1.9.9
+UIM_SOURCE = uim_$(UIM_VERSION).orig.tar.bz2
+UIM_SITE = https://archive.ubuntu.com/ubuntu/pool/universe/u/uim
+UIM_LICENSE = BSD-3-Clause, LGPL-2.1+
+UIM_LICENSE_FILES = COPYING
+UIM_DEPENDENCIES = host-pkgconf host-uim anthy-unicode ncurses
+HOST_UIM_DEPENDENCIES = host-pkgconf host-anthy-unicode
+UIM_COMMON_OPTS = \
+	--with-anthy-utf8 --without-anthy --without-m17nlib --without-canna --without-wnn \
+	--without-skk --without-mozc --disable-openssl --without-sqlite3 --without-ffi \
+	--without-x --without-gtk3 --without-gtk4 --disable-gnome3-applet --without-ibus \
+	--without-qt --without-qt-immodule --without-qt4 --without-qt4-immodule \
+	--without-qt5 --without-qt5-immodule --without-qt6 --without-qt6-immodule \
+	--without-tqt --without-tqt-immodule --disable-kde-applet --disable-kde4-applet \
+	--disable-kde5-applet --disable-tde-applet --disable-emacs --disable-dict \
+	--without-eb --without-libedit --disable-pref --disable-notify --disable-nls \
+	--disable-warnings-into-error
+UIM_CONF_OPTS = $(UIM_COMMON_OPTS) --enable-fep
+HOST_UIM_CONF_OPTS = $(UIM_COMMON_OPTS) --disable-fep
+define UIM_HOST_MODULE_LISTS
+	cp $(HOST_DIR)/share/uim/installed-modules.scm $(HOST_DIR)/share/uim/loader.scm $(@D)/scm/
+	touch $(@D)/scm/installed-modules.scm $(@D)/scm/loader.scm
+endef
+UIM_PRE_BUILD_HOOKS += UIM_HOST_MODULE_LISTS
+$(eval $(autotools-package))
+$(eval $(host-autotools-package))
+EOF
+    put "$EXT/package/uim/uim.hash" <<'EOF'
+sha256  564bf5a4544cc9a05b5518a78ffc805af31dd05803d6bd973bdb10e71215cd56  uim_1.9.9.orig.tar.bz2
 EOF
 
     # ── TinyCC (not in Buildroot): a fast C compiler, for Linux and for Windows .exe ──
@@ -2122,6 +2217,17 @@ EOF
   Ctrl + / Ctrl -   the same in xterm, as keys (Ctrl 0: back to the default)
 EOF
         fi
+        if ((JA)); then
+            cat >> "$OVL$UHOME/readme.txt" <<'EOF'
+
+Japanese input (uim-fep + Anthy)
+  ja                start it in this terminal (xterm, the serial console, tty2-6);
+                    exit leaves it
+  Ctrl + Space      switch between Japanese and Latin input
+  nihongo, Space    type in romaji, Space converts (日本語), Space again: the next
+                    choice, Enter accepts it
+EOF
+        fi
     else
         : | put "$EXT/users.txt"
     fi
@@ -2181,6 +2287,24 @@ EOF
     } | put "$OVL/etc/inputrc"
     # (Tab on an empty line would list every command: nothing instead; the first word completes commands, the
     # others file names, as in any bash)
+    # --ja: "ja" starts uim-fep with Anthy in the terminal it runs in. uim's default on/off key
+    # is Shift+Space, which a terminal sends as a plain space: the default user's uim settings
+    # (~/.uim.d/customs, read when uim loads its key group) use Ctrl+Space, which terminals send
+    # as NUL and uim-fep reads as <Control> + space, and the Japanese keyboard's Zenkaku/Hankaku
+    if ((JA)); then
+        putx "$OVL/usr/bin/ja" <<'EOF'
+#!/bin/sh
+# ja: Japanese input in this terminal (uim-fep with Anthy). Ctrl+Space switches between
+# Japanese and Latin input; type romaji, Space converts, Enter accepts. exit leaves it.
+exec uim-fep -u anthy-utf8 "$@"
+EOF
+        put "$OVL$UHOME/.uim.d/customs/custom-global-keys1.scm" <<'EOF'
+(define generic-on-key '("<Control> " "zenkaku-hankaku"))
+(define generic-on-key? (make-key-predicate '("<Control> " "zenkaku-hankaku")))
+(define generic-off-key '("<Control> " "zenkaku-hankaku"))
+(define generic-off-key? (make-key-predicate '("<Control> " "zenkaku-hankaku")))
+EOF
+    fi
     put "$OVL/etc/profile.d/v86-completion.sh" <<'EOF'
 [ -n "$BASH_VERSION" ] && shopt -s no_empty_cmd_completion
 EOF
@@ -4101,6 +4225,7 @@ EOF
         if ((UPX)); then echo 'BR2_PACKAGE_UPX_TARGET=y'; fi
         if ((VIM)); then printf '%s\n' BR2_PACKAGE_VIM=y BR2_PACKAGE_VIM_RUNTIME=y; fi
         if ((KBD)); then echo 'BR2_PACKAGE_KBD=y'; fi
+        if ((JA)); then echo 'BR2_PACKAGE_UIM=y'; fi
         if ((KBD && GUI)); then echo 'BR2_PACKAGE_XAPP_SETXKBMAP=y'; fi
         if ((BASHDB)); then echo 'BR2_PACKAGE_BASHDB=y'; fi
         if ((GDB)); then printf '%s\n' BR2_PACKAGE_GDB=y BR2_PACKAGE_GDB_SERVER=y BR2_PACKAGE_GDB_DEBUGGER=y; fi
@@ -4426,6 +4551,8 @@ verify_image() {
     ((TCC)) && want+=('usr/bin/tcc' 'usr/lib/tcc/libtcc1\.a' 'usr/lib/tcc/bt-exe\.o' 'usr/lib/tcc/include/stdarg\.h')
     ((UPX)) && want+=('usr/bin/upx')
     ((KBD)) && want+=('usr/bin/loadkeys' 'usr/bin/dumpkeys')
+    ((JA)) && want+=('usr/bin/uim-fep' 'usr/bin/ja' 'usr/share/anthy-unicode/anthy\.dic' 'etc/anthy-unicode\.conf'
+                     'usr/share/uim/installed-modules\.scm' 'usr/share/uim/loader\.scm' 'usr/share/uim/anthy-utf8\.scm')
     ((KBD && GUI)) && want+=('usr/bin/setxkbmap')
     ((VIM)) && want+=('usr/bin/vim' 'usr/share/vim/vim[0-9]+/syntax/c\.vim' 'usr/share/vim/vim[0-9]+/filetype\.vim')
     ((WINCC)) && want+=('usr/bin/i386-win32-tcc' 'usr/bin/x86_64-win32-tcc' 'usr/bin/wincc'
@@ -4652,7 +4779,7 @@ EOF
     msg "sizes are in bytes: update them if you rebuild the files"
     cat <<EOF
 
-In the guest: $( ((RELEASE)) || echo 'selftest · soundtest · unitest · ')$( ((RELEASE || !GUI)) || echo 'emojitest · symboltest · ')$( ((RELEASE || !GCC)) || echo 'devcheck · ')netup/netdown$( ((SHELLCHECK)) && echo ' · shellcheck')$( ((TCC)) && echo ' · tcc')$( ((WINCC)) && echo ' · wincc')$( ((UPX)) && echo ' · upx')$( ((VIM)) && echo ' · vim')$( ((KBD)) && echo ' · loadkeys')$( ((KBD && GUI)) && echo ' · setxkbmap')$( ((GUI)) && echo ' · xlog · xmode')$( ((MAN)) && echo ' · man/apropos')
+In the guest: $( ((RELEASE)) || echo 'selftest · soundtest · unitest · ')$( ((RELEASE || !GUI)) || echo 'emojitest · symboltest · ')$( ((RELEASE || !GCC)) || echo 'devcheck · ')netup/netdown$( ((SHELLCHECK)) && echo ' · shellcheck')$( ((TCC)) && echo ' · tcc')$( ((WINCC)) && echo ' · wincc')$( ((UPX)) && echo ' · upx')$( ((VIM)) && echo ' · vim')$( ((KBD)) && echo ' · loadkeys')$( ((JA)) && echo ' · ja (Japanese input)')$( ((KBD && GUI)) && echo ' · setxkbmap')$( ((GUI)) && echo ' · xlog · xmode')$( ((MAN)) && echo ' · man/apropos')
 $( ((SDL && GCC)) && echo 'SDL3: #include <SDL3/SDL.h>   gcc app.c $(pkg-config --cflags --libs sdl3)')$( ((SDLNET && GCC)) && echo '
 SDL3_net: #include <SDL3_net/SDL_net.h>   gcc app.c $(pkg-config --cflags --libs sdl3-net)')
 EOF
