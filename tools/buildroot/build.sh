@@ -1449,6 +1449,10 @@ UIM_COMMON_OPTS = \
 	--without-eb --without-libedit --disable-pref --disable-notify --disable-nls \
 	--disable-warnings-into-error
 UIM_CONF_OPTS = $(UIM_COMMON_OPTS) --enable-fep
+# uim's programs link libuim.so, which needs libuim-scm.so, which needs libgcroots.so. A
+# native ld finds those through the build's -rpath; a cross ld doesn't look there for a
+# library's own dependencies ("libuim-scm.so.0 ... not found"): name the build folders
+UIM_CONF_ENV = LDFLAGS="$(TARGET_LDFLAGS) -Wl,-rpath-link,$(UIM_DIR)/uim/.libs:$(UIM_DIR)/sigscheme/src/.libs:$(UIM_DIR)/sigscheme/libgcroots/.libs"
 HOST_UIM_CONF_OPTS = $(UIM_COMMON_OPTS) --disable-fep
 define UIM_HOST_MODULE_LISTS
 	cp $(HOST_DIR)/share/uim/installed-modules.scm $(HOST_DIR)/share/uim/loader.scm $(@D)/scm/
