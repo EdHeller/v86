@@ -2229,6 +2229,17 @@ Font size
   fontsize 18 save  also the size new xterms start with
 EOF
         fi
+        # (xmode is only in the --vesa images: write_xmode)
+        if [[ "$MODE" == vesa ]]; then
+            cat >> "$OVL$UHOME/readme.txt" <<EOF
+
+Screen size (restarts the desktop; asks for your password: $DEFAULT_USER)
+  xmode                    show the current mode
+  xmode 1024x768x32        the largest: 1024x768, 32 bpp (16 and 24 bpp work too)
+  xmode 800x600x$BPP         back to 800x600
+  xmode boot               back to the mode this image started in (${W}x${H}x${BPP})
+EOF
+        fi
         if ((JA)); then
             cat >> "$OVL$UHOME/readme.txt" <<'EOF'
 
