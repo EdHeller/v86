@@ -3079,16 +3079,6 @@ Xft.dpi:           96
 ! the fontsize command sets the font through an escape sequence (OSC 50), which xterm
 ! refuses unless allowed
 XTerm*allowFontOps: true
-! Ctrl + / Ctrl - / Ctrl 0: font size, as in most terminals (Ctrl = and Ctrl Shift = both
-! count as Ctrl +). v86 passes Ctrl +/- to the VM, so the browser doesn't zoom
-XTerm*VT100.translations: #override \n\
-    Ctrl <Key>equal: larger-vt-font() \n\
-    Ctrl <Key>plus: larger-vt-font() \n\
-    Ctrl <Key>KP_Add: larger-vt-font() \n\
-    Ctrl <Key>minus: smaller-vt-font() \n\
-    Ctrl <Key>KP_Subtract: smaller-vt-font() \n\
-    Ctrl <Key>0: set-vt-font(d) \n\
-    Ctrl <Key>KP_0: set-vt-font(d)
 XTerm*emojiWidth:  true
 XTerm*useClipping: false
 ! near-black, not Nord's #2e3440: Twemoji draws ♠ ✔ ✖ ⬛ 🖤 🕷... in #292f33, which vanishes
