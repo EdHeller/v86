@@ -2077,7 +2077,7 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
 
   neofetch          show the system
   curl <url>        fetch a web page or file (needs v86's networking on the page)
-  tput cols         the terminal's width; colours: tput setaf 2; echo green; tput sgr0
+  netup             start the network (v86 networking on the page; netdown stops it)
   nano <file>       edit a file
   sudo <command>    run a command as root (your password: $DEFAULT_USER)
   su -              become root (password: root)
