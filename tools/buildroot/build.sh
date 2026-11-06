@@ -5,7 +5,7 @@
 #
 # Builds ONE environment per run; each gets its own bzImage + rootfs.cpio.zstd:
 #
-#   --no-gui              console only: bash, nano, gcc/g++, SDL3 headers, sound
+#   --no-gui              console only: bash, nano, gcc/g++, sound (no SDL3 unless --SDL3)
 #   --qemu                Xorg modesetting on bochs-drm (v86's Bochs/QEMU VGA), 1024x768x24
 #   --vesa WxHxBPP        VESA framebuffer, like Damn Small Linux's vga=: the kernel sets
 #                         the VBE mode at boot, then vesafb + Xorg's fbdev driver
@@ -45,8 +45,9 @@
 #                         image doesn't stop the rest; a summary comes at the end.
 #
 # Extras (any environment)
-#   --no-SDL3             leave SDL3 out (default: SDL3 + headers, X11 backend in GUI images)
-#   --SDL3                keep SDL3 (the default; undoes an earlier --no-SDL3)
+#   --no-SDL3             leave SDL3 out (the default with --no-gui, which has nothing to draw on)
+#   --SDL3                keep SDL3 + headers, X11 backend in GUI images (the default except
+#                         --no-gui; undoes an earlier --no-SDL3)
 #   --SDL3-net            add SDL3_net 3.2.0 (networking for SDL3; implies --SDL3)
 #   --release             leave out the test programs (selftest, devcheck, soundtest, unitest,
 #                         emojitest, symboltest)
@@ -79,8 +80,9 @@
 #   --wincc               add TinyCC's Windows cross compilers: wincc hello.c -o hello.exe
 #                         makes a 64-bit Windows program, wincc -m32 a 32-bit one (C only, ~2 MB)
 #   --no-wincc            leave them out (the default; undoes an earlier --wincc)
-#   --upx                 add UPX, the program packer: upx prog shrinks a Linux program or a
-#                         Windows .exe/.dll, which unpacks itself when run (~2.6 MB)
+#   --upx                 UPX, the program packer (the default in every image): upx prog
+#                         shrinks a Linux program or a Windows .exe/.dll, which unpacks
+#                         itself when run (~2.6 MB)
 #   --vim                 add Vim (vim, and vi becomes Vim instead of BusyBox's vi): ~3 MB
 #                         program + a trimmed runtime with syntax highlighting for C/C++,
 #                         shell, make, Python, asm, HTML/CSS/JS, JSON, Markdown, YAML, Lua...
@@ -98,7 +100,7 @@
 #                         off); programs built on the target with gcc -g can then be debugged
 #   --no-gdb              leave it out (the default, except --dev-env)
 #   --no-bash-dev         leave it out (the default, except --bash-env and --max-env; undoes --bash-dev)
-#   --no-upx              leave it out (the default, except --dev-env and --max-env; undoes an earlier --upx)
+#   --no-upx              leave UPX out
 #   --xz                  compress kernel + rootfs with xz instead of zstd: ~12% smaller for
 #                         small images, up to ~35% for images with gcc, but 7-11x slower to
 #                         unpack at every boot (seconds for small images, much more for big
@@ -115,11 +117,12 @@
 #                         --bash-env and --max-env. One core still works: the kernel runs on the one it finds.
 #   --no-smp              single-CPU kernel without ACPI (the default otherwise)
 #   Last one wins: --no-SDL3 also drops SDL3_net, --SDL3-net brings SDL3 back.
+#   SDL3 in the name only when not the default: v86-qemu-nosdl3-*, v86-nogui-sdl3-*.
 #   These add a suffix to the image name (e.g. v86-qemu-sdl3net-release-*); man pages
 #   only when not the default: v86-min-man-*, v86-qemu-noman-*; -nogcc for --no-gcc,
-#   -nomlterm for --no-mlterm, -noadie for --no-adie, -noshellcheck for --no-shellcheck, -tcc for --tcc, -wincc for --wincc, -upx for --upx,
+#   -nomlterm for --no-mlterm, -noadie for --no-adie, -noshellcheck for --no-shellcheck, -tcc for --tcc, -wincc for --wincc, -noupx for --no-upx,
 #   -xz for --xz, -apic for --apic, -smp for --smp.
-#   Smallest image: --no-gui --no-SDL3 --no-man --no-gcc --no-shellcheck --release --xz
+#   Smallest image: --no-gui --no-man --no-gcc --no-shellcheck --no-upx --release --xz
 #
 # Caches (kept between runs; downloads are always kept unless you clean them)
 #   --no-cache            build without the host-tool snapshot and ccache (same as
@@ -197,7 +200,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL=1 SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=0 VIM=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -370,18 +373,22 @@ esac
 MAN_DEFAULT=1
 if [[ "$MODE" == smoke ]] || ((MIN)); then MAN_DEFAULT=0; fi
 [[ -n "$MAN" ]] || MAN=$MAN_DEFAULT
+# SDL3: on by default, except --no-gui (no X11, no framebuffer: nothing to draw on)
+SDL_DEFAULT=1
+[[ "$MODE" == nogui ]] && SDL_DEFAULT=0
+[[ -n "$SDL" ]] || SDL=$SDL_DEFAULT
 [[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 BASHDEV=0 BASHDB=0 GDB=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
-    ((SDL)) || NAME+="-nosdl3"
-    ((SDLNET)) && NAME+="-sdl3net"
+    if ((SDLNET)); then NAME+="-sdl3net"                  # (implies SDL3)
+    elif ((SDL != SDL_DEFAULT)); then NAME+=$( ((SDL)) && echo "-sdl3" || echo "-nosdl3"); fi
     ((GCC)) || NAME+="-nogcc"
     ((GUI && !MLTERM)) && NAME+="-nomlterm"
     ((GUI && !ADIE)) && NAME+="-noadie"
     ((SHELLCHECK)) || NAME+="-noshellcheck"
     ((TCC)) && NAME+="-tcc"
     ((WINCC)) && NAME+="-wincc"
-    ((UPX)) && NAME+="-upx"
+    ((UPX)) || NAME+="-noupx"
     ((VIM)) && NAME+="-vim"
     ((BASHDEV)) && NAME+="-bashdev"
     ((BASHDB)) && NAME+="-bashdb"
@@ -395,9 +402,9 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     # short name, debug or --release (then -release on the end, so the two never overwrite
     # each other's images); anything else added gives the usual long name
     case "${NAME%-release}" in
-        min-sdl3net-noshellcheck-upx-gdb-man-smp) NAME=dev-env${NAME#min-sdl3net-noshellcheck-upx-gdb-man-smp} ;;
+        min-sdl3net-noshellcheck-gdb-man-smp)     NAME=dev-env${NAME#min-sdl3net-noshellcheck-gdb-man-smp} ;;
         min-nosdl3-tcc-wincc-bashdev-man-smp)     NAME=bash-env${NAME#min-nosdl3-tcc-wincc-bashdev-man-smp} ;;
-        min-sdl3net-tcc-wincc-upx-bashdev-gdb-man-smp) NAME=max-env${NAME#min-sdl3net-tcc-wincc-upx-bashdev-gdb-man-smp} ;;
+        min-sdl3net-tcc-wincc-bashdev-gdb-man-smp) NAME=max-env${NAME#min-sdl3net-tcc-wincc-bashdev-gdb-man-smp} ;;
     esac
 fi
 [[ "$MODE" == smoke ]] && XZ=0
@@ -503,7 +510,7 @@ show_settings() {
     else cc="off - compiler cache disabled"; fi
     msg "environment   $NAME: $what"
     msg "run           $run, JOBS=$JOBS (${SET_BY[JOBS]})"
-    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo "on (--upx)" || echo off), compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
+    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo on || echo "off (--no-upx)"), compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
     printf '%s[cache]%s DL_DIR        %s  - download cache: %s files, %s (%s)\n' "$C1" "$C0" "$DL_DIR" "$files" "${size:-0}" "${SET_BY[DL_DIR]}"
     printf '%s[cache]%s ccache        %s (USE_CCACHE=%s, %s)\n' "$C1" "$C0" "$cc" "$USE_CCACHE" "${SET_BY[USE_CCACHE]}"
     local hc="off - host-tool cache disabled"
@@ -4348,7 +4355,7 @@ verify_image() {
     ((SHELLCHECK)) && { verify_shellcheck || ok=0; }
     ((TCC)) || ! grep -qE '(^|/)usr/bin/tcc$' <<<"$list" || { warn "image without --tcc contains tcc"; ok=0; }
     ((WINCC)) || ! grep -qE '(^|/)usr/bin/(wincc|i386-win32-tcc|x86_64-win32-tcc)$' <<<"$list" || { warn "image without --wincc contains wincc"; ok=0; }
-    ((UPX)) || ! grep -qE '(^|/)usr/bin/upx$' <<<"$list" || { warn "image without --upx contains upx"; ok=0; }
+    ((UPX)) || ! grep -qE '(^|/)usr/bin/upx$' <<<"$list" || { warn "--no-upx image contains upx"; ok=0; }
     ((VIM)) || ! grep -qE '(^|/)usr/bin/vim$' <<<"$list" || { warn "image without --vim contains vim"; ok=0; }
     ((GUI && ADIE)) || ! grep -qE '(^|/)usr/bin/adie$' <<<"$list" || { warn "image without Adie contains adie"; ok=0; }
     ((ok)) || die "the packed image is incomplete (see above)"
