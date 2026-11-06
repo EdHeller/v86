@@ -2997,6 +2997,32 @@ elif [ -f /etc/X11/xorg.conf.boot ] && grep -q '^# xmode' /etc/X11/xorg.conf \
 fi
 sleep 3
 EOF
+    # The bell: X's evdev keyboard driver has no bell device, so xterm's bell (Ctrl+G, a
+    # failed font change...) was silent. xkbevd (started by ~/.xinitrc) turns X's own bell
+    # off and runs v86-bell for each one instead: a short tone through ALSA (the SB16).
+    # xkbevd waits for each command, so v86-bell plays at most one at a time and drops the
+    # rest (flock -n): a burst of bells doesn't queue up seconds of beeps. ImAlive is the
+    # bell xkbevd rings itself when it starts.
+    put "$OVL/etc/X11/xkbevd.cf" <<'EOF'
+Bell(ImAlive)   ignore
+Bell()          shell "v86-bell"
+EOF
+    putx "$OVL/usr/bin/v86-bell" <<'EOF'
+#!/bin/sh
+# v86-bell: the X bell's sound (xkbevd runs it); one at a time, extra bells are dropped
+exec flock -n "/tmp/.v86-bell-$(id -u)" aplay -q /usr/share/sounds/v86-bell.wav 2>/dev/null
+EOF
+    # 880 Hz for 0.12 s, 44.1 kHz mono 16-bit (dmix's rate: no resampling), 5 ms fades
+    mkdir -p "$OVL/usr/share/sounds"
+    python3 -I - "$OVL/usr/share/sounds/v86-bell.wav" <<'PYEOF'
+import math, struct, sys, wave
+rate, n, fade = 44100, int(44100 * 0.12), int(44100 * 0.005)
+with wave.open(sys.argv[1], "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+    w.writeframes(b"".join(struct.pack("<h", int(9000 * min(1, i / fade, (n - i) / fade)
+                                               * math.sin(2 * math.pi * 880 * i / rate)))
+                           for i in range(n)))
+PYEOF
     putx "$OVL/usr/bin/screensaver" <<'EOF'
 #!/bin/sh
 # screensaver          show whether the screen saver / blanking is on
@@ -3023,6 +3049,7 @@ EOF
 #!/bin/sh
 xsetroot -solid '#232831'
 screensaver apply                     # off unless "screensaver on" was chosen
+xkbevd -bg -cfg /etc/X11/xkbevd.cf    # the bell (xterm's...) plays on the sound card
 xfe-fit                               # keep XFE's remembered size within this screen
 xterm -geometry 80x24+30+30 &
 while :; do fluxbox -log /var/log/fluxbox.log; sleep 1; done
@@ -4240,6 +4267,7 @@ BR2_PACKAGE_XAPP_XAUTH=y
 BR2_PACKAGE_XAPP_XSETROOT=y
 BR2_PACKAGE_XAPP_XSET=y
 BR2_PACKAGE_XAPP_XRANDR=y
+BR2_PACKAGE_XAPP_XKBEVD=y
 BR2_PACKAGE_XTERM=y
 BR2_PACKAGE_XFE=y
 BR2_PACKAGE_FLUXBOX=y
@@ -4547,7 +4575,7 @@ verify_image() {
                         'usr/lib/tcc/win32/lib/i386-win32-libtcc1\.a' 'usr/lib/tcc/win32/lib/x86_64-win32-libtcc1\.a'
                         'usr/lib/tcc/win32/lib/kernel32\.def' 'usr/lib/tcc/win32/include/winapi/windows\.h' 'usr/lib/tcc/win32/include/stdarg\.h')
     want+=('etc/profile\.d/v86-prompt\.sh' 'root/\.bashrc' "${UHOME#/}/\\.bashrc")
-    ((GUI)) && want+=('usr/bin/fontsize' 'usr/bin/xsession' "${UHOME#/}/\\.xinitrc" "${UHOME#/}/\\.fluxbox/menu" 'etc/sudoers\.d/v86-emojistyle')
+    ((GUI)) && want+=('usr/bin/xkbevd' 'usr/bin/v86-bell' 'usr/share/sounds/v86-bell\.wav' 'usr/bin/fontsize' 'usr/bin/xsession' "${UHOME#/}/\\.xinitrc" "${UHOME#/}/\\.fluxbox/menu" 'etc/sudoers\.d/v86-emojistyle')
     ((GUI)) && want+=('usr/bin/Xorg' 'usr/bin/fluxbox' 'usr/bin/xterm' 'usr/bin/xfe' 'usr/share/fluxbox/styles/V86-Dark'
                       "usr/lib/xorg/modules/drivers/$([[ $MODE == qemu ]] && echo modesetting || echo fbdev)_drv\.so")
     [[ "$MODE" == vesa ]] && want+=('usr/lib/xorg/modules/drivers/vesa_drv\.so' 'usr/bin/xmode' 'usr/bin/Xvesa')
