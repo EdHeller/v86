@@ -2117,7 +2117,8 @@ Font size
 EOF
         if ((GUI)); then
             cat >> "$OVL$UHOME/readme.txt" <<'EOF'
-  Shift + numpad +  xterm: larger font (Shift + numpad - smaller). Or hold Ctrl and
+  Shift + numpad +  xterm: larger font (Shift + numpad - smaller). Ctrl + / Ctrl - / Ctrl 0
+                    too, when the page sends Ctrl +/- to v86 instead of zooming. Or hold Ctrl and
                     right-click in xterm: the VT Fonts menu lists every size
                     (Unreadable 4x6 ... Huge 10x20)
   xterm -fs 13.5 &  a new xterm with a bigger font (the sizes below)
@@ -2955,6 +2956,17 @@ XTerm*faceSize4:   10.5
 XTerm*faceSize5:   13.5
 XTerm*faceSize6:   15
 Xft.dpi:           96
+! Ctrl + / Ctrl - / Ctrl 0: font size, as in most terminals (Ctrl = and Ctrl Shift = both
+! count as Ctrl +). They reach the VM only when the web page sends them to it instead of
+! zooming the browser; Shift + numpad +/- work either way
+XTerm*VT100.translations: #override \n\
+    Ctrl <Key>equal: larger-vt-font() \n\
+    Ctrl <Key>plus: larger-vt-font() \n\
+    Ctrl <Key>KP_Add: larger-vt-font() \n\
+    Ctrl <Key>minus: smaller-vt-font() \n\
+    Ctrl <Key>KP_Subtract: smaller-vt-font() \n\
+    Ctrl <Key>0: set-vt-font(d) \n\
+    Ctrl <Key>KP_0: set-vt-font(d)
 XTerm*emojiWidth:  true
 XTerm*useClipping: false
 ! near-black, not Nord's #2e3440: Twemoji draws ♠ ✔ ✖ ⬛ 🖤 🕷... in #292f33, which vanishes
