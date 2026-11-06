@@ -790,6 +790,12 @@ export class V86 {
     keyboard_set_enabled(enabled: boolean): void;
 
     /**
+     * Whether Ctrl + / Ctrl - / Ctrl 0 go to the guest (true) or stay with the browser,
+     * which zooms the page (false, the default).
+     */
+    keyboard_set_zoom_keys(capture: boolean): void;
+
+    /**
      * Send a string to the first emulated serial terminal.
      *
      * @param data

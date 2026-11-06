@@ -2112,14 +2112,15 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
   openssl version   OpenSSL; https works with the CA certificates in /etc/ssl/certs
 
 Font size
-  browser zoom      the whole v86 screen bigger or smaller: Zoom in your browser's menu
-                    (Ctrl + / Ctrl - go to v86 while it has the keyboard, not the browser)
+  Ctrl + / Ctrl -   your browser's zoom: the whole v86 screen bigger or smaller (unless the
+                    page is set to send these keys to v86; then use the browser's menu)
 EOF
         if ((GUI)); then
             cat >> "$OVL$UHOME/readme.txt" <<'EOF'
   Shift + numpad +  xterm: larger font (Shift + numpad - smaller). Or hold Ctrl and
                     right-click in xterm: the VT Fonts menu lists every size
                     (Unreadable 4x6 ... Huge 10x20)
+  xterm -fs 13.5 &  a new xterm with a bigger font (the sizes below)
   ~/.Xdefaults      the size new xterms start with: XTerm*faceSize: 9.75 (points;
                     9.75 = the 6x13 font, 10.5 = 7x14, 13.5 = 9x18, 15 = 10x20)
 EOF
