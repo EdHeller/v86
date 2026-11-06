@@ -84,7 +84,7 @@
 #   --vim                 add Vim (vim, and vi becomes Vim instead of BusyBox's vi): ~3 MB
 #                         program + a trimmed runtime with syntax highlighting for C/C++,
 #                         shell, make, Python, asm, HTML/CSS/JS, JSON, Markdown, YAML, Lua...
-#                         nano stays the default editor ($EDITOR, XFE's text editor)
+#                         nano stays the default editor in the shell ($EDITOR)
 #   --no-vim              leave it out (the default; undoes an earlier --vim)
 #   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
 #                         coreutils (sort, date, stat...) and diffutils instead of BusyBox's
@@ -3778,14 +3778,15 @@ if [ -f "$XFERC" ]; then
     ' "$XFERC" > "$XFERC.tmp" && mv "$XFERC.tmp" "$XFERC"
     rm -rf "$TARGET"/usr/share/xfe/icons/gnome-theme "$TARGET"/usr/share/xfe/icons/kde-theme \
            "$TARGET"/usr/share/xfe/icons/xfce-theme
-    # nano (in an xterm) as XFE's text editor: Open and Edit on .txt, .c, .h, .sh... use it.
-    # Adie (not with --no-adie) stays in the Fluxbox menu and XFE's Open with
-    awk '
-        /^\[/ { if (sec == "[PROGS]" && !done) { print "txteditor=xterm -e nano"; done = 1 } sec = $0 }
-        sec == "[PROGS]" && /^txteditor=/ { next }
-        { print }
-        END { if (!done) { if (sec != "[PROGS]") print "[PROGS]"; print "txteditor=xterm -e nano" } }
-    ' "$XFERC" > "$XFERC.tmp" && mv "$XFERC.tmp" "$XFERC"
+    # Adie (not with --no-adie) as XFE's text editor: Open and Edit on .c, .h, .sh... use it
+    if [ -x "$TARGET/usr/bin/adie" ]; then
+        awk '
+            /^\[/ { if (sec == "[PROGS]" && !done) { print "txteditor=adie"; done = 1 } sec = $0 }
+            sec == "[PROGS]" && /^txteditor=/ { next }
+            { print }
+            END { if (!done) { if (sec != "[PROGS]") print "[PROGS]"; print "txteditor=adie" } }
+        ' "$XFERC" > "$XFERC.tmp" && mv "$XFERC.tmp" "$XFERC"
+    fi
 fi
 
 # Vim (--vim): its runtime trimmed to what a terminal editor here uses. Syntax, indent and
