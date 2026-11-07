@@ -92,7 +92,9 @@
 #   --kbd                 keyboard layouts, as on Arch: kbd's loadkeys + the PC keymaps for the
 #                         text consoles (sudo loadkeys de), dumpkeys, showkey, setfont; GUI
 #                         images also get setxkbmap for the desktop (setxkbmap de). ~1-2 MB
-#   --no-kbd              leave it out (the default: BusyBox's loadkmap, with no keymaps)
+#                         On by default for --no-gui (the console is all it has)
+#   --no-kbd              leave it out (the default, except --no-gui: BusyBox's loadkmap,
+#                         with no keymaps)
 #   --ja                  Japanese input (experimental): uim-fep with the Anthy kana-kanji
 #                         converter, in any terminal that shows Japanese (xterm, the serial
 #                         console, fbterm on tty2-6; not VGA text mode). Type ja to start it,
@@ -219,7 +221,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD=0 JA=0 WORDS=1 BEEP=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD="" JA=0 WORDS=1 BEEP=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -404,6 +406,11 @@ if [[ "$MODE" == smoke ]] || ((MIN)); then MAN_DEFAULT=0; fi
 SDL_DEFAULT=1
 [[ "$MODE" == nogui ]] && SDL_DEFAULT=0
 [[ -n "$SDL" ]] || SDL=$SDL_DEFAULT
+# keyboard layouts (kbd's loadkeys + keymaps): on by default for --no-gui, where the text
+# console is the only place to type
+KBD_DEFAULT=0
+[[ "$MODE" == nogui ]] && KBD_DEFAULT=1
+[[ -n "$KBD" ]] || KBD=$KBD_DEFAULT
 [[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 KBD=0 JA=0 WORDS=0 BASHDEV=0 BASHDB=0 GDB=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
@@ -417,7 +424,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((WINCC)) && NAME+="-wincc"
     ((UPX)) || NAME+="-noupx"
     ((VIM)) && NAME+="-vim"
-    ((KBD)) && NAME+="-kbd"
+    ((KBD == KBD_DEFAULT)) || NAME+=$( ((KBD)) && echo "-kbd" || echo "-nokbd")
     ((JA)) && NAME+="-ja"
     ((WORDS)) || NAME+="-nowords"
     ((BEEP)) || NAME+="-nobeep"
