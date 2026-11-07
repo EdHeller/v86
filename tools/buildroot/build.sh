@@ -77,10 +77,12 @@
 #   --shellcheck          keep ShellCheck (the default; undoes an earlier --no-shellcheck)
 #   --tcc                 add TinyCC for Linux programs: tcc, a C compiler ~20x faster than
 #                         gcc (C only, ~0.4 MB; uses gcc's C headers, so not with --no-gcc)
-#   --no-tcc              leave it out (the default; undoes an earlier --tcc)
+#                         On by default for --no-gui (unless --no-gcc)
+#   --no-tcc              leave it out (the default, except --no-gui; undoes an earlier --tcc)
 #   --wincc               add TinyCC's Windows cross compilers: wincc hello.c -o hello.exe
 #                         makes a 64-bit Windows program, wincc -m32 a 32-bit one (C only, ~2 MB)
-#   --no-wincc            leave them out (the default; undoes an earlier --wincc)
+#                         On by default for --no-gui
+#   --no-wincc            leave them out (the default, except --no-gui; undoes an earlier --wincc)
 #   --upx                 UPX, the program packer (the default in every image): upx prog
 #                         shrinks a Linux program or a Windows .exe/.dll, which unpacks
 #                         itself when run (~2.6 MB)
@@ -145,7 +147,7 @@
 #   SDL3 in the name only when not the default: v86-qemu-nosdl3-*, v86-nogui-sdl3-*.
 #   These add a suffix to the image name (e.g. v86-qemu-sdl3net-release-*); man pages
 #   only when not the default: v86-min-man-*, v86-qemu-noman-*; -nogcc for --no-gcc,
-#   -nomlterm for --no-mlterm, -noadie for --no-adie, -noshellcheck for --no-shellcheck, -tcc for --tcc, -wincc for --wincc, -noupx for --no-upx,
+#   -nomlterm for --no-mlterm, -noadie for --no-adie, -noshellcheck for --no-shellcheck, -tcc for --tcc, -wincc for --wincc (-notcc, -nowincc on --no-gui), -noupx for --no-upx,
 #   -nowords for --no-words, -nonicefix for --niceness-fix-off,
 #   -xz for --xz, -apic for --apic, -smp for --smp.
 #   Smallest image: --no-gui --no-man --no-gcc --no-shellcheck --no-upx --release --xz
@@ -226,7 +228,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD="" JA=0 WORDS=1 BEEP=1 NICEFIX=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC="" WINCC="" UPX=1 VIM=0 KBD="" JA=0 WORDS=1 BEEP=1 NICEFIX=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -418,6 +420,12 @@ SDL_DEFAULT=1
 KBD_DEFAULT=0
 [[ "$MODE" == nogui ]] && KBD_DEFAULT=1
 [[ -n "$KBD" ]] || KBD=$KBD_DEFAULT
+# TinyCC: tcc and the Windows cross compilers (wincc) on by default for --no-gui, the
+# console image's compilers; tcc needs gcc's headers, so --no-gcc alone drops it quietly
+TCC_DEFAULT=0 WINCC_DEFAULT=0
+[[ "$MODE" == nogui ]] && TCC_DEFAULT=$GCC WINCC_DEFAULT=1
+[[ -n "$TCC" ]] || TCC=$TCC_DEFAULT
+[[ -n "$WINCC" ]] || WINCC=$WINCC_DEFAULT
 [[ "$MODE" == smoke ]] && MAN=0 SHELLCHECK=0 TCC=0 WINCC=0 UPX=0 VIM=0 KBD=0 JA=0 WORDS=0 BASHDEV=0 BASHDB=0 GDB=0
 ((TCC && !GCC)) && die "--tcc uses gcc's C headers and crt files: leave out --no-gcc, or use only --wincc"
 if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no collisions
@@ -427,8 +435,8 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((GUI && !MLTERM)) && NAME+="-nomlterm"
     ((GUI && !ADIE)) && NAME+="-noadie"
     ((SHELLCHECK)) || NAME+="-noshellcheck"
-    ((TCC)) && NAME+="-tcc"
-    ((WINCC)) && NAME+="-wincc"
+    ((TCC == TCC_DEFAULT)) || NAME+=$( ((TCC)) && echo "-tcc" || echo "-notcc")
+    ((WINCC == WINCC_DEFAULT)) || NAME+=$( ((WINCC)) && echo "-wincc" || echo "-nowincc")
     ((UPX)) || NAME+="-noupx"
     ((VIM)) && NAME+="-vim"
     ((KBD == KBD_DEFAULT)) || NAME+=$( ((KBD)) && echo "-kbd" || echo "-nokbd")
@@ -556,7 +564,7 @@ show_settings() {
     else cc="off - compiler cache disabled"; fi
     msg "environment   $NAME: $what"
     msg "run           $run, JOBS=$JOBS (${SET_BY[JOBS]})"
-    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo on || echo "off (--no-upx)"), word list $( ((WORDS)) && echo on || echo "off (--no-words)"), $( ((GUI)) && echo "terminal nice 1 $( ((NICEFIX)) && echo on || echo "off (--niceness-fix-off)"), ")compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
+    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo on || echo off), wincc $( ((WINCC)) && echo on || echo off), upx $( ((UPX)) && echo on || echo "off (--no-upx)"), word list $( ((WORDS)) && echo on || echo "off (--no-words)"), $( ((GUI)) && echo "terminal nice 1 $( ((NICEFIX)) && echo on || echo "off (--niceness-fix-off)"), ")compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
     printf '%s[cache]%s DL_DIR        %s  - download cache: %s files, %s (%s)\n' "$C1" "$C0" "$DL_DIR" "$files" "${size:-0}" "${SET_BY[DL_DIR]}"
     printf '%s[cache]%s ccache        %s (USE_CCACHE=%s, %s)\n' "$C1" "$C0" "$cc" "$USE_CCACHE" "${SET_BY[USE_CCACHE]}"
     local hc="off - host-tool cache disabled"
