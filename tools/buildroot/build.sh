@@ -108,6 +108,11 @@
 #                         run "beep off"); "beep on" in the guest turns it back on
 #   --beep                the bell starts on (the default: text consoles beep through the
 #                         PC speaker, xterm through the sound card)
+#   --niceness-fix-off    the desktop's terminal shells run at the normal nice 0 instead of
+#                         nice 1. At nice 0 a program that floods the terminal (yes) can
+#                         freeze xterm, Ctrl+C included, on the browser's slower CPU
+#   --niceness-fix        terminal shells at nice 1, one step below xterm (the default;
+#                         undoes an earlier --niceness-fix-off)
 #   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
 #                         coreutils (sort, date, stat...) and diffutils instead of BusyBox's
 #                         look-alikes; bash-completion, a script-friendly prompt/history/inputrc,
@@ -141,7 +146,7 @@
 #   These add a suffix to the image name (e.g. v86-qemu-sdl3net-release-*); man pages
 #   only when not the default: v86-min-man-*, v86-qemu-noman-*; -nogcc for --no-gcc,
 #   -nomlterm for --no-mlterm, -noadie for --no-adie, -noshellcheck for --no-shellcheck, -tcc for --tcc, -wincc for --wincc, -noupx for --no-upx,
-#   -nowords for --no-words,
+#   -nowords for --no-words, -nonicefix for --niceness-fix-off,
 #   -xz for --xz, -apic for --apic, -smp for --smp.
 #   Smallest image: --no-gui --no-man --no-gcc --no-shellcheck --no-upx --release --xz
 #
@@ -221,7 +226,7 @@ trap 'die "aborted at line $LINENO"' ERR
 #  Arguments
 # ══════════════════════════════════════════════════════════════════════════════
 
-MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD="" JA=0 WORDS=1 BEEP=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
+MODE="" W=0 H=0 BPP=0 BOOT_BPP=0 MIN=0 DRY=0 INCR=0 VID_MODE="" SDL="" SDLNET=0 RELEASE=0 PICKED="" MLTERM=1 ADIE=1 SHELLCHECK=1 TCC=0 WINCC=0 UPX=1 VIM=0 KBD="" JA=0 WORDS=1 BEEP=1 NICEFIX=1 BASHDEV=0 BASHDB=0 GDB=0 ALL=0 MAN="" GCC=1 XZ=0 APIC=0 SMP=0 CLEAN=0 FRESH=0 REUSE=0
 ARGS=("$@")                                     # for --all: passed on to every image
 set_mode() { [[ -z "$MODE" ]] || die "choose only one of --no-gui / --qemu / --vesa / --min"; MODE=$1; }
 parse_vesa() {
@@ -284,6 +289,8 @@ while (($#)); do
         --ja)             JA=1 ;;
         --beep)           BEEP=1 ;;
         --no-beep)        BEEP=0 ;;
+        --niceness-fix)   NICEFIX=1 ;;
+        --niceness-fix-off) NICEFIX=0 ;;
         --no-ja)          JA=0 ;;
         --words)          WORDS=1 ;;
         --no-words)       WORDS=0 ;;
@@ -428,6 +435,7 @@ if [[ "$MODE" != smoke ]]; then                  # extras get their own name: no
     ((JA)) && NAME+="-ja"
     ((WORDS)) || NAME+="-nowords"
     ((BEEP)) || NAME+="-nobeep"
+    ((GUI && !NICEFIX)) && NAME+="-nonicefix"
     ((BASHDEV)) && NAME+="-bashdev"
     ((BASHDB)) && NAME+="-bashdb"
     ((GDB)) && NAME+="-gdb"
@@ -548,7 +556,7 @@ show_settings() {
     else cc="off - compiler cache disabled"; fi
     msg "environment   $NAME: $what"
     msg "run           $run, JOBS=$JOBS (${SET_BY[JOBS]})"
-    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo on || echo "off (--no-upx)"), word list $( ((WORDS)) && echo on || echo "off (--no-words)"), compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
+    msg "extras        SDL3 $( ((SDL)) && echo on || echo off), SDL3_net $( ((SDLNET)) && echo on || echo off), test programs $( ((RELEASE)) && echo "off (--release)" || echo on), man pages $( ((MAN)) && echo on || echo off), gcc/g++ $( ((GCC)) && echo on || echo "off (--no-gcc)"), $( ((GUI)) && echo "mlterm $( ((MLTERM)) && echo on || echo "off (--no-mlterm)"), adie $( ((ADIE)) && echo on || echo "off (--no-adie)"), ")shellcheck $( ((SHELLCHECK)) && echo on || echo "off (--no-shellcheck)"), tcc $( ((TCC)) && echo "on (--tcc)" || echo off), wincc $( ((WINCC)) && echo "on (--wincc)" || echo off), upx $( ((UPX)) && echo on || echo "off (--no-upx)"), word list $( ((WORDS)) && echo on || echo "off (--no-words)"), $( ((GUI)) && echo "terminal nice 1 $( ((NICEFIX)) && echo on || echo "off (--niceness-fix-off)"), ")compression $( ((XZ)) && echo "xz (--xz)" || echo zstd), APIC $( ((APIC)) && echo "on (--apic)" || echo off), SMP+ACPI $( ((SMP)) && echo "on (--smp)" || echo off)"
     printf '%s[cache]%s DL_DIR        %s  - download cache: %s files, %s (%s)\n' "$C1" "$C0" "$DL_DIR" "$files" "${size:-0}" "${SET_BY[DL_DIR]}"
     printf '%s[cache]%s ccache        %s (USE_CCACHE=%s, %s)\n' "$C1" "$C0" "$cc" "$USE_CCACHE" "${SET_BY[USE_CCACHE]}"
     local hc="off - host-tool cache disabled"
@@ -2302,7 +2310,8 @@ EOF
         : | put "$EXT/users.txt"
     fi
 
-    put "$OVL/etc/profile.d/v86.sh" <<'EOF'
+    {
+    cat <<'EOF'
 case ":$PATH:" in *:/usr/local/bin:*) ;; *) PATH="$PATH:/usr/local/bin" ;; esac
 # busybox init starts the tty1 shell in / with HOME=/ : use root's home instead
 if [ "$(id -u)" = 0 ] && [ "${HOME:-/}" = / ]; then HOME=/root; fi
@@ -2311,6 +2320,10 @@ export PATH TERM=${TERM:-linux}
 # COM1 is the page's xterm.js (getty sets TERM=xterm-256color): it shows 24-bit colour too, and scripts that look
 # at COLORTERM instead of terminfo (curl ysap.sh, ...) choose their full palette from it
 case "$(tty 2>/dev/null)" in /dev/ttyS*) export COLORTERM=${COLORTERM:-truecolor} ;; esac
+EOF
+    # --niceness-fix (the default); --niceness-fix-off leaves the terminals' shells at nice 0
+    if ((NICEFIX)); then
+    cat <<'EOF'
 # The desktop's terminals: their shells (and what runs in them) at nice 1, one step below xterm. At the same
 # priority a program that floods the terminal (yes) keeps xterm from reading the keyboard on the browser's slower
 # emulated CPU, Ctrl+C included; nice 1 is enough, and costs nothing while nothing else wants the CPU
@@ -2319,6 +2332,9 @@ if [ -n "$DISPLAY" ]; then
         /dev/pts/*) [ "$(cut -d' ' -f19 /proc/$$/stat 2>/dev/null)" = 0 ] && renice 1 -p $$ >/dev/null 2>&1 ;;
     esac
 fi
+EOF
+    fi
+    cat <<'EOF'
 # nano edits text files (Buildroot's /etc/profile says vi): git, crontab, sudoedit, less's v...
 export EDITOR=nano VISUAL=nano
 # fontsize remembers each xterm's size by its terminal: a new xterm starts afresh
@@ -2341,6 +2357,7 @@ case "$(tty 2>/dev/null)" in
         fi ;;
 esac
 EOF
+    } | put "$OVL/etc/profile.d/v86.sh"
 
     # Tab completion (bash's readline reads /etc/inputrc): the choices on the first Tab, not only on a second
     # one, any case, directories marked with a /
@@ -3186,7 +3203,8 @@ EOF
     # ── xterm: dark palette (each color >= 4.5:1 contrast on the background) ─
     put "$OVL$UHOME/.Xdefaults" <<'EOF'
 XTerm*termName:    xterm-256color
-! login shells: they read /etc/profile.d/v86.sh, which runs them at nice 1 (see there)
+! login shells: they read /etc/profile.d/v86.sh, which runs them at nice 1 (see there;
+! not with --niceness-fix-off)
 XTerm*loginShell:  true
 XTerm*locale:      false
 XTerm*utf8:        1
