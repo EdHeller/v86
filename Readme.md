@@ -84,6 +84,12 @@ Each entry: what went wrong, the cause, the fix, and the test that now guards it
 24. `-sh: can't access tty; job control turned off` after login on the serial console is cosmetic (busybox init starts that getty without a controlling terminal; stock Alpine does the same).
 25. `btc-*` nasm tests time out in the debug build on this machine (also on the commit this work started from); `pit_irq0_rate_1614` is timing sensitive.
 
+### Known issues
+
+26. **Buildroot desktop: `yes` in xterm can stop answering Ctrl+C.** The terminals' shells run at nice 1 (`--niceness-fix`, the default), and nice 1 is applied,
+    but a terminal flood can still lock out Ctrl+C, seemingly more often the longer the VM has run. Workaround: in another terminal (or tty2, Ctrl+Alt+F2) run `ps -a`,
+    then `kill` the PID of `yes` or of the shell running it (`kill -9` if it stays).
+
 ## Size of a C compiler on the guest (see docs/gcc-disk-size.md)
 
 C-only gcc 15 (x86_64, `-Os`, stripped) with libc, binutils and the sanitizer runtime: 14.7 MB with zstd, about 64 MB installed; with C++: 21 MB / 118 MB.

@@ -115,8 +115,7 @@
 #                         freeze xterm, Ctrl+C included, on the browser's slower CPU.
 #                         KNOWN ISSUE: nice 1 doesn't always help either; yes can still
 #                         stop answering Ctrl+C, seemingly more often the longer the VM has
-#                         run. Workaround (in readme.txt): ps -a, then kill the PID of yes
-#                         or of the shell running it
+#                         run. Workaround: see Readme.md (Known issues)
 #   --niceness-fix        terminal shells at nice 1, one step below xterm (the default;
 #                         undoes an earlier --niceness-fix-off)
 #   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
@@ -2286,11 +2285,6 @@ You are logged in as "$DEFAULT_USER" (password: $DEFAULT_USER). This folder,
   su -              become root (password: root)
   openssl version   OpenSSL; https works with the CA certificates in /etc/ssl/certs
   beep off          silence the bell (beep on turns it back on)
-
-A program stuck printing (yes...) and Ctrl+C doesn't stop it
-  In another terminal (or on tty2: Ctrl+Alt+F2):
-  ps -a             find its PID (or the PID of the shell running it)
-  kill <PID>        stop it; kill -9 <PID> if it is still there
 EOF
         if ((GUI)); then
             cat >> "$OVL$UHOME/readme.txt" <<'EOF'
@@ -2343,9 +2337,7 @@ EOF
     cat <<'EOF'
 # The desktop's terminals: their shells (and what runs in them) at nice 1, one step below xterm. At the same
 # priority a program that floods the terminal (yes) keeps xterm from reading the keyboard on the browser's slower
-# emulated CPU, Ctrl+C included; nice 1 costs nothing while nothing else wants the CPU.
-# KNOWN ISSUE: nice 1 does get applied, but yes can still lock out Ctrl+C (more often after the VM has run
-# a while). Then: ps -a in another terminal (or tty2) and kill yes, or the shell running it (readme.txt says so)
+# emulated CPU, Ctrl+C included; nice 1 is enough, and costs nothing while nothing else wants the CPU
 if [ -n "$DISPLAY" ]; then
     case "$(tty 2>/dev/null)" in
         /dev/pts/*) [ "$(cut -d' ' -f19 /proc/$$/stat 2>/dev/null)" = 0 ] && renice 1 -p $$ >/dev/null 2>&1 ;;
