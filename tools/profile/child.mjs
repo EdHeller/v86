@@ -213,14 +213,27 @@ async function finish(ok, error)
     {
         const g = i => ex["get_jit_config"](i) >>> 0;
         result.jit64 = { modules: g(5), failed: g(6), invalidated: g(8), blocks: g(16), bytes: g(17), instructions: g(13) };
+        // the work, by how it was done (the core's own counters; 32-bit ones, so they wrap at 4295 M)
+        result.counters = {
+            "block runs (entries into compiled code)": g(7),
+            "instructions in compiled code": g(13),
+            "instructions interpreted outside compiled code": g(14),
+            "instructions interpreted inside compiled blocks": g(6017),
+            "helper calls: arithmetic and SSE (j64_alu)": g(6016),
+            "helper calls: flags (j64_flags)": g(6018),
+            "memory accesses on the slow path": [20, 21, 22, 23, 24, 25, 26, 27].reduce((n, i) => n + g(i), 0),
+            "clock reads: rdtsc": g(30),
+            "clock reads: main loop": g(31),
+        };
     }
     if(opt.step_profile && ex["step_profile_len"])
     {
         // jit64's step profile: the instructions it left to the interpreter, by opcode
         const list = (len, key, count, bytes) => Array.from({ length: ex[len]() }, (_, i) => ({ key: ex[key](i) >>> 0, count: ex[count](i) >>> 0,
-            bytes: bytes ? [ex[bytes](i, 0) >>> 0, ex[bytes](i, 1) >>> 0] : undefined })).sort((a, b) => b.count - a.count).slice(0, 80);
+            bytes: bytes ? [ex[bytes](i, 0) >>> 0, ex[bytes](i, 1) >>> 0] : undefined })).sort((a, b) => b.count - a.count);
         result.step_profile = {
-            in_block: list("step_profile_len", "step_profile_key", "step_profile_count"),
+            in_block: ex["inblock_profile_len"] ? list("inblock_profile_len", "inblock_profile_key", "inblock_profile_count") : [],
+            cold: list("step_profile_len", "step_profile_key", "step_profile_count"),
             block_end: list("interp_profile_len", "interp_profile_key", "interp_profile_count", "interp_profile_bytes"),
         };
     }

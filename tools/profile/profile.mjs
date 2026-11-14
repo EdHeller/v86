@@ -9,8 +9,9 @@
 //   1. one boot under V8's sampling CPU profiler: where the time goes by area (compiled guest code, the
 //      interpreter, the JIT itself, devices in JavaScript, ...), by phase of the boot and by function; the
 //      .cpuprofile file opens in Chrome DevTools (Performance > Load profile) and in https://speedscope.app
-//   2. --runs N: N more boots without the profiler, the builds taking turns, for the times: median, fastest
-//      and the spread of each mark
+//   2. --runs N: N more boots without the profiler, the builds taking turns: the CPU time of the emulator's
+//      thread to each mark (median, fastest, spread), each build against the first round by round, and the
+//      counters that do not depend on the machine (instructions, generated modules, interpreter fallbacks)
 //
 // The guest's clock. By default the guest runs on a virtual clock: its time advances with the instructions it
 // executes (--mips, 50 by default: 50 million instructions are one guest second) and jumps ahead while it is
@@ -40,6 +41,8 @@
 //   --step-profile           x86_64: the instructions jit64 does not compile, by opcode: those run by the
 //                            interpreter inside a compiled block, and those a block ended at
 //   --runs N                 timing runs per build (default 0); --no-profile leaves the profiled run out
+//   --pin N                  run the guest's process on CPU N only (taskset); --node-flags "..." flags for node,
+//                            e.g. --single-threaded (no compiler threads) to see what the engine's tiering adds
 //   --clock virtual|real     see above; --mips N the virtual clock's rate
 //   --interval us            the profiler's sampling interval (default 200)
 //   --timeout seconds        per run (default 600)
@@ -132,11 +135,15 @@ const base = {
 if(!["virtual", "real"].includes(base.clock)) { console.error("--clock: virtual or real"); process.exit(1); }
 
 let run_count = 0;
+const node_flags = (args["node-flags"] || "").split(" ").filter(x => x);
+const pin = args.pin;
 function run(build, extra)
 {
     return new Promise(resolve => {
         const result = path.join(out_dir, ".result-" + process.pid + "-" + (run_count++) + ".json");
-        const child = spawn(process.execPath, [path.join(here, "child.mjs"), JSON.stringify({ ...base, label: build.name, wasm: build.wasm, ...(build.lib ? { lib: build.lib } : {}), ...(build.jit_config ? { jit_config: { ...base.jit_config, ...build.jit_config } } : {}), result, ...extra })],
+        const node = [...node_flags, path.join(here, "child.mjs")];
+        const [command, first] = pin === undefined ? [process.execPath, []] : ["taskset", ["-c", String(pin), process.execPath]];
+        const child = spawn(command, [...first, ...node, JSON.stringify({ ...base, label: build.name, wasm: build.wasm, ...(build.lib ? { lib: build.lib } : {}), ...(build.jit_config ? { jit_config: { ...base.jit_config, ...build.jit_config } } : {}), result, ...extra })],
             { stdio: ["ignore", "inherit", "inherit"] });
         child.on("close", () => {
             try { resolve(JSON.parse(fs.readFileSync(result, "utf8"))); }
@@ -225,9 +232,11 @@ if(!args["no-profile"])
         }
         if(r.step_profile)
         {
-            const name = k => ["", "0F ", "0F 38 ", "0F 3A "][k >>> 24] + ["", "66 ", "F3 ", "F2 "][k >>> 20 & 3] + (k & 0xFF).toString(16).toUpperCase().padStart(2, "0") + " /" + (k >>> 16 & 7);
+            const name = k => ["", "0F ", "0F 38 ", "0F 3A "][k >>> 24] + ["", "66 ", "F3 ", "F2 "][k >>> 20 & 3] + (k & 0xFF).toString(16).toUpperCase().padStart(2, "0") +
+                (k & 0x8000 ? " " + (0xC0 | (k >>> 16 & 7) << 3 | k >>> 12 & 7).toString(16).toUpperCase() : " /" + (k >>> 16 & 7));
             const hex = b => b ? "   " + [b[0], b[1]].map(w => Array.from({ length: 4 }, (_, i) => (w >>> 8 * i & 0xFF).toString(16).padStart(2, "0")).join(" ")).join(" ") : "";
-            for(const [title, list] of [["Instructions the interpreter ran inside compiled blocks (map, prefix, opcode, /reg)", r.step_profile.in_block],
+            for(const [title, list] of [["Instructions the interpreter ran from inside compiled blocks: the JIT does not compile them (map, prefix, opcode, /reg)", r.step_profile.in_block],
+                ["Instructions interpreted outside compiled code (not hot yet, or the block could not be entered)", r.step_profile.cold || []],
                 ["Instructions compiled blocks ended at (with the first bytes seen)", r.step_profile.block_end]])
             {
                 const sum = list.reduce((s, e) => s + e.count, 0);
@@ -262,24 +271,68 @@ if(runs > 0)
         }
     }
     const median = v => { const s = [...v].sort((a, b) => a - b); return s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
-    say("\nSummary (seconds from the start to each mark; cpu: the emulator's thread; spread: slowest against fastest)");
-    say("  " + "build".padEnd(12) + "mark".padEnd(14) + "median".padStart(8) + "fastest".padStart(9) + "spread".padStart(8) + "  cpu median" + "   insn M" + (builds.length > 1 ? "   against " + builds[0].name : ""));
-    const medians = {};
+    const pct = x => (x > 0 ? "+" : "") + x.toFixed(1) + " %";
+    // The time that counts is the emulator thread's CPU time: the wall clock also holds the engine's compiler
+    // threads waiting for a core and whatever else the machine did (here it varies two to three times as much).
+    say("\nSummary: CPU seconds of the emulator's thread from the start to each mark (wall: the clock's median)");
+    say("  " + "build".padEnd(12) + "mark".padEnd(14) + "median".padStart(8) + "fastest".padStart(9) + "spread".padStart(8) + "wall".padStart(9) + "   insn M");
     for(const b of builds)
     {
         const good = report.builds[b.name].runs.filter(r => r.ok);
         if(!good.length) { say("  " + b.name.padEnd(12) + "no successful run"); continue; }
         marks.forEach((m, i) => {
             const wall = good.map(r => r.marks[i].wall), cpu = good.map(r => r.marks[i].cpu_main), insn = good.map(r => r.marks[i].insn);
-            const med = median(wall);
-            medians[b.name + "/" + m.name] = med;
-            const ref = medians[builds[0].name + "/" + m.name];
-            say("  " + b.name.padEnd(12) + m.name.slice(0, 13).padEnd(14) + med.toFixed(2).padStart(8) + Math.min(...wall).toFixed(2).padStart(9) +
-                ((Math.max(...wall) / Math.min(...wall) - 1) * 100).toFixed(1).padStart(6) + " %" + median(cpu).toFixed(2).padStart(12) + (median(insn) / 1e6).toFixed(0).padStart(9) +
-                (builds.length > 1 && b !== builds[0] && ref ? ((med / ref - 1) * 100 > 0 ? "+" : "") + ((med / ref - 1) * 100).toFixed(1).padStart(8) + " %" : ""));
+            say("  " + b.name.padEnd(12) + m.name.slice(0, 13).padEnd(14) + median(cpu).toFixed(2).padStart(8) + Math.min(...cpu).toFixed(2).padStart(9) +
+                ((Math.max(...cpu) / Math.min(...cpu) - 1) * 100).toFixed(1).padStart(6) + " %" + median(wall).toFixed(2).padStart(9) + (median(insn) / 1e6).toFixed(0).padStart(9));
         });
     }
-    say("  A difference between builds that is smaller than the spread is noise: run more rounds, and nothing else on the machine.");
+    if(builds.length > 1)
+    {
+        // Round by round: the builds of one round ran one after the other, so the machine's drift (10 % within an
+        // hour here) is the same for both and drops out of their ratio
+        say("\nAgainst " + builds[0].name + ", round by round (CPU time; the machine's drift cancels within a round)");
+        say("  " + "build".padEnd(12) + "mark".padEnd(14) + "median".padStart(9) + "  range of the rounds".padEnd(24) + "verdict");
+        const base_runs = report.builds[builds[0].name].runs;
+        for(const b of builds.slice(1))
+        {
+            const runs_b = report.builds[b.name].runs;
+            marks.forEach((m, i) => {
+                const ratios = [];
+                for(let k = 0; k < runs; k++) if(base_runs[k] && runs_b[k] && base_runs[k].ok && runs_b[k].ok) ratios.push((runs_b[k].marks[i].cpu_main / base_runs[k].marks[i].cpu_main - 1) * 100);
+                if(!ratios.length) return;
+                const lo = Math.min(...ratios), hi = Math.max(...ratios);
+                const verdict = ratios.length < 3 ? "too few rounds to tell" : hi < 0 ? "faster in every round" : lo > 0 ? "slower in every round" : "not separable from noise";
+                say("  " + b.name.padEnd(12) + m.name.slice(0, 13).padEnd(14) + pct(median(ratios)).padStart(9) + ("  " + pct(lo) + " to " + pct(hi)).padEnd(24) + verdict);
+            });
+        }
+    }
+    // What does not depend on the machine at all: the work itself. On the virtual clock these agree between runs
+    // to about 0.1 %, so a change shows here exactly even when the time cannot show it.
+    say("\nCounters at the last mark (median; the same on every run to about 0.1 % on the virtual clock)");
+    say("  " + "build".padEnd(12) + "insn M".padStart(9) + "modules".padStart(9) + "wasm MB".padStart(9) + (arch === "x86_64" ? "blocks".padStart(9) + "invalid.".padStart(9) + (base.step_profile ? "in-blk M".padStart(10) + "cold M".padStart(9) + "blk-end M".padStart(10) : "") : ""));
+    for(const b of builds)
+    {
+        const good = report.builds[b.name].runs.filter(r => r.ok);
+        if(!good.length) continue;
+        const col = f => median(good.map(f));
+        const sum = l => (l || []).reduce((s, e) => s + e.count, 0);
+        say("  " + b.name.padEnd(12) + (col(r => r.end.insn) / 1e6).toFixed(0).padStart(9) + col(r => r.end.modules).toFixed(0).padStart(9) + (col(r => r.end.wasm_bytes) / 1e6).toFixed(1).padStart(9) +
+            (arch === "x86_64" && good[0].jit64 ? col(r => r.jit64.blocks).toFixed(0).padStart(9) + col(r => r.jit64.invalidated).toFixed(0).padStart(9) +
+                (base.step_profile ? (col(r => sum(r.step_profile && r.step_profile.in_block)) / 1e6).toFixed(2).padStart(10) + (col(r => sum(r.step_profile && r.step_profile.cold)) / 1e6).toFixed(1).padStart(9) + (col(r => sum(r.step_profile && r.step_profile.block_end)) / 1e6).toFixed(2).padStart(10) : "") : ""));
+    }
+    const with_counters = builds.filter(b => report.builds[b.name].runs.some(r => r.ok && r.counters));
+    if(with_counters.length)
+    {
+        const med = (b, k) => { const v = report.builds[b.name].runs.filter(r => r.ok && r.counters).map(r => r.counters[k]).sort((x, y) => x - y); return v[v.length >> 1]; };
+        say("\nThe work by how it was done (the core's counters, median; these do not depend on the machine)");
+        say("  " + with_counters.map(b => b.name.slice(0, 13).padStart(14)).join("") + (with_counters.length > 1 ? "    change" : "") + "  counter");
+        for(const k of Object.keys(report.builds[with_counters[0].name].runs.find(r => r.ok && r.counters).counters))
+        {
+            const v = with_counters.map(b => med(b, k));
+            const change = with_counters.length > 1 && v[0] ? ((v[v.length - 1] / v[0] - 1) * 100) : 0;
+            say("  " + v.map(x => String(x).padStart(14)).join("") + (with_counters.length > 1 ? ((change > 0 ? "+" : "") + change.toFixed(1) + " %").padStart(10) : "") + "  " + k);
+        }
+    }
 }
 
 fs.writeFileSync(path.join(out_dir, "report.json"), JSON.stringify(report, null, 1));

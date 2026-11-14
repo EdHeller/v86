@@ -37,9 +37,22 @@ default, `src/main.js`, needs no build but runs with DEBUG on.
 million per guest second) and jumps ahead while it is halted; random numbers are seeded. Every run of a build then
 does the same work: the instruction counts of two boots agree to 0.1 %. On the host's clock (`--clock real`, what a
 browser does, and what `tools/v86-bench/run.mjs` measures) timer interrupts land elsewhere on every run and waiting
-is part of the time: three boots of 32-bit Alpine were 12 % apart, against 3 % on the virtual clock. What remains
-is the host: on a shared machine the same build drifts by 10 % within an hour, so compare builds only within one
-invocation (they take turns), and take a difference smaller than the printed spread for noise.
+is part of the time: three boots of 32-bit Alpine were 12 % apart, against 3 % on the virtual clock.
+
+**Reading a comparison.** Three things are printed, from the noisiest to the exact:
+
+1. *CPU seconds of the emulator's thread* per build (median, fastest, spread). Not the wall clock: that also
+   holds the engine's compiler threads waiting for a core and whatever else the machine did, and varies two to
+   three times as much (eight runs of one build here: wall 9.4 to 10.3 s, CPU 9.06 to 9.29 s with one outlier).
+2. *Round by round against the first build.* The builds of a round run one after the other, so the machine's
+   drift (the same build went from 41 s to 46 s within an hour on this shared host) is the same for both and
+   drops out of their ratio. The verdict is "faster in every round", "slower in every round" or "not separable
+   from noise". Engine flags and pinning (`--node-flags --single-threaded`, `--pin N`) were tried and do not
+   narrow the spread: the noise is the host's.
+3. *Counters that do not depend on the machine*: guest instructions, generated modules and bytes, and on
+   x86_64 the work by how it was done (instructions in compiled code, interpreted outside it, interpreted from
+   inside compiled blocks, helper calls, clock reads). They repeat to about 0.1 %, so a change of 1 % in the work
+   shows exactly where 5 % of timing noise would hide it. `--step-profile` adds the opcodes behind them.
 
 Findings so far (Alpine 3.24 to login, 5.3 billion guest instructions on either core):
 
@@ -58,10 +71,14 @@ Findings so far (Alpine 3.24 to login, 5.3 billion guest instructions on either 
   compiled code, dispatch and the interpreter, so that is where the work goes.
 - The 32-bit JIT's threshold (`set_jit_config(59, n)`, 200,000): 100k +5.9 %, 50k +7.7 %, 20k +9.7 %, 400k +5.4 %,
   800k +13.3 %. It stays.
-- x86_64, `--step-profile`: 92 M instructions ran in the interpreter from inside compiled blocks (7 % of the
-  time), 35 M of them SHA-NI (modloop and module checks). jit64 compiles them now (`SseLane` 20 to 26): login
-  -3.1 % (47.3 s to 45.8 s, spread 3 to 4 %). Next in that list: `0F 01 /7` with a register form (swapgs, 4 M),
-  punpckhqdq and pcmpgtd (66 0F 6D / 66, 3.5 M), shrd, tzcnt, stac/clac.
+- x86_64, `--step-profile`: 45 M instructions ran in the interpreter from inside compiled blocks, 35 M of them
+  SHA-NI (modloop and module checks). jit64 compiles them now (`SseLane` 20 to 26), and swapgs, rdtscp (3.2 M, the
+  largest after SHA), shld/shrd by an immediate, tzcnt/lzcnt/popcnt, punpckhqdq, pcmpgtd
+  (`tests/x64/jit/17_bitcount_dshift_sse_sha.asm`, checked against the host CPU). Instructions interpreted inside
+  compiled blocks: 45.4 M to 4.3 M (-90.5 %); login -4.1 % (-6.2 % and -2.0 % in two rounds). What is left there
+  (4.3 M): stac/clac (0F 01 CA/CB, 0.6 M), pclmulqdq (0.5 M), cmpxchg16b, prefetch, shrd by cl, out, iretq, sysret,
+  mov to and from segment registers, syscall, bsr. Interpreted outside compiled code: 47 M (code that is not hot
+  yet).
 
 ## The counters of the profiler build
 

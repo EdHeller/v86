@@ -2581,6 +2581,19 @@ pub unsafe fn jit_alu(op: u8, a: u64, b: u64, bits: u32) -> u64 {
         0..=7 => alu(op, a, b, bits),
         8 | 9 => incdec(op == 9, a, bits),
         24 => imul(a, b, bits),
+        // tzcnt, lzcnt (the count of an operand of zero is the operand size, with the carry flag)
+        31 | 32 => {
+            let v = b & mask(bits);
+            let r = if v == 0 { bits } else if op == 31 { v.trailing_zeros() } else { v.leading_zeros() - (64 - bits) };
+            set_flags(v == 0, false, false, r as u64, bits);
+            r as u64
+        },
+        // popcnt: all flags are cleared except zf
+        33 => {
+            let v = b & mask(bits);
+            set_eflags_raw(get_eflags() & !FLAGS_ALL | (v == 0) as i32 * FLAG_ZERO);
+            v.count_ones() as u64
+        },
         // mul / imul with the accumulator: the high half in JIT_AUX2
         26 | 27 => {
             let signed = op == 27;
@@ -2647,6 +2660,23 @@ pub unsafe fn jit_alu(op: u8, a: u64, b: u64, bits: u32) -> u64 {
         },
         _ => shift(op - 16, a, b as u32, bits),
     }
+}
+
+/// shld (left) / shrd of `a` with `b` shifted in, by a count that is not zero and below the operand size
+pub unsafe fn jit_shxd(left: bool, a: u64, b: u64, bits: u32, count: u32) -> u64 {
+    let (a, b) = ((a & mask(bits)) as u128, (b & mask(bits)) as u128);
+    let (r, cf) = if left {
+        let wide = a << bits | b;
+        let sh = wide << count;
+        (((sh >> bits) as u64) & mask(bits), (wide >> (2 * bits - count)) & 1 != 0)
+    }
+    else {
+        let wide = b << bits | a;
+        (((wide >> count) as u64) & mask(bits), (a >> (count - 1)) & 1 != 0)
+    };
+    let of = (r >> (bits - 1) & 1) != (a as u64 >> (bits - 1) & 1);
+    set_flags(cf, false, if count == 1 { of } else { false }, r, bits);
+    r
 }
 
 pub unsafe fn jit_set_rip(target: u64) -> OrPageFault<()> { set_rip(target) }
