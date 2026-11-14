@@ -1,7 +1,9 @@
+pub mod acpi;
 pub mod apic;
 pub mod arith;
 pub mod call_indirect;
 pub mod cpu;
+pub mod dma;
 pub mod fpu;
 pub mod global_pointers;
 pub mod instructions;
@@ -17,6 +19,7 @@ pub mod modrm;
 pub mod parallel;
 pub mod pic;
 pub mod pit;
+pub mod ps2;
 pub mod rtc;
 pub mod sse_0f38;
 pub mod sse_fp;

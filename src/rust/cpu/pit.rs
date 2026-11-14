@@ -260,6 +260,9 @@ pub unsafe fn run_hardware_timers(acpi_enabled: bool, now: f64) -> f64 {
     }
     if acpi_enabled {
         t = t.min(apic::apic_timer(now));
+        if super::acpi::present() {
+            t = t.min(super::acpi::acpi_timer(now));
+        }
     }
     if now >= JS_TIMERS_DUE || now < JS_TIMERS_DUE - JS_TIMERS_MAX {
         let t_js = js::run_hardware_timers(acpi_enabled, now);

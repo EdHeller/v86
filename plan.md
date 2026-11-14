@@ -209,9 +209,10 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | PIT (8254) | `pit.js` 359 -> 119 | `pit.rs` | ✅ (on `Vibe-Claude` too) |
 | RTC / CMOS | `rtc.js` 424 -> 160 | `rtc.rs` | ✅ 2026-11-14 |
 | Serial ports (16550) | `uart.js` 457 -> 150 | `uart.rs` | ✅ 2026-11-14 (output buffered in the core, taken after each slice) |
-| ACPI PM block and timer | `acpi.js` 273 | | ⬜ next: with it the main loop's timer pass calls no JavaScript |
-| PS/2 keyboard and mouse | `ps2.js` 901 | | ⬜ |
-| DMA, PCI configuration space | `dma.js` 430, `pci.js` 724 | | ⬜ |
+| ACPI PM block, GPE, PM timer | `acpi.js` 273 -> 176 | `acpi.rs` | ✅ 2026-11-14 (the PCI function and the hotplug registers stay in the shim); the timer pass of the main loop calls JavaScript only for plugin timers |
+| PS/2 controller, keyboard, mouse | `ps2.js` 901 -> 205 | `ps2.rs` | ✅ 2026-11-14 |
+| DMA registers | `dma.js` 430 -> 235 | `dma.rs` | ✅ 2026-11-14 (transfers stay with JavaScript's buffers) |
+| PCI configuration space | `pci.js` 724 | | ⬜ |
 | IDE / ATAPI | `ide.js` 2928 | | ⬜ the register file and PIO data in Rust, disk buffers stay with JavaScript's async I/O |
 | VGA | `vga.js` 2654 | `vga.rs` (part) | ⬜ registers and memory in Rust, drawing in JavaScript |
 | Floppy, NE2000, SB16, virtio, USB, HDA, graphics adapters | about 20,000 | | ⬜ |

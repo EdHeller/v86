@@ -3,12 +3,10 @@
 import { v86 } from "./main.js";
 import { LOG_ACPI } from "../src/const.js";
 import { h } from "./lib.js";
-import { dbg_log, dbg_assert } from "./log.js";
+import { dbg_log } from "./log.js";
 
 // For Types Only
 import { CPU } from "./cpu.js";
-
-const PMTIMER_FREQ_SECONDS = 3579545;
 
 /**
  * @constructor
@@ -35,15 +33,8 @@ export function ACPI(cpu)
 
     this.acpi_pci = acpi;
 
-    this.timer_last_value = 0;
-    this.timer_imprecision_offset = 0;
-
-    this.status = 1;
-    this.pm1_status = 0;
-    this.pm1_enable = 0;
-    this.last_timer = this.get_timer(v86.microtick());
-
-    this.gpe = new Uint8Array(4);
+    // the registers and the timer are in the core (src/rust/cpu/acpi.rs)
+    cpu.acpi_init(v86.microtick());
 
     // the PM I/O block: at 0xB000 (the tables SeaBIOS builds for v86); with
     // the UEFI firmware where it puts PMBA, as PIIX4's at 00:01.3
@@ -76,47 +67,11 @@ export function ACPI(cpu)
     io.register_write(0xAE0C, this, undefined, undefined, function(value) {});
 
     // ACPI, gpe
-    io.register_read(0xAFE0, this, function()
+    for(let port = 0xAFE0; port <= 0xAFE3; port++)
     {
-        dbg_log("Read gpe#0", LOG_ACPI);
-        return this.gpe[0];
-    });
-    io.register_read(0xAFE1, this, function()
-    {
-        dbg_log("Read gpe#1", LOG_ACPI);
-        return this.gpe[1];
-    });
-    io.register_read(0xAFE2, this, function()
-    {
-        dbg_log("Read gpe#2", LOG_ACPI);
-        return this.gpe[2];
-    });
-    io.register_read(0xAFE3, this, function()
-    {
-        dbg_log("Read gpe#3", LOG_ACPI);
-        return this.gpe[3];
-    });
-
-    io.register_write(0xAFE0, this, function(value)
-    {
-        dbg_log("Write gpe#0: " + h(value), LOG_ACPI);
-        this.gpe[0] = value;
-    });
-    io.register_write(0xAFE1, this, function(value)
-    {
-        dbg_log("Write gpe#1: " + h(value), LOG_ACPI);
-        this.gpe[1] = value;
-    });
-    io.register_write(0xAFE2, this, function(value)
-    {
-        dbg_log("Write gpe#2: " + h(value), LOG_ACPI);
-        this.gpe[2] = value;
-    });
-    io.register_write(0xAFE3, this, function(value)
-    {
-        dbg_log("Write gpe#3: " + h(value), LOG_ACPI);
-        this.gpe[3] = value;
-    });
+        io.register_read(port, this, function() { return cpu.acpi_port_read(port, 8); });
+        io.register_write(port, this, function(value) { cpu.acpi_port_write(port, 8, value); });
+    }
 }
 
 /**
@@ -125,7 +80,7 @@ export function ACPI(cpu)
  */
 ACPI.prototype.register_pm = function(base)
 {
-    const io = this.cpu.io;
+    const io = this.cpu.io, cpu = this.cpu;
     if(this.pm_base !== -1)
     {
         for(let port = this.pm_base; port < this.pm_base + 0x10; port++)
@@ -134,54 +89,24 @@ ACPI.prototype.register_pm = function(base)
         }
     }
     this.pm_base = base;
+    cpu.acpi_set_pm_base(base);
     if(base === -1) return;
 
-    io.register_read(base, this, undefined, function()
-    {
-        dbg_log("ACPI pm1_status read", LOG_ACPI);
-        return this.pm1_status;
-    });
-    io.register_write(base, this, undefined, function(value)
-    {
-        dbg_log("ACPI pm1_status write: " + h(value, 4), LOG_ACPI);
-        this.pm1_status &= ~value;
-    });
+    // (the core answers these itself; here for accesses that come through JavaScript)
+    io.register_read(base, this, undefined, function() { return cpu.acpi_port_read(base, 16); });
+    io.register_write(base, this, undefined, function(value) { cpu.acpi_port_write(base, 16, value); });
 
-    io.register_read(base + 2, this, undefined, function()
-    {
-        dbg_log("ACPI pm1_enable read", LOG_ACPI);
-        return this.pm1_enable;
-    });
-    io.register_write(base + 2, this, undefined, function(value)
-    {
-        dbg_log("ACPI pm1_enable write: " + h(value), LOG_ACPI);
-        this.pm1_enable = value;
-    });
+    io.register_read(base + 2, this, undefined, function() { return cpu.acpi_port_read(base + 2, 16); });
+    io.register_write(base + 2, this, undefined, function(value) { cpu.acpi_port_write(base + 2, 16, value); });
 
     // ACPI status
-    io.register_read(base + 4, this, function()
-    {
-        dbg_log("ACPI status read8", LOG_ACPI);
-        return this.status & 0xFF;
-    }, function()
-    {
-        dbg_log("ACPI status read", LOG_ACPI);
-        return this.status;
-    });
-    io.register_write(base + 4, this, undefined, function(value)
-    {
-        dbg_log("ACPI status write: " + h(value), LOG_ACPI);
-        this.status = value;
-    });
+    io.register_read(base + 4, this,
+        function() { return cpu.acpi_port_read(base + 4, 8); },
+        function() { return cpu.acpi_port_read(base + 4, 16); });
+    io.register_write(base + 4, this, undefined, function(value) { cpu.acpi_port_write(base + 4, 16, value); });
 
     // ACPI, pmtimer
-    io.register_read(base + 8, this, undefined, undefined, function()
-    {
-        var value = this.get_timer(v86.microtick()) & 0xFFFFFF;
-        //dbg_log("pmtimer read: " + h(value >>> 0), LOG_ACPI);
-        return value;
-    });
-
+    io.register_read(base + 8, this, undefined, undefined, function() { return cpu.acpi_port_read(base + 8, 32); });
 };
 
 /** PIIX4: the PM block where PMBA (config 0x40) says, while PMREGMISC (0x80) enables it */
@@ -195,79 +120,32 @@ ACPI.prototype.update_pm_base = function()
 
 ACPI.prototype.timer = function(now)
 {
-    var timer = this.get_timer(now);
-    var highest_bit_changed = ((timer ^ this.last_timer) & (1 << 23)) !== 0;
-
-    if((this.pm1_enable & 1) && highest_bit_changed)
-    {
-        dbg_log("ACPI raise irq", LOG_ACPI);
-        this.pm1_status |= 1;
-        this.cpu.device_raise_irq(9);
-    }
-    else
-    {
-        this.cpu.device_lower_irq(9);
-    }
-
-    this.last_timer = timer;
-    return 100; // TODO
+    return this.cpu.acpi_timer(now);
 };
 
-ACPI.prototype.get_timer = function(now)
+// struct Acpi in src/rust/cpu/acpi.rs: status, pm1_status, pm1_enable at 16, the GPE bytes at 36
+ACPI.prototype.fields = function()
 {
-    const t = Math.round(now * (PMTIMER_FREQ_SECONDS / 1000));
-
-    // Due to the low precision of JavaScript's time functions we increment the
-    // returned timer value every time it is read
-
-    if(t === this.timer_last_value)
-    {
-        // don't go past 1ms
-
-        if(this.timer_imprecision_offset < PMTIMER_FREQ_SECONDS / 1000)
-        {
-            this.timer_imprecision_offset++;
-        }
-    }
-    else
-    {
-        dbg_assert(t > this.timer_last_value);
-
-        const previous_timer = this.timer_last_value + this.timer_imprecision_offset;
-
-        // don't go back in time
-
-        if(previous_timer <= t)
-        {
-            this.timer_imprecision_offset = 0;
-            this.timer_last_value = t;
-        }
-        else
-        {
-            dbg_log("Warning: Overshot pmtimer, waiting;" +
-                    " current=" + t +
-                    " last=" + this.timer_last_value +
-                    " offset=" + this.timer_imprecision_offset, LOG_ACPI);
-        }
-    }
-
-    return this.timer_last_value + this.timer_imprecision_offset;
+    const buffer = this.cpu.wasm_memory.buffer, at = this.cpu.get_acpi_addr();
+    return { registers: new Uint32Array(buffer, at + 16, 3), gpe: new Uint8Array(buffer, at + 36, 4) };
 };
 
 ACPI.prototype.get_state = function()
 {
+    const f = this.fields();
     var state = [];
-    state[0] = this.status;
-    state[1] = this.pm1_status;
-    state[2] = this.pm1_enable;
-    state[3] = this.gpe;
+    state[0] = f.registers[0];
+    state[1] = f.registers[1];
+    state[2] = f.registers[2];
+    state[3] = new Uint8Array(f.gpe);
     return state;
 };
 
 ACPI.prototype.set_state = function(state)
 {
-    this.status = state[0];
-    this.pm1_status = state[1];
-    this.pm1_enable = state[2];
-    this.gpe = state[3];
+    const f = this.fields();
+    f.registers[0] = state[0];
+    f.registers[1] = state[1];
+    f.registers[2] = state[2];
+    f.gpe.set(state[3]);
 };

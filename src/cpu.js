@@ -470,6 +470,29 @@ CPU.prototype.wasm_patch = function()
     this.uart_port_write = get_import("uart_port_write");
     this.uart_receive = get_import("uart_receive");
     this.uart_set_modem_status_bit = get_import("uart_set_modem_status_bit");
+    this.get_acpi_addr = get_import("get_acpi_addr");
+    this.acpi_init = get_import("acpi_init");
+    this.acpi_set_pm_base = get_import("acpi_set_pm_base");
+    this.acpi_port_read = get_import("acpi_port_read");
+    this.acpi_port_write = get_import("acpi_port_write");
+    this.acpi_timer = get_import("acpi_timer");
+
+    this.get_dma_addr = get_import("get_dma_addr");
+    this.dma_init = get_import("dma_init");
+    this.dma_port_read = get_import("dma_port_read");
+    this.dma_port_write = get_import("dma_port_write");
+
+    this.get_ps2_addr = get_import("get_ps2_addr");
+    this.ps2_init = get_import("ps2_init");
+    this.ps2_state_restored = get_import("ps2_state_restored");
+    this.ps2_port_read = get_import("ps2_port_read");
+    this.ps2_port_write = get_import("ps2_port_write");
+    this.ps2_kbd_send_code = get_import("ps2_kbd_send_code");
+    this.ps2_mouse_send_delta = get_import("ps2_mouse_send_delta");
+    this.ps2_mouse_flush = get_import("ps2_mouse_flush");
+    this.ps2_mouse_send_click = get_import("ps2_mouse_send_click");
+    this.ps2_mouse_wheel = get_import("ps2_mouse_wheel");
+
     this.get_pit_addr = get_import("get_pit_addr");
     this.pit_port_read = get_import("pit_port_read");
     this.pit_port_write = get_import("pit_port_write");
@@ -2283,9 +2306,9 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
     let apic_time = 100;
     if(acpi_enabled)
     {
-        acpi_time = this.devices.acpi.timer(now);
         if(all)
         {
+            acpi_time = this.devices.acpi.timer(now);
             apic_time = this.apic_timer(now);
         }
     }

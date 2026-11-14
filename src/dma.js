@@ -14,230 +14,92 @@ export function DMA(cpu)
     /** @const @type {CPU} */
     this.cpu = cpu;
 
-    this.channel_page = new Uint8Array(8);
-    this.channel_pagehi = new Uint8Array(8);
-    this.channel_addr = new Uint16Array(8);
-    this.channel_addr_init = new Uint16Array(8);
-    this.channel_count = new Uint16Array(8);
-    this.channel_count_init = new Uint16Array(8);
-    this.channel_mask = new Uint8Array(8);
-    this.channel_mode = new Uint8Array(8);
+    // The registers are in the core (src/rust/cpu/dma.rs), which answers their ports. Here: the transfers,
+    // the listeners for a channel being unmasked, the ports when they are reached through JavaScript.
+    cpu.dma_init();
     this.unmask_listeners = [];
 
-    this.lsb_msb_flipflop = 0;
+    // The registers in the core's memory (struct Dma in src/rust/cpu/dma.rs), as the arrays they were here
+    for(const [name, type, offset] of [
+        ["channel_addr", Uint16Array, 0], ["channel_addr_init", Uint16Array, 16],
+        ["channel_count", Uint16Array, 32], ["channel_count_init", Uint16Array, 48],
+        ["channel_page", Uint8Array, 64], ["channel_pagehi", Uint8Array, 72],
+        ["channel_mask", Uint8Array, 80], ["channel_mode", Uint8Array, 88],
+    ])
+    {
+        Object.defineProperty(this, name, {
+            get: () => new type(cpu.wasm_memory.buffer, cpu.get_dma_addr() + offset, 8),
+        });
+    }
 
     var io = cpu.io;
 
-    io.register_write(0x00, this, this.port_addr_write.bind(this, 0));
-    io.register_write(0x02, this, this.port_addr_write.bind(this, 1));
-    io.register_write(0x04, this, this.port_addr_write.bind(this, 2));
-    io.register_write(0x06, this, this.port_addr_write.bind(this, 3));
-    io.register_write(0x01, this, this.port_count_write.bind(this, 0));
-    io.register_write(0x03, this, this.port_count_write.bind(this, 1));
-    io.register_write(0x05, this, this.port_count_write.bind(this, 2));
-    io.register_write(0x07, this, this.port_count_write.bind(this, 3));
+    const ports = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0xC0, 0xC2, 0xC4, 0xC6, 0xC8, 0xCA, 0xCC, 0xCE,
+        0x87, 0x83, 0x81, 0x82, 0x8F, 0x8B, 0x89, 0x8A, 0x487, 0x483, 0x481, 0x482, 0x48B, 0x489, 0x48A,
+    ];
+    for(const port of ports)
+    {
+        io.register_read(port, this, function() { return cpu.dma_port_read(port); });
+        io.register_write(port, this, function(data_byte) { cpu.dma_port_write(port, data_byte); });
+    }
+    for(const port of [0x0F, 0xDE])
+    {
+        io.register_read(port, this, function() { return cpu.dma_port_read(port); });
+    }
+    for(const port of [0x0B, 0xD6, 0x0C, 0xD8])
+    {
+        io.register_write(port, this, function(data_byte) { cpu.dma_port_write(port, data_byte); });
+    }
 
-    io.register_read(0x00, this, this.port_addr_read.bind(this, 0));
-    io.register_read(0x02, this, this.port_addr_read.bind(this, 1));
-    io.register_read(0x04, this, this.port_addr_read.bind(this, 2));
-    io.register_read(0x06, this, this.port_addr_read.bind(this, 3));
-    io.register_read(0x01, this, this.port_count_read.bind(this, 0));
-    io.register_read(0x03, this, this.port_count_read.bind(this, 1));
-    io.register_read(0x05, this, this.port_count_read.bind(this, 2));
-    io.register_read(0x07, this, this.port_count_read.bind(this, 3));
-
-    io.register_write(0xC0, this, this.port_addr_write.bind(this, 4));
-    io.register_write(0xC4, this, this.port_addr_write.bind(this, 5));
-    io.register_write(0xC8, this, this.port_addr_write.bind(this, 6));
-    io.register_write(0xCC, this, this.port_addr_write.bind(this, 7));
-    io.register_write(0xC2, this, this.port_count_write.bind(this, 4));
-    io.register_write(0xC6, this, this.port_count_write.bind(this, 5));
-    io.register_write(0xCA, this, this.port_count_write.bind(this, 6));
-    io.register_write(0xCE, this, this.port_count_write.bind(this, 7));
-
-    io.register_read(0xC0, this, this.port_addr_read.bind(this, 4));
-    io.register_read(0xC4, this, this.port_addr_read.bind(this, 5));
-    io.register_read(0xC8, this, this.port_addr_read.bind(this, 6));
-    io.register_read(0xCC, this, this.port_addr_read.bind(this, 7));
-    io.register_read(0xC2, this, this.port_count_read.bind(this, 4));
-    io.register_read(0xC6, this, this.port_count_read.bind(this, 5));
-    io.register_read(0xCA, this, this.port_count_read.bind(this, 6));
-    io.register_read(0xCE, this, this.port_count_read.bind(this, 7));
-
-    io.register_write(0x87, this, this.port_page_write.bind(this, 0));
-    io.register_write(0x83, this, this.port_page_write.bind(this, 1));
-    io.register_write(0x81, this, this.port_page_write.bind(this, 2));
-    io.register_write(0x82, this, this.port_page_write.bind(this, 3));
-    io.register_write(0x8F, this, this.port_page_write.bind(this, 4));
-    io.register_write(0x8B, this, this.port_page_write.bind(this, 5));
-    io.register_write(0x89, this, this.port_page_write.bind(this, 6));
-    io.register_write(0x8A, this, this.port_page_write.bind(this, 7));
-
-    io.register_read(0x87, this, this.port_page_read.bind(this, 0));
-    io.register_read(0x83, this, this.port_page_read.bind(this, 1));
-    io.register_read(0x81, this, this.port_page_read.bind(this, 2));
-    io.register_read(0x82, this, this.port_page_read.bind(this, 3));
-    io.register_read(0x8F, this, this.port_page_read.bind(this, 4));
-    io.register_read(0x8B, this, this.port_page_read.bind(this, 5));
-    io.register_read(0x89, this, this.port_page_read.bind(this, 6));
-    io.register_read(0x8A, this, this.port_page_read.bind(this, 7));
-
-    io.register_write(0x487, this, this.port_pagehi_write.bind(this, 0));
-    io.register_write(0x483, this, this.port_pagehi_write.bind(this, 1));
-    io.register_write(0x481, this, this.port_pagehi_write.bind(this, 2));
-    io.register_write(0x482, this, this.port_pagehi_write.bind(this, 3));
-    io.register_write(0x48B, this, this.port_pagehi_write.bind(this, 5));
-    io.register_write(0x489, this, this.port_pagehi_write.bind(this, 6));
-    io.register_write(0x48A, this, this.port_pagehi_write.bind(this, 7));
-
-    io.register_read(0x487, this, this.port_pagehi_read.bind(this, 0));
-    io.register_read(0x483, this, this.port_pagehi_read.bind(this, 1));
-    io.register_read(0x481, this, this.port_pagehi_read.bind(this, 2));
-    io.register_read(0x482, this, this.port_pagehi_read.bind(this, 3));
-    io.register_read(0x48B, this, this.port_pagehi_read.bind(this, 5));
-    io.register_read(0x489, this, this.port_pagehi_read.bind(this, 6));
-    io.register_read(0x48A, this, this.port_pagehi_read.bind(this, 7));
-
-    io.register_write(0x0A, this, this.port_singlemask_write.bind(this, 0));
-    io.register_write(0xD4, this, this.port_singlemask_write.bind(this, 4));
-    io.register_write(0x0F, this, this.port_multimask_write.bind(this, 0));
-    io.register_write(0xDE, this, this.port_multimask_write.bind(this, 4));
-
-    io.register_read(0x0F, this, this.port_multimask_read.bind(this, 0));
-    io.register_read(0xDE, this, this.port_multimask_read.bind(this, 4));
-
-    io.register_write(0x0B, this, this.port_mode_write.bind(this, 0));
-    io.register_write(0xD6, this, this.port_mode_write.bind(this, 4));
-
-    io.register_write(0x0C, this, this.portC_write);
-    io.register_write(0xD8, this, this.portC_write);
+    // the mask registers: devices listen for a channel being unmasked
+    for(const port of [0x0A, 0xD4, 0x0F, 0xDE])
+    {
+        io.register_write(port, this, function(data_byte)
+        {
+            const before = new Uint8Array(this.channel_mask);
+            cpu.dma_port_write(port, data_byte);
+            const after = this.channel_mask;
+            for(let channel = 0; channel < 8; channel++)
+            {
+                if(before[channel] !== after[channel] && !after[channel])
+                {
+                    for(var i = 0; i < this.unmask_listeners.length; i++)
+                    {
+                        this.unmask_listeners[i].fn.call(this.unmask_listeners[i].this_value, channel);
+                    }
+                }
+            }
+        });
+    }
 }
 
 DMA.prototype.get_state = function()
 {
     return [
-        this.channel_page,
-        this.channel_pagehi,
-        this.channel_addr,
-        this.channel_addr_init,
-        this.channel_count,
-        this.channel_count_init,
-        this.channel_mask,
-        this.channel_mode,
-        this.lsb_msb_flipflop,
+        new Uint8Array(this.channel_page),
+        new Uint8Array(this.channel_pagehi),
+        new Uint16Array(this.channel_addr),
+        new Uint16Array(this.channel_addr_init),
+        new Uint16Array(this.channel_count),
+        new Uint16Array(this.channel_count_init),
+        new Uint8Array(this.channel_mask),
+        new Uint8Array(this.channel_mode),
+        new Uint8Array(this.cpu.wasm_memory.buffer, this.cpu.get_dma_addr() + 96, 1)[0],
     ];
 };
 
 DMA.prototype.set_state = function(state)
 {
-    this.channel_page = state[0];
-    this.channel_pagehi = state[1];
-    this.channel_addr = state[2];
-    this.channel_addr_init = state[3];
-    this.channel_count = state[4];
-    this.channel_count_init = state[5];
-    this.channel_mask = state[6];
-    this.channel_mode = state[7];
-    this.lsb_msb_flipflop = state[8];
-};
-
-DMA.prototype.port_count_write = function(channel, data_byte)
-{
-    dbg_log("count write [" + channel + "] = " + h(data_byte), LOG_DMA);
-
-    this.channel_count[channel] =
-        this.flipflop_get(this.channel_count[channel], data_byte, false);
-
-    this.channel_count_init[channel] =
-        this.flipflop_get(this.channel_count_init[channel], data_byte, true);
-};
-
-DMA.prototype.port_count_read = function(channel)
-{
-    dbg_log("count read [" + channel + "] -> " + h(this.channel_count[channel]), LOG_DMA);
-    return this.flipflop_read(this.channel_count[channel]);
-};
-
-DMA.prototype.port_addr_write = function(channel, data_byte)
-{
-    dbg_log("addr write [" + channel + "] = " + h(data_byte), LOG_DMA);
-
-    this.channel_addr[channel] =
-        this.flipflop_get(this.channel_addr[channel], data_byte, false);
-
-    this.channel_addr_init[channel] =
-        this.flipflop_get(this.channel_addr_init[channel], data_byte, true);
-};
-
-DMA.prototype.port_addr_read = function(channel)
-{
-    dbg_log("addr read [" + channel + "] -> " + h(this.channel_addr[channel]), LOG_DMA);
-    return this.flipflop_read(this.channel_addr[channel]);
-};
-
-DMA.prototype.port_pagehi_write = function(channel, data_byte)
-{
-    dbg_log("pagehi write [" + channel + "] = " + h(data_byte), LOG_DMA);
-    this.channel_pagehi[channel] = data_byte;
-};
-
-DMA.prototype.port_pagehi_read = function(channel)
-{
-    dbg_log("pagehi read [" + channel + "]", LOG_DMA);
-    return this.channel_pagehi[channel];
-};
-
-DMA.prototype.port_page_write = function(channel, data_byte)
-{
-    dbg_log("page write [" + channel + "] = " + h(data_byte), LOG_DMA);
-    this.channel_page[channel] = data_byte;
-};
-
-DMA.prototype.port_page_read = function(channel)
-{
-    dbg_log("page read [" + channel + "]", LOG_DMA);
-    return this.channel_page[channel];
-};
-
-DMA.prototype.port_singlemask_write = function(channel_offset, data_byte)
-{
-    var channel = (data_byte & 0x3) + channel_offset;
-    var value = data_byte & 0x4 ? 1 : 0;
-    dbg_log("singlechannel mask write [" + channel + "] = " + value, LOG_DMA);
-    this.update_mask(channel, value);
-};
-
-DMA.prototype.port_multimask_write = function(channel_offset, data_byte)
-{
-    dbg_log("multichannel mask write: " + h(data_byte), LOG_DMA);
-    for(var i = 0; i < 4; i++)
-    {
-        this.update_mask(channel_offset + i, data_byte & (1 << i));
-    }
-};
-
-DMA.prototype.port_multimask_read = function(channel_offset)
-{
-    var value = 0;
-    value |= this.channel_mask[channel_offset + 0];
-    value |= this.channel_mask[channel_offset + 1] << 1;
-    value |= this.channel_mask[channel_offset + 2] << 2;
-    value |= this.channel_mask[channel_offset + 3] << 3;
-    dbg_log("multichannel mask read: " + h(value), LOG_DMA);
-    return value;
-};
-
-DMA.prototype.port_mode_write = function(channel_offset, data_byte)
-{
-    var channel = (data_byte & 0x3) + channel_offset;
-    dbg_log("mode write [" + channel + "] = " + h(data_byte), LOG_DMA);
-    this.channel_mode[channel] = data_byte;
-};
-
-DMA.prototype.portC_write = function(data_byte)
-{
-    dbg_log("flipflop reset", LOG_DMA);
-    this.lsb_msb_flipflop = 0;
+    this.channel_page.set(state[0]);
+    this.channel_pagehi.set(state[1]);
+    this.channel_addr.set(state[2]);
+    this.channel_addr_init.set(state[3]);
+    this.channel_count.set(state[4]);
+    this.channel_count_init.set(state[5]);
+    this.channel_mask.set(state[6]);
+    this.channel_mode.set(state[7]);
+    new Uint8Array(this.cpu.wasm_memory.buffer, this.cpu.get_dma_addr() + 96, 1)[0] = state[8];
 };
 
 DMA.prototype.on_unmask = function(fn, this_value)
@@ -248,27 +110,6 @@ DMA.prototype.on_unmask = function(fn, this_value)
     });
 };
 
-DMA.prototype.update_mask = function(channel, value)
-{
-    if(this.channel_mask[channel] !== value)
-    {
-        this.channel_mask[channel] = value;
-
-        if(!value)
-        {
-            dbg_log("firing on_unmask(" + channel + ")", LOG_DMA);
-            for(var i = 0; i < this.unmask_listeners.length; i++)
-            {
-                this.unmask_listeners[i].fn.call(
-                    this.unmask_listeners[i].this_value,
-                    channel
-                );
-            }
-        }
-    }
-};
-
-// read data, write to memory
 DMA.prototype.do_read = function(buffer, start, len, channel, fn)
 {
     var read_count = this.count_get_8bit(channel),
@@ -392,39 +233,4 @@ DMA.prototype.count_get_8bit = function(channel)
     }
 
     return count;
-};
-
-DMA.prototype.flipflop_get = function(old_dword, new_byte, continuing)
-{
-    if(!continuing)
-    {
-        this.lsb_msb_flipflop ^= 1;
-    }
-
-    if(this.lsb_msb_flipflop)
-    {
-        // low byte
-        return old_dword & ~0xFF | new_byte;
-    }
-    else
-    {
-        // high byte
-        return old_dword & ~0xFF00 | new_byte << 8;
-    }
-};
-
-DMA.prototype.flipflop_read = function(dword)
-{
-    this.lsb_msb_flipflop ^= 1;
-
-    if(this.lsb_msb_flipflop)
-    {
-        // low byte
-        return dword & 0xFF;
-    }
-    else
-    {
-        // high byte
-        return (dword >> 8) & 0xFF;
-    }
 };

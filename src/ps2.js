@@ -1,15 +1,21 @@
-import { LOG_PS2 } from "./const.js";
-import { h } from "./lib.js";
 import { dbg_log } from "./log.js";
 
 // For Types Only
 import { CPU } from "./cpu.js";
 import { BusConnector } from "./bus.js";
-import { ByteQueue } from "./lib.js";
 
-const PS2_LOG_VERBOSE = false;
+// struct Ps2 in src/rust/cpu/ps2.rs: mouse_delta_x and _y (doubles), then these 32-bit fields
+const F_ENABLE_MOUSE_STREAM = 0, F_USE_MOUSE = 1, F_HAVE_MOUSE = 2, F_MOUSE_CLICKS = 3, F_HAVE_KEYBOARD = 4,
+    F_ENABLE_KEYBOARD_STREAM = 5, F_NEXT_IS_MOUSE_COMMAND = 6, F_NEXT_READ_SAMPLE = 7, F_NEXT_READ_LED = 8,
+    F_NEXT_HANDLE_SCAN_CODE_SET = 9, F_NEXT_READ_RATE = 10, F_NEXT_READ_RESOLUTION = 11, F_LAST_PORT60_BYTE = 12,
+    F_SAMPLE_RATE = 13, F_RESOLUTION = 14, F_SCALING2 = 15, F_COMMAND_REGISTER = 16, F_READ_OUTPUT_REGISTER = 17,
+    F_READ_COMMAND_REGISTER = 18, F_CONTROLLER_OUTPUT_PORT = 19, F_READ_CONTROLLER_OUTPUT_PORT = 20, F_MOUSE_ID = 21,
+    F_MOUSE_DETECT_STATE = 22, F_MOUSE_RESET_WORKAROUND = 23, F_MOUSE_ENABLE_EVENT = 29;
 
 /**
+ * The PS/2 controller, keyboard and mouse. The device is in the core (src/rust/cpu/ps2.rs), which answers ports
+ * 0x60 and 0x64. Here: the bus messages, the reboot the controller can ask for, the timer for the rest of a
+ * large mouse movement, the ports when they are reached through JavaScript, and the snapshot format.
  * @constructor
  * @param {CPU} cpu
  * @param {BusConnector} bus
@@ -26,876 +32,152 @@ export function PS2(cpu, bus, hide_mouse_while_cli)
     /** @const @type {BusConnector} */
     this.bus = bus;
 
+    this.mouse_flush_scheduled = false;
+
     this.reset();
 
     this.bus.register("keyboard-code", function(code)
     {
-        this.kbd_send_code(code);
+        cpu.ps2_kbd_send_code(code);
     }, this);
 
     this.bus.register("mouse-click", function(data)
     {
-        this.mouse_send_click(data[0], data[1], data[2]);
+        cpu.ps2_mouse_send_click(data[0], data[1], data[2]);
     }, this);
 
     this.bus.register("mouse-delta", function(data)
     {
-        this.mouse_send_delta(data[0], data[1]);
+        this.schedule_flush(cpu.ps2_mouse_send_delta(data[0], data[1]));
     }, this);
 
     this.bus.register("mouse-wheel", function(data)
     {
-        if(!this.have_mouse || !this.use_mouse || !this.mouse_stream_active())
-        {
-            return;
-        }
-
-        this.wheel_movement -= data[0];
-        this.wheel_movement -= data[1] * 2; // X Wheel Movement
-        this.wheel_movement = Math.min(7, Math.max(-8, this.wheel_movement));
-        this.send_mouse_packet(0, 0);
+        cpu.ps2_mouse_wheel(data[0], data[1]);
     }, this);
 
-    cpu.io.register_read(0x60, this, this.port60_read);
-    cpu.io.register_read(0x64, this, this.port64_read);
+    cpu.io.register_read(0x60, this, function() { return cpu.ps2_port_read(0x60); });
+    cpu.io.register_read(0x64, this, function() { return cpu.ps2_port_read(0x64); });
 
-    cpu.io.register_write(0x60, this, this.port60_write);
-    cpu.io.register_write(0x64, this, this.port64_write);
+    // (the core sends a write here when it is a command to the mouse: two of them turn the mouse on)
+    cpu.io.register_write(0x60, this, function(write_byte)
+    {
+        cpu.ps2_port_write(0x60, write_byte);
+        const fields = this.fields();
+        if(fields[F_MOUSE_ENABLE_EVENT])
+        {
+            fields[F_MOUSE_ENABLE_EVENT] = 0;
+            this.bus.send("mouse-enable", true);
+        }
+    });
+    cpu.io.register_write(0x64, this, function(write_byte)
+    {
+        if(write_byte === 0xFE)
+        {
+            dbg_log("CPU reboot via PS2");
+            this.cpu.reboot_internal();
+        }
+        else
+        {
+            cpu.ps2_port_write(0x64, write_byte);
+        }
+    });
 }
 
 PS2.prototype.reset = function()
 {
-    /** @type {boolean} */
-    this.enable_mouse_stream = false;
+    this.cpu.ps2_init(this.hide_mouse_while_cli);
+};
 
-    /** @type {boolean} */
-    this.use_mouse = false;
+/** @return {!Int32Array} the device's 32-bit fields in the core's memory */
+PS2.prototype.fields = function()
+{
+    return new Int32Array(this.cpu.wasm_memory.buffer, this.cpu.get_ps2_addr() + 16, 31);
+};
 
-    /** @type {boolean} */
-    this.have_mouse = true;
-
-    /** @type {number} */
-    this.last_kbd_code = 0;
-
-    /** @type {boolean} */
-    this.mouse_flush_scheduled = false;
-
-    /** @type {number} */
-    this.mouse_delta_x = 0;
-    /** @type {number} */
-    this.mouse_delta_y = 0;
-    /** @type {number} */
-    this.mouse_clicks = 0;
-
-    /** @type {boolean} */
-    this.have_keyboard = true;
-
-    /** @type {boolean} */
-    this.enable_keyboard_stream = false;
-
-    /** @type {boolean} */
-    this.next_is_mouse_command = false;
-
-    /** @type {boolean} */
-    this.next_read_sample = false;
-
-    /** @type {boolean} */
-    this.next_read_led = false;
-
-    /** @type {boolean} */
-    this.next_handle_scan_code_set = false;
-
-    /** @type {boolean} */
-    this.next_read_rate = false;
-
-    /** @type {boolean} */
-    this.next_read_resolution = false;
-
-    /**
-     * @type {ByteQueue}
-     */
-    this.kbd_buffer = new ByteQueue(1024);
-
-    this.last_port60_byte = 0;
-
-    /** @type {number} */
-    this.sample_rate = 100;
-
-    /** @type {number} */
-    this.mouse_detect_state = 0;
-
-    /** @type {number} */
-    this.mouse_id = 0x00;
-
-    /** @type {boolean} */
-    this.mouse_reset_workaround = false;
-
-    /** @type {number} */
-    this.wheel_movement = 0;
-
-    /** @type {number} */
-    this.resolution = 4;
-
-    /** @type {boolean} */
-    this.scaling2 = false;
-
-    /** @type {number} */
-    this.last_mouse_packet = -1;
-
-    /**
-     * @type {ByteQueue}
-     */
-    this.mouse_buffer = new ByteQueue(1024);
-
-    /**
-     * @type {boolean}
-     * Also known as DBBOUT OBF - Output Buffer Full flag
-     */
-    this.next_byte_is_ready = false;
-
-    /** @type {boolean} */
-    this.next_byte_is_aux = false;
-
-    this.command_register = 1 | 4;
-    // TODO: What should be the initial value?
-    this.controller_output_port = 0;
-    this.read_output_register = false;
-    this.read_command_register = false;
-    this.read_controller_output_port = false;
+/** The rest of a large mouse movement is sent when the guest has read the packets before it */
+PS2.prototype.schedule_flush = function(movement_left)
+{
+    if(movement_left && !this.mouse_flush_scheduled)
+    {
+        this.mouse_flush_scheduled = true;
+        setTimeout(() =>
+        {
+            this.mouse_flush_scheduled = false;
+            this.schedule_flush(this.cpu.ps2_mouse_flush());
+        }, 10);
+    }
 };
 
 PS2.prototype.get_state = function()
 {
+    const f = this.fields();
+    const deltas = new Float64Array(this.cpu.wasm_memory.buffer, this.cpu.get_ps2_addr(), 2);
     var state = [];
 
-    state[0] = this.enable_mouse_stream;
-    state[1] = this.use_mouse;
-    state[2] = this.have_mouse;
-    state[3] = this.mouse_delta_x;
-    state[4] = this.mouse_delta_y;
-    state[5] = this.mouse_clicks;
-    state[6] = this.have_keyboard;
-    state[7] = this.enable_keyboard_stream;
-    state[8] = this.next_is_mouse_command;
-    state[9] = this.next_read_sample;
-    state[10] = this.next_read_led;
-    state[11] = this.next_handle_scan_code_set;
-    state[12] = this.next_read_rate;
-    state[13] = this.next_read_resolution;
-    //state[14] = this.kbd_buffer;
-    state[15] = this.last_port60_byte;
-    state[16] = this.sample_rate;
-    state[17] = this.resolution;
-    state[18] = this.scaling2;
-    //state[19] = this.mouse_buffer;
-    state[20] = this.command_register;
-    state[21] = this.read_output_register;
-    state[22] = this.read_command_register;
-    state[23] = this.controller_output_port;
-    state[24] = this.read_controller_output_port;
-    state[25] = this.mouse_id;
-    state[26] = this.mouse_detect_state;
-    state[27] = this.mouse_reset_workaround;
+    state[0] = !!f[F_ENABLE_MOUSE_STREAM];
+    state[1] = !!f[F_USE_MOUSE];
+    state[2] = !!f[F_HAVE_MOUSE];
+    state[3] = deltas[0];
+    state[4] = deltas[1];
+    state[5] = f[F_MOUSE_CLICKS];
+    state[6] = !!f[F_HAVE_KEYBOARD];
+    state[7] = !!f[F_ENABLE_KEYBOARD_STREAM];
+    state[8] = !!f[F_NEXT_IS_MOUSE_COMMAND];
+    state[9] = !!f[F_NEXT_READ_SAMPLE];
+    state[10] = !!f[F_NEXT_READ_LED];
+    state[11] = !!f[F_NEXT_HANDLE_SCAN_CODE_SET];
+    state[12] = !!f[F_NEXT_READ_RATE];
+    state[13] = !!f[F_NEXT_READ_RESOLUTION];
+    state[15] = f[F_LAST_PORT60_BYTE];
+    state[16] = f[F_SAMPLE_RATE];
+    state[17] = f[F_RESOLUTION];
+    state[18] = !!f[F_SCALING2];
+    state[20] = f[F_COMMAND_REGISTER];
+    state[21] = !!f[F_READ_OUTPUT_REGISTER];
+    state[22] = !!f[F_READ_COMMAND_REGISTER];
+    state[23] = f[F_CONTROLLER_OUTPUT_PORT];
+    state[24] = !!f[F_READ_CONTROLLER_OUTPUT_PORT];
+    state[25] = f[F_MOUSE_ID];
+    state[26] = f[F_MOUSE_DETECT_STATE];
+    state[27] = !!f[F_MOUSE_RESET_WORKAROUND];
 
     return state;
 };
 
 PS2.prototype.set_state = function(state)
 {
-    this.enable_mouse_stream = state[0];
-    this.use_mouse = state[1];
-    this.have_mouse = state[2];
-    this.mouse_delta_x = state[3];
-    this.mouse_delta_y = state[4];
-    this.mouse_clicks = state[5];
-    this.have_keyboard = state[6];
-    this.enable_keyboard_stream = state[7];
-    this.next_is_mouse_command = state[8];
-    this.next_read_sample = state[9];
-    this.next_read_led = state[10];
-    this.next_handle_scan_code_set = state[11];
-    this.next_read_rate = state[12];
-    this.next_read_resolution = state[13];
-    //this.kbd_buffer = state[14];
-    this.last_port60_byte = state[15];
-    this.sample_rate = state[16];
-    this.resolution = state[17];
-    this.scaling2 = state[18];
-    //this.mouse_buffer = state[19];
-    this.command_register = state[20];
-    this.read_output_register = state[21];
-    this.read_command_register = state[22];
-    this.controller_output_port = state[23];
-    this.read_controller_output_port = state[24];
-    this.mouse_id = state[25] || 0;
-    this.mouse_detect_state = state[26] || 0;
-    this.mouse_reset_workaround = state[27] || false;
-
-    this.next_byte_is_ready = false;
-    this.next_byte_is_aux = false;
-    this.kbd_buffer.clear();
-    this.mouse_buffer.clear();
-
-    this.bus.send("mouse-enable", this.use_mouse);
-};
-
-PS2.prototype.mouse_stream_active = function()
-{
-    return this.enable_mouse_stream && !(this.command_register & 0x20);
-};
-
-PS2.prototype.raise_irq = function()
-{
-    if(this.next_byte_is_ready)
-    {
-        // Wait until previous byte is read
-        // http://halicery.com/Hardware/8042/8042_1503033_TXT.htm
-        return;
-    }
-
-    // Kbd has priority over aux
-    if(this.kbd_buffer.length)
-    {
-        this.kbd_irq();
-    }
-    else if(this.mouse_buffer.length)
-    {
-        this.mouse_irq();
-    }
-};
-
-PS2.prototype.mouse_irq = function()
-{
-    this.next_byte_is_ready = true;
-    this.next_byte_is_aux = true;
-
-    if(this.command_register & 2)
-    {
-        dbg_log("Mouse irq", LOG_PS2);
-
-        // Pulse the irq line
-        // Note: can't lower immediately after rising, so lower before rising
-        // http://www.os2museum.com/wp/ibm-ps2-model-50-keyboard-controller/
-        this.cpu.device_lower_irq(12);
-        this.cpu.device_raise_irq(12);
-    }
-};
-
-PS2.prototype.kbd_irq = function()
-{
-    this.next_byte_is_ready = true;
-    this.next_byte_is_aux = false;
-
-    if(this.command_register & 1)
-    {
-        dbg_log("Keyboard irq", LOG_PS2);
-
-        // Pulse the irq line
-        // Note: can't lower immediately after rising, so lower before rising
-        // http://www.os2museum.com/wp/ibm-ps2-model-50-keyboard-controller/
-        this.cpu.device_lower_irq(1);
-        this.cpu.device_raise_irq(1);
-    }
-};
-
-PS2.prototype.kbd_send_code = function(code)
-{
-    if(this.enable_keyboard_stream)
-    {
-        // Auto-repeat of a held key is a stream of identical make codes. A guest that is slow to
-        // read them (an interpreter) would work through the backlog long after the key was
-        // released, so drop repeats while the guest has not read the earlier ones.
-        if(code === this.last_kbd_code && !(code & 0x80) && this.kbd_buffer.length >= 4)
-        {
-            return;
-        }
-        this.last_kbd_code = code;
-
-        dbg_log("adding kbd code: " + h(code), LOG_PS2);
-        this.kbd_buffer.push(code);
-        this.raise_irq();
-    }
-};
-
-PS2.prototype.mouse_send_delta = function(delta_x, delta_y)
-{
-    if(!this.have_mouse || !this.use_mouse)
-    {
-        return;
-    }
-
-    // note: delta_x or delta_y can be floating point numbers
-
-    //const factor = this.resolution * this.sample_rate / 80;
-    const factor = 1;
-
-    this.mouse_delta_x += delta_x * factor;
-    this.mouse_delta_y += delta_y * factor;
-
-    this.flush_mouse_delta();
-};
-
-/**
- * Sends the accumulated movement as packets. A packet can hold -255..255 per axis, and a guest
- * that is slow to handle interrupts (an interpreter) must not get a backlog of stale packets that
- * make the pointer lag behind, so at most a few packets are queued; the rest of the movement stays
- * accumulated and is sent when the guest has caught up.
- */
-PS2.prototype.flush_mouse_delta = function()
-{
-    if(!this.mouse_stream_active())
-    {
-        return;
-    }
-
-    const MAX_QUEUED_BYTES = 12;
-
-    while(this.mouse_buffer.length < MAX_QUEUED_BYTES)
-    {
-        const change_x = Math.max(-255, Math.min(255, this.mouse_delta_x | 0));
-        const change_y = Math.max(-255, Math.min(255, this.mouse_delta_y | 0));
-
-        if(!change_x && !change_y)
-        {
-            return;
-        }
-
-        this.mouse_delta_x -= change_x;
-        this.mouse_delta_y -= change_y;
-
-        this.send_mouse_packet(change_x, change_y);
-    }
-
-    if(!this.mouse_flush_scheduled)
-    {
-        this.mouse_flush_scheduled = true;
-        setTimeout(() =>
-        {
-            this.mouse_flush_scheduled = false;
-            this.flush_mouse_delta();
-        }, 10);
-    }
-};
-
-PS2.prototype.mouse_send_click = function(left, middle, right)
-{
-    if(!this.have_mouse || !this.use_mouse)
-    {
-        return;
-    }
-
-    this.mouse_clicks = left | right << 1 | middle << 2;
-
-    if(this.mouse_stream_active())
-    {
-        this.send_mouse_packet(0, 0);
-    }
-};
-
-PS2.prototype.send_mouse_packet = function(dx, dy)
-{
-    var info_byte =
-            (dy < 0) << 5 |
-            (dx < 0) << 4 |
-            1 << 3 |
-            this.mouse_clicks,
-        delta_x = dx,
-        delta_y = dy;
-
-    this.last_mouse_packet = Date.now();
-
-    //if(this.scaling2)
-    //{
-    //    // only in automatic packets, not 0xEB requests
-    //    delta_x = this.apply_scaling2(delta_x);
-    //    delta_y = this.apply_scaling2(delta_y);
-    //}
-
-    this.mouse_buffer.push(info_byte);
-    this.mouse_buffer.push(delta_x);
-    this.mouse_buffer.push(delta_y);
-
-    if(this.mouse_id === 0x04)
-    {
-        this.mouse_buffer.push(
-            0 << 5 | // TODO: 5th button
-            0 << 4 | // TODO: 4th button
-            this.wheel_movement & 0x0F
-        );
-        this.wheel_movement = 0;
-    }
-    else if(this.mouse_id === 0x03)
-    {
-        this.mouse_buffer.push(this.wheel_movement & 0xFF); // Byte 4 - Z Movement
-        this.wheel_movement = 0;
-    }
-
-    if(PS2_LOG_VERBOSE)
-    {
-        dbg_log("adding mouse packets: " + [info_byte, dx, dy], LOG_PS2);
-    }
-
-    this.raise_irq();
-};
-
-PS2.prototype.apply_scaling2 = function(n)
-{
-    // http://www.computer-engineering.org/ps2mouse/#Inputs.2C_Resolution.2C_and_Scaling
-    var abs = Math.abs(n),
-        sign = n >> 31;
-
-    switch(abs)
-    {
-        case 0:
-        case 1:
-        case 3:
-            return n;
-        case 2:
-            return sign;
-        case 4:
-            return 6 * sign;
-        case 5:
-            return 9 * sign;
-        default:
-            return n << 1;
-    }
-};
-
-PS2.prototype.port60_read = function()
-{
-    //dbg_log("port 60 read: " + (buffer[0] || "(none)"));
-
-    this.next_byte_is_ready = false;
-
-    if(!this.kbd_buffer.length && !this.mouse_buffer.length)
-    {
-        // should not happen
-        dbg_log("Port 60 read: Empty", LOG_PS2);
-        return this.last_port60_byte;
-    }
-
-    if(this.next_byte_is_aux)
-    {
-        this.cpu.device_lower_irq(12);
-        this.last_port60_byte = this.mouse_buffer.shift();
-        dbg_log("Port 60 read (mouse): " + h(this.last_port60_byte), LOG_PS2);
-    }
-    else
-    {
-        this.cpu.device_lower_irq(1);
-        this.last_port60_byte = this.kbd_buffer.shift();
-        dbg_log("Port 60 read (kbd)  : " + h(this.last_port60_byte), LOG_PS2);
-    }
-
-    if(this.kbd_buffer.length || this.mouse_buffer.length)
-    {
-        this.raise_irq();
-    }
-
-    return this.last_port60_byte;
-};
-
-PS2.prototype.port64_read = function()
-{
-    // status port
-
-    var status_byte = 0x10;
-
-    // A guest that polls this port with interrupts disabled (TempleOS in its debugger) reads every
-    // pending byte as a keystroke, including the bytes of mouse packets, and shows them as
-    // garbage text. Mouse data only becomes visible while interrupts are enabled, which is the
-    // only situation in which the guest's mouse irq handler could read it anyway.
-    // Only with the option ps2_hide_mouse_while_cli (the TempleOS page): every other guest reads mouse bytes
-    // with interrupts disabled too, in its IRQ 12 handler and in Linux's i8042 probe (the AUX loopback), and
-    // hiding them made Linux decide that there is no mouse port, or fail to enable the mouse.
-    let hidden_mouse_byte = this.hide_mouse_while_cli && this.next_byte_is_aux && !(this.cpu.flags[0] & 0x200);
-
-    if(hidden_mouse_byte && this.kbd_buffer.length)
-    {
-        // A key must not wait behind a mouse byte that the guest cannot see: let it take the
-        // output buffer; the mouse byte stays queued and is delivered afterwards.
-        this.cpu.device_lower_irq(12);
-        this.kbd_irq();
-        hidden_mouse_byte = false;
-    }
-
-    if(this.next_byte_is_ready && !hidden_mouse_byte)
-    {
-        status_byte |= 0x1;
-    }
-    if(this.next_byte_is_aux && !hidden_mouse_byte)
-    {
-        status_byte |= 0x20;
-    }
-
-    dbg_log("port 64 read: " + h(status_byte), LOG_PS2);
-
-    return status_byte;
-};
-
-PS2.prototype.port60_write = function(write_byte)
-{
-    dbg_log("port 60 write: " + h(write_byte), LOG_PS2);
-
-    if(this.read_command_register)
-    {
-        this.command_register = write_byte;
-        this.read_command_register = false;
-
-        // not sure, causes "spurious ack" in Linux
-        //this.kbd_buffer.push(0xFA);
-        //this.kbd_irq();
-
-        dbg_log("Keyboard command register = " + h(this.command_register), LOG_PS2);
-    }
-    else if(this.read_output_register)
-    {
-        this.read_output_register = false;
-
-        this.mouse_buffer.clear();
-        this.mouse_buffer.push(write_byte);
-        this.mouse_irq();
-    }
-    else if(this.next_read_sample)
-    {
-        this.next_read_sample = false;
-        this.mouse_buffer.clear();
-        this.mouse_buffer.push(0xFA);
-
-        this.sample_rate = write_byte;
-
-        switch(this.mouse_detect_state)
-        {
-            case -1:
-                if(write_byte === 60)
-                {
-                    // Detect Windows NT and turn on workaround the bug
-                    // 200->100->80->60
-                    this.mouse_reset_workaround = true;
-                    this.mouse_detect_state = 0;
-                }
-                else
-                {
-                    this.mouse_reset_workaround = false;
-                    this.mouse_detect_state = (write_byte === 200) ? 1 : 0;
-                }
-                break;
-            case 0:
-                if(write_byte === 200) this.mouse_detect_state = 1;
-                break;
-            case 1:
-                if(write_byte === 100) this.mouse_detect_state = 2;
-                else if(write_byte === 200) this.mouse_detect_state = 3;
-                else this.mouse_detect_state = 0;
-                break;
-            case 2:
-                // Host sends sample rate 200->100->80 to activate Intellimouse wheel
-                if(write_byte === 80) this.mouse_id = 0x03;
-                this.mouse_detect_state = -1;
-                break;
-            case 3:
-                // Host sends sample rate 200->200->80 to activate Intellimouse 4th, 5th buttons
-                if(write_byte === 80) this.mouse_id = 0x04;
-                this.mouse_detect_state = -1;
-                break;
-        }
-
-        dbg_log("mouse sample rate: " + h(write_byte) + ", mouse id: " + h(this.mouse_id), LOG_PS2);
-
-        if(!this.sample_rate)
-        {
-            dbg_log("invalid sample rate, reset to 100", LOG_PS2);
-            this.sample_rate = 100;
-        }
-
-        this.mouse_irq();
-    }
-    else if(this.next_read_resolution)
-    {
-        this.next_read_resolution = false;
-        this.mouse_buffer.clear();
-        this.mouse_buffer.push(0xFA);
-
-        if(write_byte > 3)
-        {
-            this.resolution = 4;
-            dbg_log("invalid resolution, resetting to 4", LOG_PS2);
-        }
-        else
-        {
-            this.resolution = 1 << write_byte;
-            dbg_log("resolution: " + this.resolution, LOG_PS2);
-        }
-        this.mouse_irq();
-    }
-    else if(this.next_read_led)
-    {
-        // nope
-        this.next_read_led = false;
-        this.kbd_buffer.push(0xFA);
-        this.kbd_irq();
-    }
-    else if(this.next_handle_scan_code_set)
-    {
-        this.next_handle_scan_code_set = false;
-
-        this.kbd_buffer.push(0xFA);
-        this.kbd_irq();
-
-        if(write_byte)
-        {
-            // set scan code set
-        }
-        else
-        {
-            this.kbd_buffer.push(1);
-        }
-    }
-    else if(this.next_read_rate)
-    {
-        // nope
-        this.next_read_rate = false;
-        this.kbd_buffer.push(0xFA);
-        this.kbd_irq();
-    }
-    else if(this.next_is_mouse_command)
-    {
-        this.next_is_mouse_command = false;
-        dbg_log("Port 60 data register write: " + h(write_byte), LOG_PS2);
-
-        if(!this.have_mouse)
-        {
-            return;
-        }
-
-        // send ack
-        this.kbd_buffer.clear();
-        this.mouse_buffer.clear();
-        this.mouse_buffer.push(0xFA);
-
-        switch(write_byte)
-        {
-        case 0xE6:
-            // set scaling to 1:1
-            dbg_log("Scaling 1:1", LOG_PS2);
-            this.scaling2 = false;
-            break;
-        case 0xE7:
-            // set scaling to 2:1
-            dbg_log("Scaling 2:1", LOG_PS2);
-            this.scaling2 = true;
-            break;
-        case 0xE8:
-            // set mouse resolution
-            this.next_read_resolution = true;
-            break;
-        case 0xE9:
-            // status request - send one packet
-            this.send_mouse_packet(0, 0);
-            break;
-        case 0xEB:
-            // request single packet
-            dbg_log("unimplemented request single packet", LOG_PS2);
-            this.send_mouse_packet(0, 0);
-            break;
-        case 0xF2:
-            //  MouseID Byte
-            dbg_log("required id: " + h(this.mouse_id), LOG_PS2);
-            this.mouse_buffer.push(this.mouse_id);
-
-            this.mouse_clicks = this.mouse_delta_x = this.mouse_delta_y = 0;
-            // this.send_mouse_packet(0, 0);
-            this.raise_irq();
-            break;
-        case 0xF3:
-            // sample rate
-            this.next_read_sample = true;
-            break;
-        case 0xF4:
-            // enable streaming
-            this.enable_mouse_stream = true;
-            this.use_mouse = true;
-            this.bus.send("mouse-enable", true);
-
-            this.mouse_clicks = this.mouse_delta_x = this.mouse_delta_y = 0;
-            break;
-        case 0xF5:
-            // disable streaming
-            this.enable_mouse_stream = false;
-            break;
-        case 0xF6:
-            // set defaults
-            this.enable_mouse_stream = false;
-            this.sample_rate = 100;
-            this.scaling2 = false;
-            this.resolution = 4;
-            break;
-        case 0xFF:
-            // reset, send completion code
-            dbg_log("Mouse reset", LOG_PS2);
-            this.mouse_buffer.push(0xAA);
-            this.mouse_buffer.push(0);
-
-            this.use_mouse = true;
-            this.bus.send("mouse-enable", true);
-
-            this.enable_mouse_stream = false;
-            this.sample_rate = 100;
-            this.scaling2 = false;
-            this.resolution = 4;
-
-            if(!this.mouse_reset_workaround)
-            {
-                this.mouse_id = 0x00;
-            }
-
-            this.mouse_clicks = this.mouse_delta_x = this.mouse_delta_y = 0;
-            break;
-
-        default:
-            dbg_log("Unimplemented mouse command: " + h(write_byte), LOG_PS2);
-        }
-
-        this.mouse_irq();
-    }
-    else if(this.read_controller_output_port)
-    {
-        this.read_controller_output_port = false;
-        this.controller_output_port = write_byte;
-        // If we ever want to implement A20 masking, here is where
-        // we should turn the masking off if the second bit is on
-    }
-    else
-    {
-        dbg_log("Port 60 data register write: " + h(write_byte), LOG_PS2);
-
-        // send ack
-        this.mouse_buffer.clear();
-        this.kbd_buffer.clear();
-        this.kbd_buffer.push(0xFA);
-
-        switch(write_byte)
-        {
-        case 0xED:
-            this.next_read_led = true;
-            break;
-        case 0xF0:
-            // get/set scan code set
-            this.next_handle_scan_code_set = true;
-            break;
-        case 0xF2:
-            // identify
-            this.kbd_buffer.push(0xAB);
-            this.kbd_buffer.push(0x83);
-            break;
-        case 0xF3:
-            //  Set typematic rate and delay
-            this.next_read_rate = true;
-            break;
-        case 0xF4:
-            // enable scanning
-            dbg_log("kbd enable scanning", LOG_PS2);
-            this.enable_keyboard_stream = true;
-            break;
-        case 0xF5:
-            // disable scanning
-            dbg_log("kbd disable scanning", LOG_PS2);
-            this.enable_keyboard_stream = false;
-            break;
-        case 0xF6:
-            // reset defaults
-            //this.enable_keyboard_stream = false;
-            break;
-        case 0xFF:
-            this.kbd_buffer.clear();
-            this.kbd_buffer.push(0xFA);
-            this.kbd_buffer.push(0xAA);
-            this.kbd_buffer.push(0);
-            break;
-        default:
-            dbg_log("Unimplemented keyboard command: " + h(write_byte), LOG_PS2);
-        }
-
-        this.kbd_irq();
-    }
-};
-
-PS2.prototype.port64_write = function(write_byte)
-{
-    dbg_log("port 64 write: " + h(write_byte), LOG_PS2);
-
-    switch(write_byte)
-    {
-    case 0x20:
-        this.kbd_buffer.clear();
-        this.mouse_buffer.clear();
-        this.kbd_buffer.push(this.command_register);
-        this.kbd_irq();
-        break;
-    case 0x60:
-        this.read_command_register = true;
-        break;
-    case 0xD0:
-        // read controller output port
-        this.kbd_buffer.clear();
-        this.mouse_buffer.clear();
-        this.kbd_buffer.push(this.controller_output_port);
-        this.kbd_irq();
-        break;
-    case 0xD1:
-        this.read_controller_output_port = true;
-        break;
-    case 0xD3:
-        this.read_output_register = true;
-        break;
-    case 0xD4:
-        this.next_is_mouse_command = true;
-        break;
-    case 0xA7:
-        // Disable second port
-        dbg_log("Disable second port", LOG_PS2);
-        this.command_register |= 0x20;
-        break;
-    case 0xA8:
-        // Enable second port
-        dbg_log("Enable second port", LOG_PS2);
-        this.command_register &= ~0x20;
-        break;
-    case 0xA9:
-        // test second ps/2 port
-        this.kbd_buffer.clear();
-        this.mouse_buffer.clear();
-        this.kbd_buffer.push(0);
-        this.kbd_irq();
-        break;
-    case 0xAA:
-        this.kbd_buffer.clear();
-        this.mouse_buffer.clear();
-        this.kbd_buffer.push(0x55);
-        this.kbd_irq();
-        break;
-    case 0xAB:
-        // Test first PS/2 port
-        this.kbd_buffer.clear();
-        this.mouse_buffer.clear();
-        this.kbd_buffer.push(0);
-        this.kbd_irq();
-        break;
-    case 0xAD:
-        // Disable Keyboard
-        dbg_log("Disable Keyboard", LOG_PS2);
-        this.command_register |= 0x10;
-        break;
-    case 0xAE:
-        // Enable Keyboard
-        dbg_log("Enable Keyboard", LOG_PS2);
-        this.command_register &= ~0x10;
-        break;
-    case 0xFE:
-        dbg_log("CPU reboot via PS2");
-        this.cpu.reboot_internal();
-        break;
-    default:
-        dbg_log("port 64: Unimplemented command byte: " + h(write_byte), LOG_PS2);
-    }
+    const f = this.fields();
+    const deltas = new Float64Array(this.cpu.wasm_memory.buffer, this.cpu.get_ps2_addr(), 2);
+
+    f[F_ENABLE_MOUSE_STREAM] = +state[0];
+    f[F_USE_MOUSE] = +state[1];
+    f[F_HAVE_MOUSE] = +state[2];
+    deltas[0] = state[3];
+    deltas[1] = state[4];
+    f[F_MOUSE_CLICKS] = state[5];
+    f[F_HAVE_KEYBOARD] = +state[6];
+    f[F_ENABLE_KEYBOARD_STREAM] = +state[7];
+    f[F_NEXT_IS_MOUSE_COMMAND] = +state[8];
+    f[F_NEXT_READ_SAMPLE] = +state[9];
+    f[F_NEXT_READ_LED] = +state[10];
+    f[F_NEXT_HANDLE_SCAN_CODE_SET] = +state[11];
+    f[F_NEXT_READ_RATE] = +state[12];
+    f[F_NEXT_READ_RESOLUTION] = +state[13];
+    f[F_LAST_PORT60_BYTE] = state[15];
+    f[F_SAMPLE_RATE] = state[16];
+    f[F_RESOLUTION] = state[17];
+    f[F_SCALING2] = +state[18];
+    f[F_COMMAND_REGISTER] = state[20];
+    f[F_READ_OUTPUT_REGISTER] = +state[21];
+    f[F_READ_COMMAND_REGISTER] = +state[22];
+    f[F_CONTROLLER_OUTPUT_PORT] = state[23];
+    f[F_READ_CONTROLLER_OUTPUT_PORT] = +state[24];
+    f[F_MOUSE_ID] = state[25] || 0;
+    f[F_MOUSE_DETECT_STATE] = state[26] || 0;
+    f[F_MOUSE_RESET_WORKAROUND] = +(state[27] || false);
+
+    this.cpu.ps2_state_restored();
+
+    this.bus.send("mouse-enable", !!f[F_USE_MOUSE]);
 };
