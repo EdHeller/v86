@@ -104,6 +104,49 @@ const screen_text = () => {
     catch(e) { return ""; }
 };
 
+// The boot's timeline: every line the guest prints (serial console and text screen) with the time it appeared
+const timeline = [], seen_lines = new Set();
+let serial_line = "";
+function note_line(source, text)
+{
+    text = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/[\x00-\x1f]/g, " ").trim();
+    if(!text || !t0 || seen_lines.has(text)) return;
+    seen_lines.add(text);
+    timeline.push({ wall: (real_now() - t0) / 1000, insn: instructions(), source, text: text.slice(0, 110) });
+}
+emulator.add_listener("serial0-output-byte", b => {
+    if(b === 10 || b === 13) { note_line("serial", serial_line); serial_line = ""; }
+    else serial_line += String.fromCharCode(b);
+});
+function note_screen()
+{
+    const rows = screen_text().split("\n");
+    // (the row the cursor is on is still being written: the rows above it are complete)
+    for(let i = 0; i < rows.length - 1; i++) if(rows[i + 1].trim()) note_line("screen", rows[i]);
+}
+
+// The guest's side: where its instructions go. The main loop comes back about every 100,000 instructions; the
+// guest's instruction pointer at those moments, before interrupts are delivered, is a sample (weighted with the instructions since the last one).
+// Addresses are resolved in profile.mjs with a System.map of the guest's kernel (--guest-map).
+const guest = new Map();
+let guest_view = null, guest_last = 0;
+function guest_sample()
+{
+    if(!guest_view || guest_view.length === 0)
+    {
+        const cpu = emulator.v86.cpu;
+        guest_view = new Int32Array(cpu.wasm_memory.buffer, 0, 512);
+    }
+    const now = instructions(), weight = now - guest_last;
+    guest_last = now;
+    if(weight <= 0) return;
+    const cpl = guest_view[612 >> 2] & 3;
+    const lo = guest_view[556 >> 2] >>> 0, hi = opt.arch === "x86_64" ? guest_view[1440 >> 2] >>> 0 : 0;
+    // (64 bytes per bucket; the key is cpl, then the address in hex)
+    const key = cpl + (hi ? hi.toString(16) + ((lo & ~63) >>> 0).toString(16).padStart(8, "0") : ((lo & ~63) >>> 0).toString(16));
+    guest.set(key, (guest.get(key) || 0) + weight);
+}
+
 const session = new inspector.Session();
 const post = (method, params) => new Promise((resolve, reject) => session.post(method, params, (e, r) => e ? reject(e) : resolve(r)));
 
@@ -154,6 +197,9 @@ async function finish(ok, error)
     result.ok = ok;
     if(error) result.error = error;
     result.end = snapshot("(end)");
+    note_screen(); note_line("serial", serial_line);
+    result.timeline = timeline;
+    if(opt.guest_profile) result.guest = [...guest].sort((a, b) => b[1] - a[1]).slice(0, 20000);
     if(opt.profile)
     {
         const { profile } = await post("Profiler.stop");
@@ -175,7 +221,8 @@ async function finish(ok, error)
     }
     if(opt.serial_log) fs.writeFileSync(opt.serial_log, serial);
     if(!ok) result.serial_tail = serial.slice(-400);
-    console.log(JSON.stringify(result));
+    // (to a file: a long line on a pipe is cut off by process.exit)
+    fs.writeFileSync(opt.result, JSON.stringify(result));
     process.exit(0);
 }
 
@@ -199,6 +246,17 @@ emulator.add_listener("emulator-ready", async () => {
             setTimeout(() => { idle_ms += real_now() - from; this.yield_callback(tick); }, t);
         }
     };
+    if(opt.guest_profile)
+    {
+        // (the core calls this after each batch of instructions, before it delivers interrupts: sampled later, the
+        // instruction pointer would mostly be an interrupt handler's first instruction)
+        const cpu = v86.cpu, timers = cpu.run_hardware_timers;
+        cpu.run_hardware_timers = function(acpi_enabled, now)
+        {
+            if(!cpu.in_hlt[0]) guest_sample(); else guest_last = instructions();
+            return timers.call(cpu, acpi_enabled, now);
+        };
+    }
     for(const [k, v] of Object.entries(opt.jit_config || {})) v86.cpu.wm.exports["set_jit_config"](+k, +v);
 
     if(opt.profile)
@@ -210,10 +268,12 @@ emulator.add_listener("emulator-ready", async () => {
         result.profile_t0 = real_now();
     }
     t0 = real_now(); cpu0 = process.cpuUsage(); thread0 = process.threadCpuUsage();
+    timeline.push({ wall: 0, insn: 0, source: "", text: "(the start: firmware, boot loader, the kernel before its first line)" });
     emulator.run();
 
     // (screen marks, instruction marks and the time limit are polled; serial marks are checked on every byte)
     const poll = setInterval(() => {
+        note_screen();
         check();
         if(!finished && real_now() - t0 > opt.timeout * 1000)
         {

@@ -1394,6 +1394,8 @@ pub unsafe fn instr_0F30() {
             // must retain the guest's selected types.
             *pat = value;
         },
+        IA32_PRED_CMD => {},          // (a barrier for the branch predictor: nothing to do)
+        IA32_ARCH_CAPABILITIES => {}, // (read-only)
         IA32_SPEC_CTRL => {},      // linux 5.19
         IA32_TSX_CTRL => {},       // linux 5.19
         MSR_TSX_FORCE_ABORT => {}, // linux 5.19
@@ -1493,6 +1495,13 @@ pub unsafe fn instr_0F32() {
             high = (*pat >> 32) as i32;
         },
         MSR_PKG_C2_RESIDENCY => {},
+        IA32_PRED_CMD => {},
+        IA32_ARCH_CAPABILITIES => {
+            if CPUID_HIDE & 8 == 0 {
+                low = ARCH_CAPABILITIES as i32;
+                high = (ARCH_CAPABILITIES >> 32) as i32;
+            }
+        },
         IA32_SPEC_CTRL => {},      // linux 5.19
         IA32_TSX_CTRL => {},       // linux 5.19
         MSR_TSX_FORCE_ABORT => {}, // linux 5.19
@@ -3414,6 +3423,30 @@ pub unsafe fn instr32_0FA1() {
 /// as upstream v86 reports it (no SSSE3/SSE4, PCLMULQDQ, AES, MOVBE, CX16, XSAVE). The instructions keep working.
 pub static mut CPUID_HIDE: u32 = 0;
 
+// IA32_ARCH_CAPABILITIES: an emulated CPU does not speculate, so it has none of the hardware's side channels and
+// says so. Without this a guest takes the CPU (family 6) for vulnerable hardware and pays for the mitigations on
+// every system call, interrupt, context switch and indirect call: page table isolation (two CR3 writes, each a
+// TLB flush here, per kernel entry), retpolines and return thunks, RSB filling, VERW. Linux then reports
+// "Not affected" (Meltdown, MDS, SSB, ...) and "Enhanced / Automatic IBRS" for Spectre v2.
+//   0 RDCL_NO, 1 IBRS_ALL, 3 SKIP_L1DFL_VMENTRY, 4 SSB_NO, 5 MDS_NO, 6 PSCHANGE_MC_NO, 8 TAA_NO, 13 SBDR_SSDP_NO,
+//   14 FBSDP_NO, 15 PSDP_NO, 20 BHI_NO, 24 PBRSB_NO, 26 GDS_NO, 27 RFDS_NO, 62 ITS_NO
+// (set_jit_config(62, 8) hides it, for comparisons)
+pub const ARCH_CAPABILITIES: u64 = 1 << 0
+    | 1 << 1
+    | 1 << 3
+    | 1 << 4
+    | 1 << 5
+    | 1 << 6
+    | 1 << 8
+    | 1 << 13
+    | 1 << 14
+    | 1 << 15
+    | 1 << 20
+    | 1 << 24
+    | 1 << 26
+    | 1 << 27
+    | 1 << 62;
+
 #[no_mangle]
 pub unsafe fn instr_0FA2() {
     // cpuid
@@ -3528,6 +3561,10 @@ pub unsafe fn instr_0FA2() {
                 }
                 ecx = 0;
                 edx = 0;
+                if CPUID_HIDE & 8 == 0 {
+                    // IBRS and IBPB (IA32_SPEC_CTRL, IA32_PRED_CMD), IA32_ARCH_CAPABILITIES
+                    edx = 1 << 26 | 1 << 29;
+                }
             }
         },
 

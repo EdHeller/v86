@@ -33,6 +33,8 @@
 //   --insn-mark name=N       the same, after N million guest instructions (any guest, also graphical ones)
 //   --send name=text         type text on the serial console when mark <name> is reached (\n is enter)
 //   --keys name=text         the same on the keyboard
+//   --guest-map file         also sample the guest: which of its code the instructions go to. file is the
+//                            System.map of the guest's kernel (boot it with nokaslr), or "none" for addresses
 //   --runs N                 timing runs per build (default 0); --no-profile leaves the profiled run out
 //   --clock virtual|real     see above; --mips N the virtual clock's rate
 //   --interval us            the profiler's sampling interval (default 200)
@@ -116,22 +118,23 @@ const base = {
     cdrom: abs(args.cdrom), hda: abs(args.hda), fda: abs(args.fda), bzimage: abs(args.bzimage), initrd: abs(args.initrd),
     state: abs(args.state), cmdline: args.cmdline,
     memory: +args.memory || 512, timeout: +args.timeout || 600, interval: +args.interval || 200,
-    marks, stat_names,
+    marks, stat_names, guest_profile: !!args["guest-map"],
     jit_config: Object.fromEntries((args["jit-config"] || []).map(split)),
     v86: args.v86 ? JSON.parse(args.v86) : undefined,
 };
 if(!["virtual", "real"].includes(base.clock)) { console.error("--clock: virtual or real"); process.exit(1); }
 
+let run_count = 0;
 function run(build, extra)
 {
     return new Promise(resolve => {
-        const child = spawn(process.execPath, [path.join(here, "child.mjs"), JSON.stringify({ ...base, label: build.name, wasm: build.wasm, ...extra })],
-            { stdio: ["ignore", "pipe", "inherit"] });
-        let out = "";
-        child.stdout.on("data", d => { out += d; });
+        const result = path.join(out_dir, ".result-" + process.pid + "-" + (run_count++) + ".json");
+        const child = spawn(process.execPath, [path.join(here, "child.mjs"), JSON.stringify({ ...base, label: build.name, wasm: build.wasm, result, ...extra })],
+            { stdio: ["ignore", "inherit", "inherit"] });
         child.on("close", () => {
-            try { resolve(JSON.parse(out.trim().split("\n").pop())); }
+            try { resolve(JSON.parse(fs.readFileSync(result, "utf8"))); }
             catch(e) { resolve({ build: build.name, ok: false, error: "no result", marks: [] }); }
+            fs.rmSync(result, { force: true });
         });
     });
 }
@@ -175,6 +178,44 @@ if(!args["no-profile"])
             "; modules: WebAssembly modules the JIT generated)");
         if(r.jit64) say("  jit64: " + r.jit64.modules + " modules, " + r.jit64.failed + " failed, " + r.jit64.invalidated + " invalidated, " + r.jit64.blocks + " blocks, " +
             (r.jit64.bytes / 1e6).toFixed(1) + " MB, " + r.jit64.instructions + " instructions compiled");
+        if(r.timeline && r.timeline.length > 1)
+        {
+            // the lines after which the most time passed: what the guest was doing while the user waited
+            const end = r.end, tl = r.timeline;
+            const rows = tl.map((l, i) => { const n = tl[i + 1] || end; return { ...l, dt: n.wall - l.wall, di: n.insn - l.insn }; });
+            const slow = rows.filter(x => x.dt >= 0.01 * end.wall).sort((x, y) => y.dt - x.dt).slice(0, 25).sort((x, y) => x.wall - y.wall);
+            say("\nBoot timeline: the console lines that were followed by 1 % of the run or more (" + tl.length + " lines; all of them in report.json)");
+            say("  " + "at s".padStart(8) + "then s".padStart(8) + "share".padStart(8) + "insn M".padStart(8) + "  line");
+            for(const x of slow) say("  " + x.wall.toFixed(2).padStart(8) + x.dt.toFixed(2).padStart(8) + (100 * x.dt / end.wall).toFixed(1).padStart(6) + " %" + (x.di / 1e6).toFixed(0).padStart(8) + "  " + x.text.slice(0, 90));
+        }
+        if(r.guest && r.guest.length)
+        {
+            // symbols of the kernel (text), sorted; a sample belongs to the last symbol at or below it
+            let syms = [];
+            if(args["guest-map"] !== "none")
+            {
+                syms = fs.readFileSync(args["guest-map"], "utf8").split("\n").map(l => l.split(" ")).filter(p => p.length >= 3 && /^[tTwW]$/.test(p[1]))
+                    .map(p => [BigInt("0x" + p[0]), p[2]]).sort((x, y) => x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0);
+            }
+            const first = syms.length ? syms[0][0] : 0n, last = syms.length ? syms[syms.length - 1][0] : 0n;
+            const resolve = (cpl, addr) => {
+                if(cpl === 3) return "[user space]";
+                if(!syms.length || addr < first || addr > last + 0x100000n) return syms.length ? "[kernel, outside the map: modules, the decompressor, firmware] " + (addr >> 20n).toString(16) + "xxxxx" : "0x" + addr.toString(16);
+                let lo = 0, hi = syms.length - 1;
+                while(lo < hi) { const mid = lo + hi + 1 >> 1; if(syms[mid][0] <= addr) lo = mid; else hi = mid - 1; }
+                return syms[lo][1];
+            };
+            const by = new Map();
+            let all = 0, user = 0;
+            for(const [key, w] of r.guest)
+            {
+                const cpl = +key[0], name = resolve(cpl, BigInt("0x" + key.slice(1)));
+                by.set(name, (by.get(name) || 0) + w); all += w; if(cpl === 3) user += w;
+            }
+            say("\nGuest instructions by function (sampled; " + (all / 1e6).toFixed(0) + " M instructions, " + (100 * user / all).toFixed(1) + " % in user space)");
+            for(const [name, w] of [...by].sort((x, y) => y[1] - x[1]).slice(0, top)) say("  " + (w / 1e6).toFixed(0).padStart(8) + " M " + (100 * w / all).toFixed(1).padStart(5) + " %  " + name);
+            report.builds[b.name].guest = [...by].sort((x, y) => y[1] - x[1]).slice(0, 500);
+        }
         say("");
         say(format(a, top));
         if(r.stats)
