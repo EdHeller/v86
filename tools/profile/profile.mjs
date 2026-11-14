@@ -166,7 +166,7 @@ if(!args["no-profile"])
         const a = analyze(JSON.parse(fs.readFileSync(file, "utf8")));
         report.builds[b.name].profile = { file, run: r, by_area: a.by_area, phases: a.phases, self: a.self.slice(0, 200), inclusive: a.inclusive.slice(0, 200) };
 
-        say("Phases (profiler on: about 5 to 10 % slower than the timing runs)");
+        say("Phases (profiler on: about 20 % slower than the timing runs)");
         say("  " + "mark".padEnd(14) + "wall s".padStart(9) + "cpu s".padStart(9) + "insn M".padStart(10) + "MIPS".padStart(8) + "idle s".padStart(9) + "modules".padStart(9) + "wasm MB".padStart(9));
         let prev = { wall: 0, cpu_main: 0, insn: 0, idle: 0, modules: 0, wasm_bytes: 0 };
         for(const m of r.marks)

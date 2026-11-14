@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
+/* global setImmediate */
 import inspector from "node:inspector";
 
 const opt = JSON.parse(process.argv[2]);
