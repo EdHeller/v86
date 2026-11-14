@@ -2222,7 +2222,7 @@ pub unsafe fn instr_F4() {
     // due it will immediately call call_interrupt_vector and continue
     // execution without an unnecessary cycle through do_run
     if *flags & FLAG_INTERRUPT != 0 {
-        js::run_hardware_timers(*acpi_enabled, js::microtick());
+        crate::cpu::pit::run_hardware_timers(*acpi_enabled, js::microtick());
         handle_irqs();
     }
     else {

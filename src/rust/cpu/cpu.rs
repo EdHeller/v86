@@ -3734,7 +3734,7 @@ pub unsafe fn main_loop() -> f64 {
 
     if *in_hlt {
         if *flags & FLAG_INTERRUPT != 0 {
-            let t = js::run_hardware_timers(*acpi_enabled, start);
+            let t = super::pit::run_hardware_timers(*acpi_enabled, start);
             handle_irqs();
             if *in_hlt {
                 profiler::stat_increment(stat::MAIN_LOOP_IDLE);
@@ -3752,7 +3752,7 @@ pub unsafe fn main_loop() -> f64 {
 
         let now = js::microtick();
         STAT_LOOP_CLOCK_READS = STAT_LOOP_CLOCK_READS.wrapping_add(1);
-        let t = js::run_hardware_timers(*acpi_enabled, now);
+        let t = super::pit::run_hardware_timers(*acpi_enabled, now);
         handle_irqs();
         if *in_hlt {
             return t;
@@ -5008,7 +5008,7 @@ pub unsafe fn pic_call_irq(interrupt_nr: u8) {
 }
 
 #[no_mangle]
-unsafe fn device_raise_irq(i: u8) {
+pub unsafe fn device_raise_irq(i: u8) {
     pic::set_irq(i);
     if *acpi_enabled {
         ioapic::set_irq(i);
@@ -5030,7 +5030,7 @@ unsafe fn device_set_pci_irq(pic_irq: i32, gsi: i32, level: bool) {
 }
 
 #[no_mangle]
-unsafe fn device_lower_irq(i: u8) {
+pub unsafe fn device_lower_irq(i: u8) {
     pic::clear_irq(i);
     if *acpi_enabled {
         ioapic::clear_irq(i);
@@ -5047,12 +5047,26 @@ pub fn io_port_read8(port: i32) -> i32 {
             0xA1 => pic::portA1_read() as i32,
             0x4D0 => pic::port4D0_read() as i32,
             0x4D1 => pic::port4D1_read() as i32,
-            _ => js::io_port_read8(port),
+            _ if super::pit::serves_read(port) => super::pit::pit_port_read(port),
+            _ => {
+                super::pit::JS_TIMERS_DUE = 0.0;
+                js::io_port_read8(port)
+            },
         }
     }
 }
-pub fn io_port_read16(port: i32) -> i32 { unsafe { js::io_port_read16(port) } }
-pub fn io_port_read32(port: i32) -> i32 { unsafe { js::io_port_read32(port) } }
+pub fn io_port_read16(port: i32) -> i32 {
+    unsafe {
+        super::pit::JS_TIMERS_DUE = 0.0;
+        js::io_port_read16(port)
+    }
+}
+pub fn io_port_read32(port: i32) -> i32 {
+    unsafe {
+        super::pit::JS_TIMERS_DUE = 0.0;
+        js::io_port_read32(port)
+    }
+}
 
 pub fn io_port_write8(port: i32, value: i32) {
     unsafe {
@@ -5069,12 +5083,26 @@ pub fn io_port_write8(port: i32, value: i32) {
                 };
                 handle_irqs()
             },
-            _ => js::io_port_write8(port, value),
+            _ if super::pit::serves_write(port, value) => super::pit::pit_port_write(port, value),
+            _ => {
+                super::pit::JS_TIMERS_DUE = 0.0;
+                js::io_port_write8(port, value)
+            },
         }
     }
 }
-pub fn io_port_write16(port: i32, value: i32) { unsafe { js::io_port_write16(port, value) } }
-pub fn io_port_write32(port: i32, value: i32) { unsafe { js::io_port_write32(port, value) } }
+pub fn io_port_write16(port: i32, value: i32) {
+    unsafe {
+        super::pit::JS_TIMERS_DUE = 0.0;
+        js::io_port_write16(port, value)
+    }
+}
+pub fn io_port_write32(port: i32, value: i32) {
+    unsafe {
+        super::pit::JS_TIMERS_DUE = 0.0;
+        js::io_port_write32(port, value)
+    }
+}
 
 #[no_mangle]
 #[cfg(debug_assertions)]

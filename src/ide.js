@@ -2016,7 +2016,8 @@ IDEInterface.prototype.read_data = function(length)
     if(this.data_pointer < this.data_end)
     {
         dbg_assert(this.data_pointer + length - 1 < this.data_end);
-        dbg_assert(this.data_pointer % length === 0, h(this.data_pointer) + " " + length);
+        // (in DEBUG only: the message is built on every read of the data port, also in a release build)
+        if(DEBUG) dbg_assert(this.data_pointer % length === 0, h(this.data_pointer) + " " + length);
 
         if(length === 1)
         {

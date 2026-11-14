@@ -22,7 +22,8 @@
 //
 // Options
 //   --arch x86|x86_64        the core: build/v86.wasm or build/v64.wasm (default x86)
-//   --wasm [name=]file       a core to measure; repeat it to compare builds (the first is the baseline)
+//   --wasm [name=]file[@lib] a core to measure; repeat it to compare builds (the first is the baseline); @lib: the
+//                            JavaScript of that build, when it differs from --lib
 //   --lib file               the JavaScript: src/main.js (default, no build needed) or a build/libv86.mjs
 //   --plugin file            more JavaScript to load after --lib (build/libv64.js beside a built libv86.mjs)
 //   --cdrom --hda --fda --bzimage --initrd --state <file>, --cmdline <text>, --memory <MiB> (512)
@@ -81,8 +82,9 @@ const split = s => { const i = s.indexOf("="); return i < 0 ? [null, s] : [s.sli
 const unescape = s => s.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
 
 const builds = (args.wasm || [path.join(root, arch === "x86_64" ? "build/v64.wasm" : "build/v86.wasm")]).map(w => {
-    const [name, file] = split(w);
-    return { name: name || path.basename(file).replace(/\.wasm$/, ""), wasm: path.resolve(file) };
+    const [name, files] = split(w);
+    const [file, lib] = files.split("@");
+    return { name: name || path.basename(file).replace(/\.wasm$/, ""), wasm: path.resolve(file), lib: lib && path.resolve(lib) };
 });
 for(const b of builds) if(!fs.existsSync(b.wasm)) { console.error("no such file: " + b.wasm + " (make " + path.relative(root, b.wasm) + ")"); process.exit(1); }
 
@@ -129,7 +131,7 @@ function run(build, extra)
 {
     return new Promise(resolve => {
         const result = path.join(out_dir, ".result-" + process.pid + "-" + (run_count++) + ".json");
-        const child = spawn(process.execPath, [path.join(here, "child.mjs"), JSON.stringify({ ...base, label: build.name, wasm: build.wasm, result, ...extra })],
+        const child = spawn(process.execPath, [path.join(here, "child.mjs"), JSON.stringify({ ...base, label: build.name, wasm: build.wasm, ...(build.lib ? { lib: build.lib } : {}), result, ...extra })],
             { stdio: ["ignore", "inherit", "inherit"] });
         child.on("close", () => {
             try { resolve(JSON.parse(fs.readFileSync(result, "utf8"))); }

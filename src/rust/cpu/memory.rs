@@ -1,4 +1,4 @@
-mod ext {
+mod ext_raw {
     #[link(wasm_import_module = "env")]
     extern "C" {
         pub fn mmap_read8(addr: u32) -> i32;
@@ -9,6 +9,48 @@ mod ext {
         pub fn mmap_write32(addr: u32, value: i32);
         pub fn mmap_write64(addr: u32, v0: i32, v1: i32);
         pub fn mmap_write128(addr: u32, v0: i32, v1: i32, v2: i32, v3: i32);
+    }
+}
+
+// Memory-mapped I/O of the devices in JavaScript. An access can change one of their timers: the main loop's
+// timer pass asks them again (crate::cpu::pit::run_hardware_timers)
+mod ext {
+    use super::ext_raw;
+    use crate::cpu::pit::JS_TIMERS_DUE;
+    #[inline(always)]
+    pub unsafe fn mmap_read8(addr: u32) -> i32 {
+        JS_TIMERS_DUE = 0.0;
+        ext_raw::mmap_read8(addr)
+    }
+    #[inline(always)]
+    pub unsafe fn mmap_read32(addr: u32) -> i32 {
+        JS_TIMERS_DUE = 0.0;
+        ext_raw::mmap_read32(addr)
+    }
+    #[inline(always)]
+    pub unsafe fn mmap_write8(addr: u32, value: i32) {
+        JS_TIMERS_DUE = 0.0;
+        ext_raw::mmap_write8(addr, value)
+    }
+    #[inline(always)]
+    pub unsafe fn mmap_write16(addr: u32, value: i32) {
+        JS_TIMERS_DUE = 0.0;
+        ext_raw::mmap_write16(addr, value)
+    }
+    #[inline(always)]
+    pub unsafe fn mmap_write32(addr: u32, value: i32) {
+        JS_TIMERS_DUE = 0.0;
+        ext_raw::mmap_write32(addr, value)
+    }
+    #[inline(always)]
+    pub unsafe fn mmap_write64(addr: u32, v0: i32, v1: i32) {
+        JS_TIMERS_DUE = 0.0;
+        ext_raw::mmap_write64(addr, v0, v1)
+    }
+    #[inline(always)]
+    pub unsafe fn mmap_write128(addr: u32, v0: i32, v1: i32, v2: i32, v3: i32) {
+        JS_TIMERS_DUE = 0.0;
+        ext_raw::mmap_write128(addr, v0, v1, v2, v3)
     }
 }
 

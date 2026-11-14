@@ -15,3 +15,8 @@ ours = Vibe-Claude. Tests: login (boot time), loop (shell loop of 100000 steps),
 Making the package: builds/<name>/ holds libv86.mjs and v86.wasm of each tree (make build/libv86.mjs
 build/v86.wasm; base is commit cc37f35c, upstream 315b2b0) and a VERSION.txt; bios/ has seabios.bin and
 vgabios.bin; images/ has vmlinuz-x86 and initramfs-x86 (from the ISO's boot/) and alpine-virt-3.24.3-x86.iso.
+
+Note (2026-11-14): run.mjs and profile.mjs here time the guest on the host's clock, so the guest's work differs
+from run to run (boots of one build were 12 % apart). For comparing builds and for profiles use
+tools/profile/profile.mjs (virtual guest clock, builds taking turns; docs/profiling.md). This package stays for
+runs on a user's machine, where the time a person waits is what is asked.

@@ -455,6 +455,12 @@ CPU.prototype.wasm_patch = function()
     this.svga_fill_pixel_buffer = get_import("svga_fill_pixel_buffer");
     this.svga_mark_dirty = get_import("svga_mark_dirty");
 
+    this.get_pit_addr = get_import("get_pit_addr");
+    this.pit_port_read = get_import("pit_port_read");
+    this.pit_port_write = get_import("pit_port_write");
+    this.pit_timer = get_import("pit_timer");
+    this.timers_changed = get_import("timers_changed");
+
     this.get_pic_addr_master = get_import("get_pic_addr_master");
     this.get_pic_addr_slave = get_import("get_pic_addr_slave");
     this.get_apic_addr = get_import("get_apic_addr");
@@ -2251,7 +2257,10 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
         this.parallel.service();
     }
 
-    const pit_time = this.devices.pit.timer(now, false);
+    // One core: the core's own timer pass (src/rust/cpu/pit.rs) has run the PIT and the APIC timer and calls this
+    // for the timers that are in JavaScript, when they are due. More cores: all of them, on every pass.
+    const all = this.cpu_cores > 1;
+    const pit_time = all ? this.devices.pit.timer(now, false) : 100;
     const rtc_time = this.devices.rtc.timer(now, false);
 
     let acpi_time = 100;
@@ -2259,7 +2268,10 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
     if(acpi_enabled)
     {
         acpi_time = this.devices.acpi.timer(now);
-        apic_time = this.apic_timer(now);
+        if(all)
+        {
+            apic_time = this.apic_timer(now);
+        }
     }
 
     // (with workers the machine thread has to come back soon to answer them)

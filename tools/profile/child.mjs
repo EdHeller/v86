@@ -272,8 +272,9 @@ emulator.add_listener("emulator-ready", async () => {
     emulator.run();
 
     // (screen marks, instruction marks and the time limit are polled; serial marks are checked on every byte)
+    let polls = 0;
     const poll = setInterval(() => {
-        note_screen();
+        if(polls++ % 5 === 0) note_screen();
         check();
         if(!finished && real_now() - t0 > opt.timeout * 1000)
         {
