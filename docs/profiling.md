@@ -18,6 +18,8 @@
 - **Guest instructions by function** with `--guest-map System.map` (boot the kernel with `nokaslr`, e.g.
   `--bzimage vmlinuz --initrd initramfs --cmdline "... nokaslr"`): the guest's instruction pointer is sampled about
   every 100,000 instructions, before interrupts are delivered.
+- `--step-profile` (x86_64): the instructions jit64 does not compile, by opcode: those the interpreter ran from
+  inside a compiled block and those a block ended at.
 - The `.cpuprofile` in `build/profile/` opens in Chrome DevTools (Performance > Load profile) and speedscope.app;
   `node tools/profile/analyze.mjs file.cpuprofile` prints the tables for any profile of v86, also one saved from a
   browser. The profiled run is about 20 % slower than a plain one.
@@ -50,6 +52,16 @@ Findings so far (Alpine 3.24 to login, 5.3 billion guest instructions on either 
   the hex strings the IDE data port built in release builds: JavaScript device time 0.64 s to 0.31 s in the
   profile; no difference in the boot time beyond noise (x86 +2.4 % with 7 % spread, x86_64 -3.9 % with 11 %). Moving
   the remaining JavaScript devices to Rust can gain at most the 0.6 % that is left of them.
+
+- After the PIT, the emulator's own JavaScript on this boot is about 0.1 s of 50 s (the loop's `do_tick`, VGA text
+  redraws, IDE data reads): there is nothing left for a Rust port of the devices to win here. The time is in
+  compiled code, dispatch and the interpreter, so that is where the work goes.
+- The 32-bit JIT's threshold (`set_jit_config(59, n)`, 200,000): 100k +5.9 %, 50k +7.7 %, 20k +9.7 %, 400k +5.4 %,
+  800k +13.3 %. It stays.
+- x86_64, `--step-profile`: 92 M instructions ran in the interpreter from inside compiled blocks (7 % of the
+  time), 35 M of them SHA-NI (modloop and module checks). jit64 compiles them now (`SseLane` 20 to 26): login
+  -3.1 % (47.3 s to 45.8 s, spread 3 to 4 %). Next in that list: `0F 01 /7` with a register form (swapgs, 4 M),
+  punpckhqdq and pcmpgtd (66 0F 6D / 66, 3.5 M), shrd, tzcnt, stac/clac.
 
 ## The counters of the profiler build
 

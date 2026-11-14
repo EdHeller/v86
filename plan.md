@@ -286,7 +286,8 @@ What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's 
 - ✅ 2026-11-14 `tools/profile` (profiler and A/B timing on a virtual guest clock, `docs/profiling.md`); the CPU
   reports no speculation bugs (`IA32_ARCH_CAPABILITIES`): Alpine to login -11 % on x86, -20 % on x86_64; the PIT
   and the main loop's timer pass in Rust (task 3/11b's first step: JavaScript device time halved in the profile,
-  0.64 s to 0.31 s of 50 s, the boot time unchanged within noise).
+  0.64 s to 0.31 s of 50 s, the boot time unchanged within noise). jit64 compiles SHA-NI: x86_64 login -3.1 %.
+  Next: the rest of `--step-profile`'s list (swapgs, punpckhqdq, pcmpgtd, shrd, tzcnt, stac/clac).
 - ✅ 2026-11-04 32-bit speed back to upstream's: the multicore loop kept the dispatcher of compiled code from being
   inlined (`docs/releases.md`, speed note).
 - ✅ 2026-11-03 virtio-gpu 2D on arm64 over virtio-mmio (`tests/a64/virtio_gpu.mjs`, `alpine-arm64.html?gpu=1`).

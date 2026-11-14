@@ -383,6 +383,25 @@ static mut SSE_SRC: [u64; 2] = [0; 2];
 
 /// dword lane operations on xmm register `x` with SSE_SRC (Insn::SseLane)
 unsafe fn sse_lane(op: i32, x: u8, imm: u8) {
+    if op >= 20 {
+        // SHA-NI: 20..25 are 0F 38 C8..CD (sha256rnds2 with xmm0), 26 is sha1rnds4 (0F 3A CC). A sha256 of a
+        // megabyte is 100,000 of these: as Insn::Interp each stored and reloaded the block's registers and went
+        // through the interpreter's decoder
+        let d = crate::cpu::global_pointers::reg_xmm.offset(x as isize) as *mut u32;
+        let dst: [u32; 4] = [*d, *d.add(1), *d.add(2), *d.add(3)];
+        let s: [u32; 4] = [SSE_SRC[0] as u32, (SSE_SRC[0] >> 32) as u32, SSE_SRC[1] as u32, (SSE_SRC[1] >> 32) as u32];
+        let r = if op == 26 {
+            crate::cpu::sse_0f38::sha(0x1CC, dst, s, [0; 4], imm as i32)
+        }
+        else {
+            let x0 = crate::cpu::global_pointers::reg_xmm as *const u32;
+            crate::cpu::sse_0f38::sha(0xC8 + (op - 20) as u32, dst, s, [*x0, *x0.add(1), *x0.add(2), *x0.add(3)], 0)
+        };
+        for i in 0..4 {
+            *d.add(i) = r[i];
+        }
+        return;
+    }
     if op >= 6 {
         // whole register operations
         let p = crate::cpu::global_pointers::reg_xmm.offset(x as isize) as *mut u128;
@@ -1235,6 +1254,24 @@ fn decode(code: &[u8], rip: u64) -> Option<(Insn, usize)> {
                     let m = modrm(&mut c, &p)?;
                     let imm = c.u8()?;
                     Insn::SseLane { op: 11, x: m.reg, rm: m.rm, imm }
+                },
+                0x38 if !p.osz16 && rep == 0 => {
+                    // sha1nexte, sha1msg1, sha1msg2, sha256rnds2, sha256msg1, sha256msg2
+                    let b = c.u8()?;
+                    if !(0xC8..=0xCD).contains(&b) {
+                        return None;
+                    }
+                    let m = modrm(&mut c, &p)?;
+                    Insn::SseLane { op: 20 + (b - 0xC8), x: m.reg, rm: m.rm, imm: 0 }
+                },
+                0x3A if !p.osz16 && rep == 0 => {
+                    // sha1rnds4
+                    if c.u8()? != 0xCC {
+                        return None;
+                    }
+                    let m = modrm(&mut c, &p)?;
+                    let imm = c.u8()?;
+                    Insn::SseLane { op: 26, x: m.reg, rm: m.rm, imm }
                 },
                 0x72 if p.osz16 && rep == 0 => {
                     let m = modrm(&mut c, &p)?;

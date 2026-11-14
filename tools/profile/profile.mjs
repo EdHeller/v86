@@ -22,8 +22,9 @@
 //
 // Options
 //   --arch x86|x86_64        the core: build/v86.wasm or build/v64.wasm (default x86)
-//   --wasm [name=]file[@lib] a core to measure; repeat it to compare builds (the first is the baseline); @lib: the
-//                            JavaScript of that build, when it differs from --lib
+//   --wasm [name=]file[@lib][#k=v] a core to measure; repeat it to compare builds (the first is the baseline); @lib: the
+//                            JavaScript of that build, when it differs from --lib; file#k=v,k=v: set_jit_config
+//                            values of that build (one core with two settings)
 //   --lib file               the JavaScript: src/main.js (default, no build needed) or a build/libv86.mjs
 //   --plugin file            more JavaScript to load after --lib (build/libv64.js beside a built libv86.mjs)
 //   --cdrom --hda --fda --bzimage --initrd --state <file>, --cmdline <text>, --memory <MiB> (512)
@@ -36,6 +37,8 @@
 //   --keys name=text         the same on the keyboard
 //   --guest-map file         also sample the guest: which of its code the instructions go to. file is the
 //                            System.map of the guest's kernel (boot it with nokaslr), or "none" for addresses
+//   --step-profile           x86_64: the instructions jit64 does not compile, by opcode: those run by the
+//                            interpreter inside a compiled block, and those a block ended at
 //   --runs N                 timing runs per build (default 0); --no-profile leaves the profiled run out
 //   --clock virtual|real     see above; --mips N the virtual clock's rate
 //   --interval us            the profiler's sampling interval (default 200)
@@ -55,7 +58,7 @@ const here = path.dirname(url.fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
 
 const multi = new Set(["wasm", "mark", "screen-mark", "insn-mark", "send", "keys", "jit-config", "plugin"]);
-const flags = new Set(["no-profile", "help"]);
+const flags = new Set(["no-profile", "help", "step-profile"]);
 const args = {};
 const order = [];       // (the marks keep the order of the command line, whatever their kind)
 for(let i = 2; i < process.argv.length; i++)
@@ -83,8 +86,10 @@ const unescape = s => s.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
 
 const builds = (args.wasm || [path.join(root, arch === "x86_64" ? "build/v64.wasm" : "build/v86.wasm")]).map(w => {
     const [name, files] = split(w);
-    const [file, lib] = files.split("@");
-    return { name: name || path.basename(file).replace(/\.wasm$/, ""), wasm: path.resolve(file), lib: lib && path.resolve(lib) };
+    const [paths, config] = files.split("#");
+    const [file, lib] = paths.split("@");
+    return { name: name || path.basename(file).replace(/\.wasm$/, ""), wasm: path.resolve(file), lib: lib && path.resolve(lib),
+        jit_config: config && Object.fromEntries(config.split(",").map(split)) };
 });
 for(const b of builds) if(!fs.existsSync(b.wasm)) { console.error("no such file: " + b.wasm + " (make " + path.relative(root, b.wasm) + ")"); process.exit(1); }
 
@@ -120,7 +125,7 @@ const base = {
     cdrom: abs(args.cdrom), hda: abs(args.hda), fda: abs(args.fda), bzimage: abs(args.bzimage), initrd: abs(args.initrd),
     state: abs(args.state), cmdline: args.cmdline,
     memory: +args.memory || 512, timeout: +args.timeout || 600, interval: +args.interval || 200,
-    marks, stat_names, guest_profile: !!args["guest-map"],
+    marks, stat_names, guest_profile: !!args["guest-map"], step_profile: !!args["step-profile"],
     jit_config: Object.fromEntries((args["jit-config"] || []).map(split)),
     v86: args.v86 ? JSON.parse(args.v86) : undefined,
 };
@@ -131,7 +136,7 @@ function run(build, extra)
 {
     return new Promise(resolve => {
         const result = path.join(out_dir, ".result-" + process.pid + "-" + (run_count++) + ".json");
-        const child = spawn(process.execPath, [path.join(here, "child.mjs"), JSON.stringify({ ...base, label: build.name, wasm: build.wasm, ...(build.lib ? { lib: build.lib } : {}), result, ...extra })],
+        const child = spawn(process.execPath, [path.join(here, "child.mjs"), JSON.stringify({ ...base, label: build.name, wasm: build.wasm, ...(build.lib ? { lib: build.lib } : {}), ...(build.jit_config ? { jit_config: { ...base.jit_config, ...build.jit_config } } : {}), result, ...extra })],
             { stdio: ["ignore", "inherit", "inherit"] });
         child.on("close", () => {
             try { resolve(JSON.parse(fs.readFileSync(result, "utf8"))); }
@@ -217,6 +222,18 @@ if(!args["no-profile"])
             say("\nGuest instructions by function (sampled; " + (all / 1e6).toFixed(0) + " M instructions, " + (100 * user / all).toFixed(1) + " % in user space)");
             for(const [name, w] of [...by].sort((x, y) => y[1] - x[1]).slice(0, top)) say("  " + (w / 1e6).toFixed(0).padStart(8) + " M " + (100 * w / all).toFixed(1).padStart(5) + " %  " + name);
             report.builds[b.name].guest = [...by].sort((x, y) => y[1] - x[1]).slice(0, 500);
+        }
+        if(r.step_profile)
+        {
+            const name = k => ["", "0F ", "0F 38 ", "0F 3A "][k >>> 24] + ["", "66 ", "F3 ", "F2 "][k >>> 20 & 3] + (k & 0xFF).toString(16).toUpperCase().padStart(2, "0") + " /" + (k >>> 16 & 7);
+            const hex = b => b ? "   " + [b[0], b[1]].map(w => Array.from({ length: 4 }, (_, i) => (w >>> 8 * i & 0xFF).toString(16).padStart(2, "0")).join(" ")).join(" ") : "";
+            for(const [title, list] of [["Instructions the interpreter ran inside compiled blocks (map, prefix, opcode, /reg)", r.step_profile.in_block],
+                ["Instructions compiled blocks ended at (with the first bytes seen)", r.step_profile.block_end]])
+            {
+                const sum = list.reduce((s, e) => s + e.count, 0);
+                say("\n" + title + ": " + (sum / 1e6).toFixed(1) + " M");
+                for(const e of list.slice(0, top)) say("  " + String(e.count).padStart(10) + (100 * e.count / sum).toFixed(1).padStart(6) + " %  " + name(e.key) + hex(e.bytes));
+            }
         }
         say("");
         say(format(a, top));

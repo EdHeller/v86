@@ -214,6 +214,16 @@ async function finish(ok, error)
         const g = i => ex["get_jit_config"](i) >>> 0;
         result.jit64 = { modules: g(5), failed: g(6), invalidated: g(8), blocks: g(16), bytes: g(17), instructions: g(13) };
     }
+    if(opt.step_profile && ex["step_profile_len"])
+    {
+        // jit64's step profile: the instructions it left to the interpreter, by opcode
+        const list = (len, key, count, bytes) => Array.from({ length: ex[len]() }, (_, i) => ({ key: ex[key](i) >>> 0, count: ex[count](i) >>> 0,
+            bytes: bytes ? [ex[bytes](i, 0) >>> 0, ex[bytes](i, 1) >>> 0] : undefined })).sort((a, b) => b.count - a.count).slice(0, 80);
+        result.step_profile = {
+            in_block: list("step_profile_len", "step_profile_key", "step_profile_count"),
+            block_end: list("interp_profile_len", "interp_profile_key", "interp_profile_count", "interp_profile_bytes"),
+        };
+    }
     if(ex["profiler_stat_get"] && opt.stat_names)
     {
         result.stats = {};
@@ -258,6 +268,7 @@ emulator.add_listener("emulator-ready", async () => {
             return timers.call(cpu, acpi_enabled, now);
         };
     }
+    if(opt.step_profile && v86.cpu.wm.exports["step_profile_enable"]) v86.cpu.wm.exports["step_profile_enable"](1);
     for(const [k, v] of Object.entries(opt.jit_config || {})) v86.cpu.wm.exports["set_jit_config"](+k, +v);
 
     if(opt.profile)
