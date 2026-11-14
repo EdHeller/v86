@@ -5048,6 +5048,8 @@ pub fn io_port_read8(port: i32) -> i32 {
             0x4D0 => pic::port4D0_read() as i32,
             0x4D1 => pic::port4D1_read() as i32,
             _ if super::pit::serves_read(port) => super::pit::pit_port_read(port),
+            _ if super::uart::serves_read(port) => super::uart::uart_port_read(port),
+            _ if super::rtc::serves_read(port) => super::rtc::rtc_port_read(port),
             _ => {
                 super::pit::JS_TIMERS_DUE = 0.0;
                 js::io_port_read8(port)
@@ -5084,6 +5086,8 @@ pub fn io_port_write8(port: i32, value: i32) {
                 handle_irqs()
             },
             _ if super::pit::serves_write(port, value) => super::pit::pit_port_write(port, value),
+            _ if super::uart::serves_write(port) => super::uart::uart_port_write(port, value),
+            _ if super::rtc::serves_write(port) => super::rtc::rtc_port_write(port, value),
             _ => {
                 super::pit::JS_TIMERS_DUE = 0.0;
                 js::io_port_write8(port, value)

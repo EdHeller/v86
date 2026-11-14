@@ -195,6 +195,32 @@ libv86.js fails with "Missing import").
      `tests/a64/boot.mjs`, `tests/virtio_gpu.mjs`), snapshots from the step before restore, and the micro benchmarks
      (`port`, `pit`, `interrupt`, `rdtsc`) against the JavaScript version. Same rule for ARM (`src/arm/`) after x86.
 
+## Plan: the Rust port (branch `Vibe-Claude-rust`)
+
+Task 11, device by device. Each device moves to `src/rust/cpu/<name>.rs` with its state in a `#[repr(C)]` struct;
+the JavaScript file shrinks to a shim (snapshot format, bus messages, the ports when they are reached through
+JavaScript: 16-bit accesses, machines with more cores). The core's port dispatch (`io_port_read8` / `write8` in
+`cpu.rs`) asks the Rust devices first; `pit::run_hardware_timers` runs their timers and calls JavaScript's only
+when due. Check per device: Alpine boots on both cores, a serial login, `tools/profile` A/B against `Vibe-Claude`
+(`--wasm main=...@lib --wasm rust=...`), a snapshot taken mid-boot restores, `tests/x64/run.js`.
+
+| Device | JavaScript | Rust | State |
+|---|---|---|---|
+| PIT (8254) | `pit.js` 359 -> 119 | `pit.rs` | ✅ (on `Vibe-Claude` too) |
+| RTC / CMOS | `rtc.js` 424 -> 160 | `rtc.rs` | ✅ 2026-11-14 |
+| Serial ports (16550) | `uart.js` 457 -> 150 | `uart.rs` | ✅ 2026-11-14 (output buffered in the core, taken after each slice) |
+| ACPI PM block and timer | `acpi.js` 273 | | ⬜ next: with it the main loop's timer pass calls no JavaScript |
+| PS/2 keyboard and mouse | `ps2.js` 901 | | ⬜ |
+| DMA, PCI configuration space | `dma.js` 430, `pci.js` 724 | | ⬜ |
+| IDE / ATAPI | `ide.js` 2928 | | ⬜ the register file and PIO data in Rust, disk buffers stay with JavaScript's async I/O |
+| VGA | `vga.js` 2654 | `vga.rs` (part) | ⬜ registers and memory in Rust, drawing in JavaScript |
+| Floppy, NE2000, SB16, virtio, USB, HDA, graphics adapters | about 20,000 | | ⬜ |
+| Port and MMIO tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | ⬜ last |
+| `src/browser/` (DOM, canvas, audio, network, files) | 13,000 | | stays JavaScript |
+
+Measured so far (Alpine x86 to a serial login and a command, 3 rounds): RTC and UART in Rust -1.0 % CPU time
+(-1.1 % to -0.5 %, faster in every round).
+
 ## Plan: Android
 
 Follows v64's `docs/arm64-virt-android16-plan.md` and `docs/android-images-plan.md`. v64 runs Android 16 on the

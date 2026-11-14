@@ -255,6 +255,9 @@ pub unsafe fn run_hardware_timers(acpi_enabled: bool, now: f64) -> f64 {
         return js::run_hardware_timers(acpi_enabled, now);
     }
     let mut t = pit().timer(now, false);
+    if super::rtc::present() {
+        t = t.min(super::rtc::rtc_timer());
+    }
     if acpi_enabled {
         t = t.min(apic::apic_timer(now));
     }

@@ -167,6 +167,9 @@ export function CPU(bus, wm, stop_idling)
 
     /** @type {!Object} */
     this.devices = {};
+    // (the serial ports: their output is collected in the core and taken after each slice, see after_slice)
+    /** @type {!Array} */
+    this.uarts = [];
 
     this.instruction_pointer = view(Int32Array, memory, 556, 1);
     this.previous_ip = view(Int32Array, memory, 560, 1);
@@ -455,6 +458,18 @@ CPU.prototype.wasm_patch = function()
     this.svga_fill_pixel_buffer = get_import("svga_fill_pixel_buffer");
     this.svga_mark_dirty = get_import("svga_mark_dirty");
 
+    this.get_rtc_addr = get_import("get_rtc_addr");
+    this.rtc_init = get_import("rtc_init");
+    this.rtc_port_read = get_import("rtc_port_read");
+    this.rtc_port_write = get_import("rtc_port_write");
+    this.rtc_timer = get_import("rtc_timer");
+
+    this.get_uart_addr = get_import("get_uart_addr");
+    this.uart_init = get_import("uart_init");
+    this.uart_port_read = get_import("uart_port_read");
+    this.uart_port_write = get_import("uart_port_write");
+    this.uart_receive = get_import("uart_receive");
+    this.uart_set_modem_status_bit = get_import("uart_set_modem_status_bit");
     this.get_pit_addr = get_import("get_pit_addr");
     this.pit_port_read = get_import("pit_port_read");
     this.pit_port_write = get_import("pit_port_write");
@@ -1356,6 +1371,7 @@ CPU.prototype.init = function(settings, device_bus)
     }
 
     this.devices = {};
+    this.uarts = [];
 
     // TODO: Make this more configurable
     if(settings.load_devices)
@@ -2261,7 +2277,7 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
     // for the timers that are in JavaScript, when they are due. More cores: all of them, on every pass.
     const all = this.cpu_cores > 1;
     const pit_time = all ? this.devices.pit.timer(now, false) : 100;
-    const rtc_time = this.devices.rtc.timer(now, false);
+    const rtc_time = all ? this.devices.rtc.timer(now, false) : 100;
 
     let acpi_time = 100;
     let apic_time = 100;
@@ -2282,6 +2298,17 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
     }
 
     return Math.min(pit_time, rtc_time, acpi_time, apic_time, device_time, this.parallel ? 1 : Infinity);
+};
+
+/**
+ * After each slice of the main loop: what the devices in the core collected for JavaScript (serial output)
+ */
+CPU.prototype.after_slice = function()
+{
+    for(const uart of this.uarts)
+    {
+        uart.drain();
+    }
 };
 
 /**
