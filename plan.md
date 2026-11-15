@@ -227,6 +227,14 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | Port and MMIO tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | ⬜ last |
 | `src/browser/` (DOM, canvas, audio, network, files) | 13,000 | | stays JavaScript |
 
+**Tests per step** (2026-11-15): `images/` from https://i.copy.sh/ (linux4.iso, linux.iso, buildroot-bzimage68.bin,
+buildroot-bzimage.bin, msdos622.img, freedos722.img; TinyCore-11.0.iso for tests/api/floppy.js is missing); `/root/jitwork`
+with the Alpine 3.24.3 ISOs and their kernels for tests/usb.mjs and tests/q35.mjs. Results on this branch: tests/devices
+virtio_9p (4 allowed failures, as Vibe-Claude), virtio_console, virtio_balloon pass; tests/api 2g-mem, cdrom-insert-eject,
+clean-shutdown, iso9660, parallel, reboot, reset, serial, state pass (reboot-buildroot times out on Vibe-Claude too;
+test.js runs FreeDOS from floppy forever, the same screens as Vibe-Claude); tests/usb.mjs uhci and xhci read the stick
+(ehci is refused on both branches). Alpine's virt kernel finds no sound card for HDA or SB16: they need another guest to test.
+
 Calls from the core into JavaScript (`tools/profile --count-crossings`, Alpine x86 to a shell): 4,149,603 on
 `Vibe-Claude`; 4,147,693 with PIT, RTC, UART, ACPI, PS/2 and DMA in Rust; **135,428** with `rep insw/insd` read in
 blocks (`io_port_read_block`, the IDE data port: 4.01 M of the calls were reads of port 0x170). x86_64: 144,140.
