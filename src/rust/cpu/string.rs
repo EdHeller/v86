@@ -11,7 +11,7 @@
 
 use crate::cpu::arith::{cmp16, cmp32, cmp8};
 use crate::cpu::cpu::{
-    get_seg, io_port_read16, io_port_read_block, io_port_read32, io_port_read8, io_port_write16, io_port_write32,
+    get_seg, io_port_read16, io_port_read_block, io_port_write_block, io_port_read32, io_port_read8, io_port_write16, io_port_write32,
     io_port_write8, read_reg16, read_reg32, safe_read16, safe_read32s, safe_read8, safe_write16,
     safe_write32, safe_write8, set_reg_asize, test_privileges_for_io, translate_address_read,
     translate_address_write_and_can_skip_dirty, writable_or_pagefault, write_reg16, write_reg32,
@@ -261,6 +261,15 @@ unsafe fn string_instruction(
                 if n > 0 {
                     i += n - 1;
                     phys_dst += n * size_bytes as u32;
+                    continue;
+                }
+            }
+            // rep outsw / outsd to a device that writes in blocks (the IDE data port)
+            if matches!(instruction, Instruction::Outs) && direction == 1 && !matches!(size, Size::B) {
+                let n = io_port_write_block(port, phys_src, count_until_end_of_page - i + 1, size_bytes as u32);
+                if n > 0 {
+                    i += n - 1;
+                    phys_src += n * size_bytes as u32;
                     continue;
                 }
             }

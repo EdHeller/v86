@@ -86,6 +86,7 @@ ACPI.prototype.register_pm = function(base)
         for(let port = this.pm_base; port < this.pm_base + 0x10; port++)
         {
             io.ports[port] = io.create_empty_entry();
+            io.sync_port(port);
         }
     }
     this.pm_base = base;

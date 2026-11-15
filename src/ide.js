@@ -479,6 +479,11 @@ function IDEChannel(controller, channel_nr, channel_config, command_base, contro
     {
         return this.current_interface.read_data_block(addr, count, size);
     });
+    // rep outsw / outsd likewise
+    cpu.io.register_write_block(this.command_base | ATA_REG_DATA, this, function(addr, count, size)
+    {
+        return this.current_interface.write_data_block(addr, count, size);
+    });
 
     cpu.io.register_read(this.command_base | ATA_REG_ERROR, this, function()
     {
@@ -2142,6 +2147,32 @@ IDEInterface.prototype.read_data_block = function(addr, count, size)
     if(this.data_pointer >= this.data_end)
     {
         this.read_end();
+    }
+    return n;
+};
+
+/**
+ * Up to count items of size bytes from guest memory at addr into the data port, as count calls of write_data_port
+ * would, up to the end of the current data block (write_end may start the next one)
+ * @return {number} the items moved
+ */
+IDEInterface.prototype.write_data_block = function(addr, count, size)
+{
+    if(this.data_pointer >= this.data_end || this.data_pointer % size !== 0)
+    {
+        return 0;
+    }
+    const n = Math.min(count, Math.floor((this.data_end - this.data_pointer) / size));
+    if(n === 0)
+    {
+        return 0;
+    }
+    const bytes = n * size;
+    this.data.set(this.cpu.mem8.subarray(addr, addr + bytes), this.data_pointer);
+    this.data_pointer += bytes;
+    if(this.data_pointer === this.data_end)
+    {
+        this.write_end();
     }
     return n;
 };

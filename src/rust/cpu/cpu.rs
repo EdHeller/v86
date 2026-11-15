@@ -40,6 +40,9 @@ pub mod js {
         /// rep ins in bulk: up to `count` items of `size` bytes from `port` to guest memory at `phys`; returns
         /// how many it moved (0 when the port's device has no block reader)
         pub fn io_port_read_block(port: i32, phys: u32, count: u32, size: u32) -> u32;
+        /// rep outs in bulk: up to `count` items of `size` bytes from guest memory at `phys` to `port`; returns how
+        /// many it moved (0 when the port's device has no block writer)
+        pub fn io_port_write_block(port: i32, phys: u32, count: u32, size: u32) -> u32;
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();
@@ -5061,6 +5064,8 @@ pub fn io_port_read8(port: i32) -> i32 {
             _ if super::dma::serves_read(port) => super::dma::dma_port_read(port),
             _ if super::acpi::serves(port, 8) => super::acpi::acpi_port_read(port, 8),
             _ if super::rtc::serves_read(port) => super::rtc::rtc_port_read(port),
+            _ if super::ports::serves_92(port) => super::ports::port92_read(),
+            _ if !super::ports::handled(port, super::ports::READ8) => 0xFF,
             _ => {
                 super::pit::JS_TIMERS_DUE = 0.0;
                 js::io_port_read8(port)
@@ -5070,11 +5075,20 @@ pub fn io_port_read8(port: i32) -> i32 {
 }
 /// rep ins in bulk (see js::io_port_read_block); 0 when the port reads item by item
 pub unsafe fn io_port_read_block(port: i32, phys: u32, count: u32, size: u32) -> u32 {
-    if super::parallel::WORKER || phys as u64 + count as u64 * size as u64 > *memory_size as u64 {
+    if super::parallel::WORKER || phys as u64 + count as u64 * size as u64 > *memory_size as u64 || !super::ports::handled(port, super::ports::READ_BLOCK) {
         return 0;
     }
     super::pit::JS_TIMERS_DUE = 0.0;
     js::io_port_read_block(port, phys, count, size).min(count)
+}
+
+/// rep outs in bulk (see js::io_port_write_block); 0 when the port writes item by item
+pub unsafe fn io_port_write_block(port: i32, phys: u32, count: u32, size: u32) -> u32 {
+    if super::parallel::WORKER || phys as u64 + count as u64 * size as u64 > *memory_size as u64 || !super::ports::handled(port, super::ports::WRITE_BLOCK) {
+        return 0;
+    }
+    super::pit::JS_TIMERS_DUE = 0.0;
+    js::io_port_write_block(port, phys, count, size).min(count)
 }
 pub fn io_port_read16(port: i32) -> i32 {
     unsafe {
@@ -5090,6 +5104,9 @@ pub fn io_port_read16(port: i32) -> i32 {
         if super::ne2k::serves(port, 16, 0, false) {
             return super::ne2k::ne2k_port_read(port, 16);
         }
+        if !super::ports::handled(port, super::ports::READ16) {
+            return 0xFFFF;
+        }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_read16(port)
     }
@@ -5104,6 +5121,9 @@ pub fn io_port_read32(port: i32) -> i32 {
         }
         if super::ne2k::serves(port, 32, 0, false) {
             return super::ne2k::ne2k_port_read(port, 32);
+        }
+        if !super::ports::handled(port, super::ports::READ32) {
+            return -1;
         }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_read32(port)
@@ -5136,6 +5156,8 @@ pub fn io_port_write8(port: i32, value: i32) {
             _ if super::dma::serves_write(port) => super::dma::dma_port_write(port, value),
             _ if super::acpi::serves(port, 8) => super::acpi::acpi_port_write(port, 8, value),
             _ if super::rtc::serves_write(port) => super::rtc::rtc_port_write(port, value),
+            _ if super::ports::serves_92(port) => super::ports::port92_write(value),
+            _ if !super::ports::handled(port, super::ports::WRITE8) => {},
             _ => {
                 super::pit::JS_TIMERS_DUE = 0.0;
                 js::io_port_write8(port, value)
@@ -5157,6 +5179,9 @@ pub fn io_port_write16(port: i32, value: i32) {
         if super::ne2k::serves(port, 16, value, true) {
             return super::ne2k::ne2k_port_write(port, 16, value);
         }
+        if !super::ports::handled(port, super::ports::WRITE16) {
+            return;
+        }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_write16(port, value)
     }
@@ -5171,6 +5196,9 @@ pub fn io_port_write32(port: i32, value: i32) {
         }
         if super::ne2k::serves(port, 32, value, true) {
             return super::ne2k::ne2k_port_write(port, 32, value);
+        }
+        if !super::ports::handled(port, super::ports::WRITE32) {
+            return;
         }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_write32(port, value)

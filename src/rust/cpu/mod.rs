@@ -23,6 +23,7 @@ pub mod parallel;
 pub mod pci;
 pub mod pic;
 pub mod pit;
+pub mod ports;
 pub mod ps2;
 pub mod rtc;
 pub mod sse_0f38;

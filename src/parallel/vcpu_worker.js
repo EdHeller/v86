@@ -61,6 +61,7 @@ async function start(data, post)
         "io_port_read32": a => request(C.REQ_PORT_READ32, a),
         // (rep ins in blocks is the machine's: a worker reads item by item)
         "io_port_read_block": () => 0,
+        "io_port_write_block": () => 0,
         "io_port_write8": (a, v) => { request(C.REQ_PORT_WRITE8, a, v); },
         "io_port_write16": (a, v) => { request(C.REQ_PORT_WRITE16, a, v); },
         "io_port_write32": (a, v) => { request(C.REQ_PORT_WRITE32, a, v); },

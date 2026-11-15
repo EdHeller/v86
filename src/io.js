@@ -28,6 +28,14 @@ export function IO(cpu)
         this.ports[i] = this.create_empty_entry();
     }
 
+    // the core's copy of which accesses a device here answers (src/rust/cpu/ports.rs): accesses no device answers
+    // get the empty port's value there, without a call. Kept in step by sync_port.
+    if(cpu.io_ports_flags_addr)
+    {
+        new Uint8Array(cpu.wasm_memory.buffer, cpu.io_ports_flags_addr(), 0x10000).fill(0);
+        cpu.io_ports_ready(true);
+    }
+
     var memory_size = cpu.memory_size[0];
 
     for(var i = 0; (i << MMAP_BLOCK_BITS) < memory_size; i++)
@@ -56,6 +64,27 @@ export function IO(cpu)
         }
     );
 }
+
+/**
+ * Tells the core which accesses to this port a device answers (after any change of the port's entry)
+ * @param {number} port_addr
+ */
+IO.prototype.sync_port = function(port_addr)
+{
+    const cpu = this.cpu;
+    if(!cpu.io_ports_flags_addr) return;
+    const e = this.ports[port_addr];
+    const flags =
+        (e.read8 !== this.empty_port_read8 ? 1 : 0) |
+        (e.read16 !== this.empty_port_read16 ? 2 : 0) |
+        (e.read32 !== this.empty_port_read32 ? 4 : 0) |
+        (e.write8 !== this.empty_port_write ? 8 : 0) |
+        (e.write16 !== this.empty_port_write ? 16 : 0) |
+        (e.write32 !== this.empty_port_write ? 32 : 0) |
+        (e.read_block ? 64 : 0) |
+        (e.write_block ? 128 : 0);
+    new Uint8Array(cpu.wasm_memory.buffer, cpu.io_ports_flags_addr(), 0x10000)[port_addr & 0xFFFF] = flags;
+};
 
 IO.prototype.create_empty_entry = function()
 {
@@ -123,6 +152,7 @@ IO.prototype.register_read = function(port_addr, device, r8, r16, r32)
     if(r16) this.ports[port_addr].read16 = r16;
     if(r32) this.ports[port_addr].read32 = r32;
     this.ports[port_addr].device = device;
+    this.sync_port(port_addr);
 };
 
 /**
@@ -155,6 +185,7 @@ IO.prototype.register_write = function(port_addr, device, w8, w16, w32)
     if(w16) this.ports[port_addr].write16 = w16;
     if(w32) this.ports[port_addr].write32 = w32;
     this.ports[port_addr].device = device;
+    this.sync_port(port_addr);
 };
 
 /**
@@ -482,6 +513,28 @@ IO.prototype.register_read_block = function(port_addr, device, fn)
 {
     this.ports[port_addr].read_block = fn;
     this.ports[port_addr].device = device;
+    this.sync_port(port_addr);
+};
+
+/**
+ * The same for writes (rep outs): fn(addr, count, size) takes up to count items of size bytes from guest memory at
+ * addr and returns how many
+ * @param {number} port_addr
+ * @param {!Object} device
+ * @param {function(number,number,number):number} fn
+ */
+IO.prototype.register_write_block = function(port_addr, device, fn)
+{
+    this.ports[port_addr].write_block = fn;
+    this.ports[port_addr].device = device;
+    this.sync_port(port_addr);
+};
+
+/** @return {number} the items moved, 0 when the port writes item by item */
+IO.prototype.port_write_block = function(port_addr, addr, count, size)
+{
+    const entry = this.ports[port_addr];
+    return entry.write_block ? entry.write_block.call(entry.device, addr, count, size) : 0;
 };
 
 /** @return {number} the items moved, 0 when the port reads item by item */

@@ -472,6 +472,11 @@ CPU.prototype.wasm_patch = function()
     this.uart_port_write = get_import("uart_port_write");
     this.uart_receive = get_import("uart_receive");
     this.uart_set_modem_status_bit = get_import("uart_set_modem_status_bit");
+    this.io_ports_flags_addr = get_import("io_ports_flags_addr");
+    this.io_ports_ready = get_import("io_ports_ready");
+    this.port92_read = get_import("port92_read");
+    this.port92_write = get_import("port92_write");
+
     this.get_vga_regs_addr = get_import("get_vga_regs_addr");
     this.vga_regs_init = get_import("vga_regs_init");
     this.vga_replot = get_import("vga_replot");
@@ -1292,16 +1297,15 @@ CPU.prototype.init = function(settings, device_bus)
         return 0;
     });
 
-    var a20_byte = 0;
-
+    // port 0x92: the core's register (src/rust/cpu/ports.rs), which answers it; here for accesses through JavaScript
     io.register_read(0x92, this, function()
     {
-        return a20_byte;
+        return this.port92_read();
     });
 
     io.register_write(0x92, this, function(out_byte)
     {
-        a20_byte = out_byte;
+        this.port92_write(out_byte);
     });
 
     io.register_read(0x511, this, function()

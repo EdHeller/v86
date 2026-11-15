@@ -1201,6 +1201,9 @@ unsafe fn string_op(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
     if p.rep != 0 && !df && !p.asz32 && opcode == 0x6D {
         ins_fast(port, bits)?;
     }
+    if p.rep != 0 && !df && !p.asz32 && opcode == 0x6F {
+        outs_fast(port, bits, seg_base)?;
+    }
 
     loop {
         if p.rep != 0 && get_reg(RCX, abits, true) == 0 {
@@ -1291,6 +1294,27 @@ unsafe fn ins_fast(port: i32, bits: u32) -> OrPageFault<()> {
         let done = io_port_read_block(port, dphys, n as u32, step as u32) as u64;
         if done == 0 { return Ok(()) }
         set_reg(RDI, 64, true, di.wrapping_add(done * step));
+        set_reg(RCX, 64, true, count - done);
+        if done < n { return Ok(()) }
+    }
+}
+
+/// rep outsw / outsd to a device that writes in blocks (the IDE data port), a page at a time
+unsafe fn outs_fast(port: i32, bits: u32, seg_base: u64) -> OrPageFault<()> {
+    use crate::cpu::memory::in_mapped_range;
+    let step = bits as u64 / 8;
+    let user = *cpl == 3;
+    loop {
+        let count = r64(RCX);
+        let si = r64(RSI).wrapping_add(seg_base);
+        if count == 0 || !is_canonical(si) || !is_canonical(si.wrapping_add(count.min(0x1000) * step)) { return Ok(()) }
+        let n = count.min((0x1000 - (si & 0xFFF)) / step);
+        if n == 0 { return Ok(()) }
+        let sphys = translate(si, false, user, false)?;
+        if in_mapped_range(sphys & !0xFFF) { return Ok(()) }
+        let done = crate::cpu::cpu::io_port_write_block(port, sphys, n as u32, step as u32) as u64;
+        if done == 0 { return Ok(()) }
+        set_reg(RSI, 64, true, r64(RSI).wrapping_add(done * step));
         set_reg(RCX, 64, true, count - done);
         if done < n { return Ok(()) }
     }

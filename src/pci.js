@@ -717,6 +717,7 @@ PCI.prototype.set_io_bars = function(bar, from, to)
         if(from + i >= 0x1000)
         {
             ports[from + i] = this.io.create_empty_entry();
+            this.io.sync_port(from + i);
         }
 
         var entry = bar.entries[i];
@@ -726,6 +727,7 @@ PCI.prototype.set_io_bars = function(bar, from, to)
         if(to + i >= 0x1000)
         {
             ports[to + i] = entry;
+            this.io.sync_port(to + i);
         }
     }
 };
