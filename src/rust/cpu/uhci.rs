@@ -315,7 +315,22 @@ impl Uhci {
             return (false, link, 0);
         }
 
-        let result = js::usb_transaction(self.port_mask(), device_address, pid as i32, endpoint, buffer, max_length);
+        // (the tablet is the core's: asked here, its data straight in guest memory)
+        let mut pending = self.reset_pending as u32;
+        let tablet = match super::usb_tablet::guest(buffer, max_length as u32) {
+            Some(data) => super::usb_tablet::route(self.port_mask() as u32, device_address, pid as i32, endpoint, data, max_length as usize, &mut pending),
+            None => None,
+        };
+        self.reset_pending = pending as i32;
+        let result = match tablet {
+            Some(result) => {
+                if pid == PID_IN && result > 0 {
+                    crate::jit::jit_dirty_cache(buffer, buffer + result as u32);
+                }
+                result
+            },
+            None => js::usb_transaction(self.port_mask(), device_address, pid as i32, endpoint, buffer, max_length),
+        };
 
         if result == USB_NODEV {
             // no answer: a timeout, the error counter down, at 0 the TD is retired

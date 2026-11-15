@@ -394,6 +394,12 @@ DeviceMachine.prototype.core_uhci = function()
     return this.handle["core_uhci"] || null;
 };
 
+/** @return {Object} the core's USB tablet, or null (src/device_plugin.js) */
+DeviceMachine.prototype.core_tablet = function()
+{
+    return this.handle["core_tablet"] || null;
+};
+
 /** @return {Object} the core's xHCI controller, or null (src/device_plugin.js) */
 DeviceMachine.prototype.core_xhci = function()
 {

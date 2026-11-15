@@ -1020,7 +1020,11 @@ impl Xhci {
 
     /// a transaction with the device in a physical port, its data at `ptr` (this module's memory)
     unsafe fn transaction(&mut self, port: usize, pid: i32, endpoint: i32, ptr: u32, length: i32) -> i32 {
-        // (the bridge xhci.js sets: one physical port, any address, the data at a pointer into this module's memory)
+        // (the tablet is the core's; the others are asked through the bridge xhci.js sets: one physical port, any
+        // address, the data at a pointer into this module's memory)
+        if let Some(result) = super::usb_tablet::route(1 << port, -1, pid, endpoint, ptr as *mut u8, length as usize, &mut self.reset_pending) {
+            return result;
+        }
         js::usb_transaction(1 << port, -1, pid, endpoint, ptr, length)
     }
 

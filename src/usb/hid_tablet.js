@@ -7,7 +7,7 @@
 
 import { USBDevice } from "./usb_device.js";
 import {
-    DESCRIPTOR_HID, DESCRIPTOR_REPORT, ENDPOINT_INTERRUPT, SPEED_FULL, USB_NAK, USB_STALL,
+    DESCRIPTOR_HID, DESCRIPTOR_REPORT, ENDPOINT_INTERRUPT, PID_IN, SPEED_FULL, USB_NAK, USB_STALL,
     configuration_descriptor, device_descriptor, endpoint_descriptor, interface_descriptor,
 } from "./usb.js";
 
@@ -222,5 +222,119 @@ HIDTablet.prototype.set_state = function(state)
     this.protocol = state[7];
     this.last_report = this.now();
     this.in_use = !this.configuration;
+    this.update_use();
+};
+
+/**
+ * The core's tablet (src/rust/cpu/usb_tablet.rs) as HIDTablet's face: the pointer, the snapshots, transactions from
+ * controllers JavaScript runs. The core's controllers ask it directly (set_port tells them where it is).
+ * @constructor
+ * @param {!Object} core the plugin handle's core_tablet
+ */
+export function CoreTablet(core)
+{
+    this.core = core;
+    this.name = "tablet";
+    this.speeds = [SPEED_FULL];
+    this.speed = SPEED_FULL;
+    this.is_core = true;
+    this.port = -1;
+    /** @type {?function(boolean)} */
+    this.on_use = null;
+    this.in_use = false;
+    core["init"]();
+    /** @type {number} its address (the core's) */
+    this.address;
+    Object.defineProperty(this, "address", { get: () => core["address"]() });
+    // (the guest configures it in the core: told after the slice)
+    core["after_slice"](() => this.update_use());
+}
+
+CoreTablet.prototype.update_use = function()
+{
+    const in_use = this.core["in_use"]();
+    if(in_use === this.in_use) return;
+    this.in_use = in_use;
+    if(this.on_use) this.on_use(in_use);
+};
+
+CoreTablet.prototype.reset = function()
+{
+    this.core["reset"]();
+    this.update_use();
+};
+
+/** @param {number} speed (full speed only) */
+CoreTablet.prototype.set_speed = function(speed) {};
+
+/**
+ * @param {number} port the port of the core's controller it is in, or -1
+ */
+CoreTablet.prototype.set_port = function(port)
+{
+    this.port = port;
+    this.core["set_port"](port);
+};
+
+/**
+ * @param {number} pid
+ * @param {number} endpoint
+ * @param {Uint8Array} data
+ * @param {number} max_length
+ * @return {!Uint8Array|number}
+ */
+CoreTablet.prototype.transaction = function(pid, endpoint, data, max_length)
+{
+    const length = pid === PID_IN ? max_length : data ? data.length : 0;
+    if(pid !== PID_IN && length) this.core["scratch"](length).set(data);
+    const result = this.core["transaction"](pid, endpoint, length);
+    if(pid !== PID_IN || result < 0) return result;
+    return this.core["scratch"](result).slice();
+};
+
+/** @param {number} x @param {number} y each from 0 to 1 */
+CoreTablet.prototype.move = function(x, y)
+{
+    this.core["move"](Math.max(0, Math.min(TABLET_MAX, Math.round(x * TABLET_MAX))), Math.max(0, Math.min(TABLET_MAX, Math.round(y * TABLET_MAX))));
+};
+
+CoreTablet.prototype.press = function(left, middle, right)
+{
+    this.core["press"]((left ? 1 : 0) | (right ? 2 : 0) | (middle ? 4 : 0));
+};
+
+CoreTablet.prototype.scroll = function(delta) { this.core["scroll"](delta | 0); };
+
+/** HIDTablet's snapshot format, from the core's numbers */
+CoreTablet.prototype.get_state = function()
+{
+    const v = this.core["save"]();
+    let i = 0;
+    const next = () => v[i++];
+    const take = n => Array.from({ length: n }, next);
+    const address = next(), configuration = next();
+    const alternates = take(next());
+    const remote_wakeup = next();
+    const halted = take(next());
+    const stage = next();
+    const setup = next() ? take(5) : null;
+    const control_data = Uint8Array.from(take(next()));
+    const control_offset = next();
+    const out = Uint8Array.from(take(next()));
+    const pending_address = next();
+    const rest = take(7);
+    return [[address, configuration, alternates, remote_wakeup, halted, stage, setup, control_data, control_offset, out, pending_address, SPEED_FULL],
+        ...rest];
+};
+
+CoreTablet.prototype.set_state = function(state)
+{
+    const d = state[0];
+    const v = [d[0], d[1], d[2].length, ...d[2], d[3], d[4].length, ...d[4], d[5]];
+    if(d[6]) v.push(1, ...d[6]);
+    else v.push(0);
+    v.push(d[7].length, ...d[7], d[8], d[9].length, ...d[9], d[10], ...state.slice(1, 8).map(Number));
+    this.core["load"](v);
+    this.in_use = !this.core["in_use"]();
     this.update_use();
 };

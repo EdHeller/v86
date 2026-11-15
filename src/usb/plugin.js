@@ -12,7 +12,7 @@ import { UsbMachine, register_usb_plugin } from "./machine.js";
 import { COMPANION_IDENTITY, PORTS as UHCI_PORTS, UHCIController } from "./uhci.js";
 import { EHCI_PORTS, EHCIController } from "./ehci.js";
 import { XHCI_PORTS, XHCIController } from "./xhci.js";
-import { HIDTablet } from "./hid_tablet.js";
+import { CoreTablet, HIDTablet } from "./hid_tablet.js";
 import { MassStorage } from "./mass_storage.js";
 
 register_usb_plugin({
@@ -26,7 +26,9 @@ register_usb_plugin({
             xhci ? new XHCIController(machine) : new UHCIController(machine);
         const PORTS = ehci ? EHCI_PORTS : xhci ? XHCI_PORTS : UHCI_PORTS;
         const NAME = ehci ? "EHCI" : xhci ? "xHCI" : "UHCI";
-        const tablet = options["tablet"] ? new HIDTablet(() => machine.now()) : null;
+        // (the core's tablet where the controller is the core's: its polling stays there)
+        const core_tablet = controller.core ? machine.core_tablet() : null;
+        const tablet = !options["tablet"] ? null : core_tablet ? new CoreTablet(core_tablet) : new HIDTablet(() => machine.now());
         /**
          * The devices by their IDs: the device, its port (kept while it is
          * out of it), a disk's block backend
@@ -148,7 +150,7 @@ register_usb_plugin({
  * use is announced ("usb-tablet-active"), so that the PS/2 mouse and the
  * VMware backdoor leave the pointer to it.
  * @param {UsbMachine} machine
- * @param {HIDTablet} tablet
+ * @param {!HIDTablet|!CoreTablet} tablet
  */
 function connect_pointer(machine, tablet)
 {

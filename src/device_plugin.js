@@ -132,6 +132,29 @@ export function device_handle(cpu, owner)
             "port_write": (port, size, value) => cpu.wm.exports["uhci_port_write"](port, size, value),
             "on_transaction": handler => { cpu.usb_transaction = handler; },
         },
+        // the core's USB tablet (src/rust/cpu/usb_tablet.rs), which the core's controllers ask directly
+        "core_tablet": cpu.devices.pci && cpu.devices.pci.q35 ? null : {
+            "init": () => cpu.wm.exports["tablet_init"](),
+            "reset": () => cpu.wm.exports["tablet_reset"](),
+            "set_port": port => cpu.wm.exports["tablet_set_port"](port),
+            "address": () => cpu.wm.exports["tablet_address"](),
+            "in_use": () => !!cpu.wm.exports["tablet_in_use"](),
+            "scratch": length => new Uint8Array(cpu.wasm_memory.buffer, cpu.wm.exports["tablet_scratch"](), Math.min(length, 1024)),
+            "transaction": (pid, endpoint, length) => cpu.wm.exports["tablet_transaction"](pid, endpoint, length),
+            "move": (x, y) => cpu.wm.exports["tablet_move"](x, y),
+            "press": buttons => cpu.wm.exports["tablet_press"](buttons),
+            "scroll": delta => cpu.wm.exports["tablet_scroll"](delta),
+            "save": () => {
+                cpu.wm.exports["tablet_save"]();
+                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["tablet_state_addr"](), cpu.wm.exports["tablet_state_len"]()).slice();
+            },
+            "load": values => {
+                const at = cpu.wm.exports["tablet_state_resize"](values.length);
+                new Float64Array(cpu.wasm_memory.buffer, at, values.length).set(values);
+                cpu.wm.exports["tablet_load"]();
+            },
+            "after_slice": hook => cpu.slice_hooks.push(hook),
+        },
         // the core's xHCI controller (src/rust/cpu/xhci.rs), on i440FX machines as UHCI's
         "core_xhci": cpu.devices.pci && cpu.devices.pci.q35 ? null : {
             "init": pci_id => cpu.wm.exports["xhci_init"](pci_id),
