@@ -132,6 +132,30 @@ export function device_handle(cpu, owner)
             "port_write": (port, size, value) => cpu.wm.exports["uhci_port_write"](port, size, value),
             "on_transaction": handler => { cpu.usb_transaction = handler; },
         },
+        // the core's xHCI controller (src/rust/cpu/xhci.rs), on i440FX machines as UHCI's
+        "core_xhci": cpu.devices.pci && cpu.devices.pci.q35 ? null : {
+            "init": pci_id => cpu.wm.exports["xhci_init"](pci_id),
+            "set_mmio": base => cpu.wm.exports["xhci_set_mmio"](base),
+            "reset": all => cpu.wm.exports["xhci_reset"](all),
+            "attach": (port, attached, superspeed, speed, notify) => cpu.wm.exports["xhci_attach"](port, attached, superspeed, speed, notify),
+            "port_connected": port => !!cpu.wm.exports["xhci_port_connected"](port),
+            "take_resets": () => cpu.wm.exports["xhci_take_resets"](),
+            "update_irq": () => cpu.wm.exports["xhci_update_irq"](),
+            "read": (offset, size) => cpu.wm.exports["xhci_mmio_read"](offset, size) >>> 0,
+            "write": (offset, size, value) => cpu.wm.exports["xhci_mmio_write"](offset, size, value),
+            // the bytes at a pointer into the core's memory (a transaction's data)
+            "bytes": (pointer, length) => new Uint8Array(cpu.wasm_memory.buffer, pointer, length),
+            "save": () => {
+                cpu.wm.exports["xhci_save"]();
+                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["xhci_state_addr"](), cpu.wm.exports["xhci_state_len"]()).slice();
+            },
+            "load": values => {
+                const at = cpu.wm.exports["xhci_state_resize"](values.length);
+                new Float64Array(cpu.wasm_memory.buffer, at, values.length).set(values);
+                cpu.wm.exports["xhci_load"]();
+            },
+            "on_transaction": handler => { cpu.usb_transaction = handler; },
+        },
         "now": () => v86.microtick(),
         "add_timer": timer => cpu.add_device_timer(timer),
         "wake": () => cpu.stop_idling(),

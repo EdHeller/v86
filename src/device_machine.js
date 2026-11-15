@@ -394,6 +394,12 @@ DeviceMachine.prototype.core_uhci = function()
     return this.handle["core_uhci"] || null;
 };
 
+/** @return {Object} the core's xHCI controller, or null (src/device_plugin.js) */
+DeviceMachine.prototype.core_xhci = function()
+{
+    return this.handle["core_xhci"] || null;
+};
+
 /** @return {number} the machine clock, in milliseconds */
 DeviceMachine.prototype.now = function()
 {

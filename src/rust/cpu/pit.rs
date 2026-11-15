@@ -259,6 +259,7 @@ pub unsafe fn run_hardware_timers(acpi_enabled: bool, now: f64) -> f64 {
         t = t.min(super::rtc::rtc_timer());
     }
     t = t.min(super::uhci::timer(now));
+    t = t.min(super::xhci::timer(now));
     if acpi_enabled {
         t = t.min(apic::apic_timer(now));
         if super::acpi::present() {

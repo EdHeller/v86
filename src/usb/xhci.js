@@ -25,6 +25,9 @@ import { h } from "../lib.js";
 import { dbg_log } from "../log.js";
 import { PID_IN, PID_OUT, PID_SETUP, SPEED_FULL, SPEED_HIGH, SPEED_LOW, SPEED_SUPER, USB_NAK, USB_STALL } from "./usb.js";
 
+// On i440FX machines the controller is the core's (src/rust/cpu/xhci.rs): its registers, rings, slots and timer.
+// Then this keeps the devices (the core asks them for transactions), the PCI function and the snapshot format.
+
 const MMIO_SIZE = 0x4000;
 const OP = 0x40, PORTS_BASE = OP + 0x400, RUNTIME = 0x1000, DOORBELLS = 0x2000, XECP = 0x3000;
 /** Physical ports: each a USB 3 root port (1 to 4) and a USB 2 one (5 to 8) */
@@ -107,20 +110,88 @@ export function XHCIController(machine)
     this.bar0 = 0;
     this.mmio = -1;
     this.legsup = LEGSUP_BIOS_OWNED;
-    this.reset();
+    /** the core's controller, or null (Q35) */
+    this.core = machine.core_xhci();
+    if(this.core) this.use_core();
+    else this.reset();
 
     const space = create_pci_space();
     machine.msi_capability(0).forEach((byte, i) => { space[MSI_CAP + i] = byte; });
     machine.register_pci({
         pci_space: space,
         pci_bars: [{ size: MMIO_SIZE, on_move: base => { this.bar0 = base; this.update_decode(); } }],
-        on_command_change: () => { this.update_decode(); this.update_irq(); },
+        on_command_change: () => { this.update_decode(); this.core ? this.core["update_irq"]() : this.update_irq(); },
         on_config_restore: () => this.update_decode(),
         on_upstream_change: () => this.update_decode(),
         on_config_write: (offset, size) => this.config_written(offset, size),
     });
-    machine.add_timer(now => this.timer(now));
+    if(this.core) this.core["init"](machine.pci_id());
+    else machine.add_timer(now => this.timer(now));
 }
+
+/** The devices list as the core's record of them; the core's transactions */
+XHCIController.prototype.use_core = function()
+{
+    const core = this.core;
+    const list = new Array(XHCI_PORTS).fill(null);
+    this.devices = new Array(XHCI_PORTS);
+    for(let port = 0; port < XHCI_PORTS; port++)
+    {
+        Object.defineProperty(this.devices, String(port), {
+            get: () => list[port],
+            // (a restored snapshot sets the list directly: the core's record follows)
+            set: device => { list[port] = device; this.core_attach(port, device, false); },
+        });
+    }
+    core["on_transaction"]((port_mask, address, pid, endpoint, pointer, length) => this.core_transaction(port_mask, pid, endpoint, pointer, length));
+};
+
+/**
+ * The core's record of a physical port's device (notify: plugged now)
+ * @param {number} port
+ * @param {?Object} device
+ * @param {boolean} notify
+ */
+XHCIController.prototype.core_attach = function(port, device, notify)
+{
+    const superspeed = !!device && device.speeds.includes(SPEED_SUPER);
+    const speed = !device ? 0 : superspeed ? SPEED_SUPER : device.speeds.includes(SPEED_HIGH) ? SPEED_HIGH :
+        device.speeds.includes(SPEED_FULL) ? SPEED_FULL : SPEED_LOW;
+    if(device) device.set_speed(speed);
+    this.core["attach"](port, !!device, superspeed, device && !superspeed ? speed : 0, notify);
+};
+
+/** The devices the core put to their default state (port reset, Address Device, Reset Device) */
+XHCIController.prototype.apply_core_resets = function()
+{
+    const pending = this.core["take_resets"]();
+    for(let i = 0; i < XHCI_PORTS; i++)
+    {
+        if(pending & 1 << i && this.devices[i]) this.devices[i].reset();
+    }
+};
+
+/**
+ * A transaction the core asks of the device in a physical port, its data at a pointer into the core's memory
+ * @return {number} the length, or -1 no device, -2 NAK, -3 STALL, -4 babble
+ */
+XHCIController.prototype.core_transaction = function(port_mask, pid, endpoint, pointer, length)
+{
+    this.apply_core_resets();
+    const device = this.devices[31 - Math.clz32(port_mask)];
+    if(!device) return -1;
+    const result = pid === PID_IN ? device.transaction(PID_IN, endpoint, null, length) :
+        device.transaction(pid, endpoint, length ? this.core["bytes"](pointer, length).slice() : new Uint8Array(0), length);
+    if(result === USB_NAK) return -2;
+    if(result === USB_STALL) return -3;
+    if(result instanceof Uint8Array)
+    {
+        if(result.length > length) return -4;
+        if(result.length) this.core["bytes"](pointer, result.length).set(result);
+        return result.length;
+    }
+    return length;
+};
 
 /** @return {!Array<number>} */
 function create_pci_space()
@@ -156,7 +227,7 @@ XHCIController.prototype.config_written = function(offset, size)
     {
         this.machine.msi_config_written(MSI_CAP, 0);
         // (MSI on releases INTA; off may need it)
-        this.update_irq();
+        this.core ? this.core["update_irq"]() : this.update_irq();
     }
     if(offset < PM_CAP + 8 && offset + size > PM_CAP)
     {
@@ -172,7 +243,18 @@ XHCIController.prototype.update_decode = function()
     if(base === this.mmio) return;
     if(this.mmio !== -1) this.machine.mmap_unregister_range(this.mmio, MMIO_SIZE);
     this.mmio = base;
-    if(base !== -1)
+    if(this.core) this.core["set_mmio"](base);
+    if(base !== -1 && this.core)
+    {
+        // (the core answers them; these for accesses that come through JavaScript)
+        const core = this.core;
+        this.machine.mmap_register_range(base, MMIO_SIZE,
+            address => core["read"](address - this.mmio, 1),
+            (address, value) => core["write"](address - this.mmio, 1, value),
+            address => core["read"](address - this.mmio, 4),
+            (address, value) => core["write"](address - this.mmio, 4, value));
+    }
+    else if(base !== -1)
     {
         this.machine.mmap_register_range(base, MMIO_SIZE,
             address => this.read(address - this.mmio, 1),
@@ -217,6 +299,12 @@ XHCIController.prototype.reset = function()
 /** A machine reset (PCIRST#) */
 XHCIController.prototype.reset_all = function()
 {
+    if(this.core)
+    {
+        this.core["reset"](true);
+        this.update_decode();
+        return;
+    }
     this.legsup = LEGSUP_BIOS_OWNED;
     this.reset();
     this.update_decode();
@@ -276,6 +364,14 @@ XHCIController.prototype.update_port = function(port, notify)
  */
 XHCIController.prototype.attach = function(port, device)
 {
+    if(this.core)
+    {
+        this.apply_core_resets();
+        this.core_attach(port, device, true);
+        this.devices[port] = device;
+        if(device) device.reset();
+        return;
+    }
     if(this.devices[port])
     {
         for(const slot of this.slots) if(slot && slot.port === port) slot.gone = true;
@@ -291,6 +387,7 @@ XHCIController.prototype.attach = function(port, device)
  */
 XHCIController.prototype.port_connected = function(port)
 {
+    if(this.core) return this.core["port_connected"](port);
     return !!((this.portsc[USB3_FIRST + port] | this.portsc[USB2_FIRST + port]) & PORT_CCS);
 };
 
@@ -1321,8 +1418,73 @@ function td_of_state(state)
     };
 }
 
+/** The core's state (xhci_save's numbers) in get_state's format */
+XHCIController.prototype.core_get_state = function()
+{
+    const v = this.core["save"]();
+    let i = 0;
+    const next = () => v[i++];
+    const take = n => Array.from({ length: n }, next);
+    const head = take(25);
+    const portsc = take(ROOT_PORTS + 1);
+    const slots = Array.from({ length: MAX_SLOTS + 1 }, () => {
+        if(!next()) return null;
+        const slot = take(5);
+        slot.push(Array.from({ length: 32 }, () => {
+            if(!next()) return null;
+            const ep = take(7);
+            const n = next();
+            if(!n)
+            {
+                ep.push(null);
+                return ep;
+            }
+            const trbs = Array.from({ length: n - 1 }, () => take(6));
+            const index = next();
+            const done = take(n - 1);
+            const rest = take(5);
+            ep.push([trbs, index, done, ...rest]);
+            return ep;
+        }));
+        return slot;
+    });
+    const active = Array.from({ length: next() }, () => next() + ":" + next());
+    return [head[0], head[1], head[2], [head[3], head[4]], head[5], head[6], head[7], [head[8], head[9]], head[10], head[11], head[12],
+        head[13], [head[14], head[15]], [head[16], head[17]], [head[18], head[19], head[20], head[21]], head[22], portsc, slots, active,
+        head[23], head[24], this.bar0];
+};
+
+/** @param {Array} state get_state's format, into the core */
+XHCIController.prototype.core_set_state = function(state)
+{
+    const v = [state[0], state[1], state[2], ...state[3], state[4], state[5], state[6], ...state[7], state[8], state[9], state[10],
+        state[11], ...state[12], ...state[13], ...state[14], state[15], state[19], state[20], ...state[16]];
+    for(const slot of state[17])
+    {
+        if(!slot) { v.push(0); continue; }
+        v.push(1, ...slot.slice(0, 5));
+        for(const ep of slot[5])
+        {
+            if(!ep) { v.push(0); continue; }
+            v.push(1, ...ep.slice(0, 7));
+            const td = ep[7];
+            if(!td) { v.push(0); continue; }
+            v.push(td[0].length + 1);
+            for(const t of td[0]) v.push(...t);
+            v.push(td[1], ...td[2], td[3], td[4], td[5], td[6], td[7]);
+        }
+    }
+    v.push(state[18].length);
+    for(const key of state[18]) v.push(...key.split(":").map(Number));
+    this.core["load"](v);
+    this.bar0 = state[21];
+    this.update_decode();
+    this.core["set_mmio"](this.mmio);
+};
+
 XHCIController.prototype.get_state = function()
 {
+    if(this.core) return this.core_get_state();
     const er = this.event_ring;
     return [this.cmd, this.status, this.dnctrl, this.crcr.slice(), this.command_ring.dequeue, this.command_ring.ccs, +this.crr,
         this.dcbaap.slice(), this.config, this.iman, this.imod, this.erstsz, this.erstba.slice(), this.erdp.slice(),
@@ -1334,6 +1496,7 @@ XHCIController.prototype.get_state = function()
 
 XHCIController.prototype.set_state = function(state)
 {
+    if(this.core) return this.core_set_state(state);
     this.cmd = state[0];
     this.status = state[1];
     this.dnctrl = state[2];
