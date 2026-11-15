@@ -5051,6 +5051,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             0x4D0 => pic::port4D0_read() as i32,
             0x4D1 => pic::port4D1_read() as i32,
             _ if super::pit::serves_read(port) => super::pit::pit_port_read(port),
+            _ if super::vga_legacy::ports_serve(port, 8, 0, false) => super::vga_legacy::vga_port_read(port, 8),
             _ if super::ide::serves(port, false) => super::ide::ide_port_read(port),
             _ if super::floppy::serves(port, false) => super::floppy::fdc_port_read(port),
             _ if super::ne2k::serves(port, 8, 0, false) => super::ne2k::ne2k_port_read(port, 8),
@@ -5082,6 +5083,9 @@ pub fn io_port_read16(port: i32) -> i32 {
         }
         if super::pci::serves(port, 16, 0, false) {
             return super::pci::pci_port_read(port, 16);
+        }
+        if super::vga_legacy::ports_serve(port, 16, 0, false) {
+            return super::vga_legacy::vga_port_read(port, 16);
         }
         if super::ne2k::serves(port, 16, 0, false) {
             return super::ne2k::ne2k_port_read(port, 16);
@@ -5122,6 +5126,7 @@ pub fn io_port_write8(port: i32, value: i32) {
                 handle_irqs()
             },
             _ if super::pit::serves_write(port, value) => super::pit::pit_port_write(port, value),
+            _ if super::vga_legacy::ports_serve(port, 8, value, true) => super::vga_legacy::vga_port_write(port, 8, value),
             _ if super::ide::serves(port, true) => super::ide::ide_port_write(port, value),
             _ if super::floppy::serves(port, true) => super::floppy::fdc_port_write(port, value),
             _ if super::ne2k::serves(port, 8, value, true) => super::ne2k::ne2k_port_write(port, 8, value),
@@ -5145,6 +5150,9 @@ pub fn io_port_write16(port: i32, value: i32) {
         }
         if super::pci::serves(port, 16, value, true) {
             return super::pci::pci_port_write(port, 16, value);
+        }
+        if super::vga_legacy::ports_serve(port, 16, value, true) {
+            return super::vga_legacy::vga_port_write(port, 16, value);
         }
         if super::ne2k::serves(port, 16, value, true) {
             return super::ne2k::ne2k_port_write(port, 16, value);

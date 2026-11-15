@@ -208,7 +208,14 @@ function vga_hash()
     if(!m) return "";
     let h = 0x811C9DC5;
     for(let i = 0; i < m.length; i += 4) h = Math.imul(h ^ (m[i] | m[i + 1] << 8 | m[i + 2] << 16 | m[i + 3] << 24), 0x01000193);
-    return (h >>> 0).toString(16) + "/" + (vga.graphical_mode ? "g" : "t");
+    // (and the palettes and the registers that pick colours and the screen's shape)
+    let p = 0x811C9DC5;
+    const mix = v => { p = Math.imul(p ^ (v | 0), 0x01000193); };
+    for(let i = 0; i < 256; i++) mix(vga.vga256_palette[i]);
+    for(let i = 0; i < 16; i++) mix(vga.dac_map[i]);
+    for(const name of ["attribute_mode", "color_plane_enable", "color_select", "dac_mask", "start_address", "offset_register",
+        "crtc_mode", "max_scan_line", "cursor_address", "line_compare", "clocking_mode", "planar_mode"]) mix(vga[name]);
+    return (h >>> 0).toString(16) + "/" + (p >>> 0).toString(16) + "/" + (vga.graphical_mode ? "g" : "t");
 }
 
 function crypto_hash(text)

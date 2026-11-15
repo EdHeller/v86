@@ -59,6 +59,19 @@ const VGA_CORE_FIELDS = [
     "plane_read", "graphical_mode", "sequencer_memory_mode", "plane_write_bm", "planar_bitmap", "planar_setreset",
     "planar_setreset_enable", "planar_rotate_reg", "latch_dword",
 ];
+// struct VgaRegs in src/rust/cpu/vga_legacy.rs: the register ports' registers, the events for sync_from_core at 32,
+// the other CRT controller registers at 136
+const VGA_REG_FIELDS = [
+    "attribute_controller_index", "palette_source", "attribute_mode", "color_plane_enable", "horizontal_panning",
+    "color_select", "miscellaneous_output_register", "sequencer_index", "clocking_mode", "character_map_select",
+    "dac_mask", "dac_color_index_read", "dac_color_index_write", "dac_state", "dispi_enable_value", "graphics_index",
+    "index_crtc", "cursor_scanline_start", "cursor_scanline_end", "cursor_address", "horizontal_display_enable_end",
+    "horizontal_blank_start", "vertical_display_enable_end", "vertical_blank_start", "line_compare",
+    "preset_row_scan", "max_scan_line", "start_address", "offset_register", "underline_location_register",
+    "crtc_mode", "port_3DA_value",
+];
+const VGA_REG_EVENTS = 32;
+const VGA_EVENT_REDRAW = 1, VGA_EVENT_REPLOT = 2, VGA_EVENT_CURSOR = 4, VGA_EVENT_CURSOR_SCANLINE = 8;
 const VGA_CORE_DIRTY_MIN = 14, VGA_CORE_DIRTY_MAX = 15, VGA_CORE_TEXT_DIRTY = 16;
 const VGA_CORE_TEXT_BITS = 72;
 const VGA_CORE_MEMORY = 72 + 4096;
@@ -102,6 +115,37 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
         Object.defineProperty(this, name, { get: () => current_views()[index] });
     });
     cpu.slice_hooks.push(() => this.sync_from_core());
+
+    // the register ports' registers (struct VgaRegs), the palettes and the CRT controller's other registers
+    cpu.vga_regs_init();
+    const regs_base = cpu.get_vga_regs_addr();
+    this.regs_base = regs_base;
+    VGA_REG_FIELDS.forEach((name, index) => {
+        Object.defineProperty(this, name, {
+            get: () => new Int32Array(cpu.wasm_memory.buffer, regs_base, VGA_REG_FIELDS.length)[index],
+            set: value => { new Int32Array(cpu.wasm_memory.buffer, regs_base, VGA_REG_FIELDS.length)[index] = value; },
+        });
+    });
+    for(const [name, type, address, length] of [
+        ["vga256_palette", Int32Array, cpu.vga_palette_addr(), 256],
+        ["dac_map", Uint8Array, cpu.vga_dac_map_addr(), 16],
+        ["crtc", Uint8Array, regs_base + 136, 0x19],
+    ])
+    {
+        let of = null, array = null;
+        Object.defineProperty(this, name, {
+            get: () => {
+                if(of !== cpu.wasm_memory.buffer)
+                {
+                    of = cpu.wasm_memory.buffer;
+                    array = new type(of, address, length);
+                }
+                return array;
+            },
+            // (a snapshot's array: copied in)
+            set: value => { new type(cpu.wasm_memory.buffer, address, length).set(value); },
+        });
+    }
 
     /** @const */
     this.bus = bus;
@@ -179,7 +223,7 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
     /**
      * Unimplemented CRTC registers go here
      */
-    this.crtc = new Uint8Array(0x19);
+    // (this.crtc: in the core, see the constructor's top)
 
     // Implemented CRTC registers:
 
@@ -219,7 +263,7 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
      * VGA palette containing 256 colors for video mode 13, svga 8bpp, etc.
      * Needs to be initialised by the BIOS
      */
-    this.vga256_palette = new Int32Array(256);
+    // (this.vga256_palette: in the core, see the constructor's top)
 
     /**
      * VGA read latches
@@ -307,7 +351,7 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
 
     this.dac_mask = 0xFF;
 
-    this.dac_map = new Uint8Array(0x10);
+    // (this.dac_map: in the core, see the constructor's top)
 
     this.attribute_controller_index = -1;
     this.palette_source = 0x20;
@@ -458,7 +502,7 @@ VGAScreen.prototype.get_state = function()
     state[7] = this.dac_state;
     state[8] = this.start_address;
     state[9] = this.graphical_mode;
-    state[10] = this.vga256_palette;
+    state[10] = this.vga256_palette.slice();
     state[11] = this.latch_dword;
     state[12] = this.color_compare;
     state[13] = this.color_dont_care;
@@ -473,7 +517,7 @@ VGAScreen.prototype.get_state = function()
     state[22] = this.index_crtc;
     state[23] = this.dac_color_index_write;
     state[24] = this.dac_color_index_read;
-    state[25] = this.dac_map;
+    state[25] = this.dac_map.slice();
     state[26] = this.sequencer_index;
     state[27] = this.plane_write_bm;
     state[28] = this.sequencer_memory_mode;
@@ -494,7 +538,7 @@ VGAScreen.prototype.get_state = function()
     state[43] = this.planar_setreset;
     state[44] = this.planar_setreset_enable;
     state[45] = this.start_address_latched;
-    state[46] = this.crtc;
+    state[46] = this.crtc.slice();
     state[47] = this.horizontal_display_enable_end;
     state[48] = this.horizontal_blank_start;
     state[49] = this.vertical_display_enable_end;
@@ -945,6 +989,18 @@ VGAScreen.prototype.vga_memory_write_text_mode = function(addr, value)
  */
 VGAScreen.prototype.sync_from_core = function()
 {
+    // what the core's answers to the register ports asked for
+    const regs = new Int32Array(this.cpu.wasm_memory.buffer, this.regs_base, VGA_REG_EVENTS + 1);
+    const events = regs[VGA_REG_EVENTS];
+    if(events)
+    {
+        regs[VGA_REG_EVENTS] = 0;
+        if(events & VGA_EVENT_REPLOT) this.complete_replot();
+        else if(events & VGA_EVENT_REDRAW) this.complete_redraw();
+        if(events & VGA_EVENT_CURSOR) this.update_cursor();
+        if(events & VGA_EVENT_CURSOR_SCANLINE) this.update_cursor_scanline();
+    }
+
     const fields = new Int32Array(this.cpu.wasm_memory.buffer, this.core_base, 17);
     if(fields[VGA_CORE_TEXT_DIRTY])
     {
@@ -2456,9 +2512,7 @@ VGAScreen.prototype.vga_replot = function()
 /** The palettes to the core before it draws (1 KiB; they change through ports handled here) */
 VGAScreen.prototype.sync_palette_to_core = function()
 {
-    const buffer = this.cpu.wasm_memory.buffer;
-    new Int32Array(buffer, this.cpu.vga_palette_addr(), 256).set(this.vga256_palette);
-    new Uint8Array(buffer, this.cpu.vga_dac_map_addr(), 16).set(this.dac_map);
+    // (nothing to copy: vga256_palette and dac_map are the core's)
 };
 
 /**
