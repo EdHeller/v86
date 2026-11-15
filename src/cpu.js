@@ -170,6 +170,8 @@ export function CPU(bus, wm, stop_idling)
     // (the serial ports: their output is collected in the core and taken after each slice, see after_slice)
     /** @type {!Array} */
     this.uarts = [];
+    /** the core's UHCI asks a USB device for a transaction (src/usb/uhci.js sets it): no device by default */
+    this.usb_transaction = (port_mask, address, pid, endpoint, buffer, max_length) => -1;
     /** what devices in the core collected for JavaScript, taken after each slice (see after_slice) @type {!Array<function()>} */
     this.slice_hooks = [];
 

@@ -388,6 +388,12 @@ DeviceMachine.prototype.validate_physical_range = function(address, length)
     return this.handle["validate_physical_range"](address, length);
 };
 
+/** @return {Object} the core's UHCI controller, or null (src/device_plugin.js) */
+DeviceMachine.prototype.core_uhci = function()
+{
+    return this.handle["core_uhci"] || null;
+};
+
 /** @return {number} the machine clock, in milliseconds */
 DeviceMachine.prototype.now = function()
 {

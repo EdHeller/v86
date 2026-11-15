@@ -75,6 +75,11 @@ export function UHCIController(machine, identity, multifunction)
     this.irq_level = false;
 
     this.io_base = machine.allocate_io(IO_SIZE);
+    /** the core's controller (src/rust/cpu/uhci.rs) on i440FX, which answers the ports and runs the schedule; not
+     * for EHCI's companions. Then the registers here are accessors of the core's, and the devices are asked for
+     * their transactions through on_transaction */
+    this.core = identity ? null : machine.core_uhci();
+    if(this.core) this.use_core();
     this.reset();
     this.register_ports();
 
@@ -84,13 +89,104 @@ export function UHCIController(machine, identity, multifunction)
     machine.register_pci({
         pci_space: space,
         pci_bars: [null, null, null, null, { size: IO_SIZE, on_move: undefined }],
-        on_command_change: () => { this.update_irq(); },
+        on_command_change: () => { this.core ? this.core["update_irq"]() : this.update_irq(); },
         on_config_restore: () => {},
         on_upstream_change: () => {},
         on_config_write: () => {},
     });
-    machine.add_timer(now => this.timer(now));
+    if(this.core)
+    {
+        this.core["init"](this.io_base, machine.pci_id());
+    }
+    else
+    {
+        machine.add_timer(now => this.timer(now));
+    }
 }
+
+// struct Uhci in src/rust/cpu/uhci.rs: after next_frame, these 32-bit fields
+const CORE_FIELDS = ["cmd", "status", "status2", "intr", "frnum", "flbase", "sofmod"];
+const CORE_PORTSC = 7, CORE_IRQ_LEVEL = 9, CORE_ATTACHED = 13, CORE_LOW_SPEED = 15, CORE_RESET_PENDING = 17;
+
+/** The registers as accessors of the core's; the transactions of its schedule */
+UHCIController.prototype.use_core = function()
+{
+    const core = this.core;
+    CORE_FIELDS.forEach((name, index) => {
+        Object.defineProperty(this, name, {
+            get: () => core["fields"]()[index],
+            set: value => { core["fields"]()[index] = value; },
+        });
+    });
+    Object.defineProperty(this, "portsc", {
+        get: () => Array.from(core["fields"]().subarray(CORE_PORTSC, CORE_PORTSC + PORTS)),
+        set: value => { core["fields"]().set(value.slice(0, PORTS), CORE_PORTSC); },
+    });
+    Object.defineProperty(this, "irq_level", {
+        get: () => !!core["fields"]()[CORE_IRQ_LEVEL],
+        set: value => { core["fields"]()[CORE_IRQ_LEVEL] = +value; },
+    });
+    Object.defineProperty(this, "next_frame", {
+        get: () => core["next_frame"](),
+        set: value => { core["next_frame"](value); },
+    });
+    core["on_transaction"]((port_mask, address, pid, endpoint, buffer, max_length) =>
+        this.core_transaction(port_mask, address, pid, endpoint, buffer, max_length));
+};
+
+/** The devices the core reset (bus, port or controller reset) to their default state, before they are asked again */
+UHCIController.prototype.apply_core_resets = function()
+{
+    const fields = this.core["fields"]();
+    // (the core's record of the attached devices follows the list here, which a restored snapshot sets directly)
+    for(let i = 0; i < PORTS; i++)
+    {
+        fields[CORE_ATTACHED + i] = this.devices[i] ? 1 : 0;
+        fields[CORE_LOW_SPEED + i] = this.devices[i] && this.devices[i].speed === SPEED_LOW ? 1 : 0;
+    }
+    const pending = fields[CORE_RESET_PENDING];
+    if(!pending) return;
+    fields[CORE_RESET_PENDING] = 0;
+    for(let i = 0; i < PORTS; i++)
+    {
+        if(pending & 1 << i && this.devices[i]) this.devices[i].reset();
+    }
+};
+
+/**
+ * A transaction of the core's schedule: the device with this address on one of the ports of port_mask
+ * @return {number} the length, or -1 no device, -2 NAK, -3 STALL, -4 babble
+ */
+UHCIController.prototype.core_transaction = function(port_mask, address, pid, endpoint, buffer, max_length)
+{
+    this.apply_core_resets();
+    let device = null;
+    for(let i = 0; i < PORTS; i++)
+    {
+        if(port_mask & 1 << i && this.devices[i] && this.devices[i].address === address) { device = this.devices[i]; break; }
+    }
+    if(!device) return -1;
+    let result;
+    if(pid === PID_IN)
+    {
+        result = device.transaction(PID_IN, endpoint, null, max_length);
+    }
+    else
+    {
+        const data = max_length ? this.dma_read(buffer, max_length) : new Uint8Array(0);
+        if(!data) return -1;
+        result = device.transaction(pid, endpoint, data, max_length);
+    }
+    if(result === USB_NAK) return -2;
+    if(result === USB_STALL) return -3;
+    if(result instanceof Uint8Array)
+    {
+        if(result.length > max_length) return -4;
+        if(result.length) this.dma_write(result, buffer);
+        return result.length;
+    }
+    return max_length;
+};
 
 /**
  * @param {number} device
@@ -124,6 +220,14 @@ function create_pci_space(device, revision, pin, io_base)
 /** Everything to its reset value (power on, HCRESET) */
 UHCIController.prototype.reset = function()
 {
+    if(this.core)
+    {
+        // (the core resets its registers and marks the attached devices for a reset)
+        this.apply_core_resets();
+        this.core["reset"]();
+        this.apply_core_resets();
+        return;
+    }
     this.cmd = 0;
     this.status = STS_HALTED;
     /** what set USBINT: 1 IOC, 2 a short packet */
@@ -162,6 +266,13 @@ UHCIController.prototype.port_connected = function(port)
  */
 UHCIController.prototype.attach = function(port, device)
 {
+    if(this.core)
+    {
+        this.devices[port] = device;
+        this.core["attach"](port, !!device, !!device && device.speed === SPEED_LOW);
+        this.apply_core_resets();
+        return;
+    }
     this.devices[port] = device;
     if(device)
     {
@@ -183,6 +294,18 @@ UHCIController.prototype.attach = function(port, device)
 UHCIController.prototype.register_ports = function()
 {
     const machine = this.machine;
+    if(this.core)
+    {
+        // (the core answers them; these for accesses that come through JavaScript)
+        const core = this.core;
+        for(let offset = 0; offset < IO_SIZE; offset++)
+        {
+            const port = this.io_base + offset;
+            machine.register_read(port, this, () => core["port_read"](port, 8), () => core["port_read"](port, 16), () => core["port_read"](port, 32));
+            machine.register_write(port, this, v => core["port_write"](port, 8, v), v => core["port_write"](port, 16, v), v => core["port_write"](port, 32, v));
+        }
+        return;
+    }
     for(let offset = 0; offset < IO_SIZE; offset++)
     {
         machine.register_read(this.io_base + offset, this,

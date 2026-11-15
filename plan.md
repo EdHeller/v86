@@ -225,7 +225,8 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | NE2000 (first card: registers, buffer memory, remote DMA) | `ne2k.js` (accessors; transmit and receive stay) | `ne2k.rs` | ✅ 2026-11-15; i440FX interrupt routing in `pci.rs`; on Q35 the card runs in JavaScript |
 | Floppy controller (registers, all commands, drive geometry and heads) | `floppy.js` 1515 -> 670 (images, DMA transfers, snapshots) | `floppy.rs` | ✅ 2026-11-15 |
 | Virtio split virtqueues (descriptor chains with indirect tables, available and used rings, interrupt decision) | `virtio.js` (queue state, transport capabilities, devices) | `virtio.rs` | ✅ 2026-11-15; one call per queue operation instead of five per descriptor. The PCI transport's capability registers and the device models (net, blk, rng, console, balloon, 9p, input, snd, gpu) stay JavaScript |
-| SB16, USB, HDA, graphics adapters | about 16,000 | | ⬜ |
+| USB UHCI controller (registers, root ports, the frame schedule of queue heads and TDs) | `usb/uhci.js` (devices, attach, snapshots; Q35 and EHCI's companions run it in JavaScript) | `uhci.rs` | ✅ 2026-11-15; one call per transaction to the JavaScript device (`usb_transaction`). tests/usb.mjs: tablet and stick enumerate, 4 MiB through the stick written and read back |
+| USB xHCI, USB devices (tablet, mass storage), SB16, HDA, graphics adapters | about 14,000 | | ⬜ |
 | Port table: which accesses a JavaScript device answers (`ports.rs`); port 0x92 | `io.js` keeps it in step | `ports.rs` | ✅ 2026-11-15: accesses nobody answers return the empty port's value in the core |
 | Port and MMIO handler tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | ⬜ last |
 | `src/browser/` (DOM, canvas, audio, network, files) | 13,000 | | stays JavaScript |

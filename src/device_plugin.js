@@ -115,6 +115,23 @@ export function device_handle(cpu, owner)
         "write32_physical": (address, value) => cpu.write_blob([value, value >> 8, value >> 16, value >> 24], address),
         "validate_physical_range": (address, length) => address + length <= cpu.memory_size[0],
 
+        // the core's UHCI controller (src/rust/cpu/uhci.rs), on i440FX machines: on Q35 the interrupt routing is
+        // JavaScript's and the plugin runs its own
+        "core_uhci": cpu.devices.pci && cpu.devices.pci.q35 ? null : {
+            "init": (io_base, pci_id) => cpu.wm.exports["uhci_init"](io_base, pci_id),
+            "attach": (port, attached, low_speed) => cpu.wm.exports["uhci_attach"](port, attached, low_speed),
+            "reset": () => cpu.wm.exports["uhci_reset"](),
+            "update_irq": () => cpu.wm.exports["uhci_update_irq"](),
+            "fields": () => new Int32Array(cpu.wasm_memory.buffer, cpu.wm.exports["get_uhci_addr"]() + 8, 19),
+            "next_frame": value => {
+                const f = new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["get_uhci_addr"](), 1);
+                if(value !== undefined) f[0] = value;
+                return f[0];
+            },
+            "port_read": (port, size) => cpu.wm.exports["uhci_port_read"](port, size),
+            "port_write": (port, size, value) => cpu.wm.exports["uhci_port_write"](port, size, value),
+            "on_transaction": handler => { cpu.usb_transaction = handler; },
+        },
         "now": () => v86.microtick(),
         "add_timer": timer => cpu.add_device_timer(timer),
         "wake": () => cpu.stop_idling(),

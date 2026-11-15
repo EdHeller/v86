@@ -43,6 +43,10 @@ pub mod js {
         /// rep outs in bulk: up to `count` items of `size` bytes from guest memory at `phys` to `port`; returns how
         /// many it moved (0 when the port's device has no block writer)
         pub fn io_port_write_block(port: i32, phys: u32, count: u32, size: u32) -> u32;
+        /// A USB transaction with the device at `address` on one of the ports of `port_mask` (src/usb/uhci.js):
+        /// pid SETUP / OUT take max_length bytes at guest address `buffer`, IN writes up to max_length there.
+        /// Returns the length, or -1 no device, -2 NAK, -3 STALL, -4 babble (more than max_length)
+        pub fn usb_transaction(port_mask: i32, address: i32, pid: i32, endpoint: i32, buffer: u32, max_length: i32) -> i32;
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();
@@ -5055,6 +5059,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             0x4D1 => pic::port4D1_read() as i32,
             _ if super::pit::serves_read(port) => super::pit::pit_port_read(port),
             _ if super::vga_legacy::ports_serve(port, 8, 0, false) => super::vga_legacy::vga_port_read(port, 8),
+            _ if super::uhci::serves(port) => super::uhci::uhci_port_read(port, 8),
             _ if super::ide::serves(port, false) => super::ide::ide_port_read(port),
             _ if super::ide::bus_master_serves(port, 8, 0, false) => super::ide::ide_bus_master_read(port, 8),
             _ if super::floppy::serves(port, false) => super::floppy::fdc_port_read(port),
@@ -5099,6 +5104,9 @@ pub fn io_port_read16(port: i32) -> i32 {
         if super::pci::serves(port, 16, 0, false) {
             return super::pci::pci_port_read(port, 16);
         }
+        if super::uhci::serves(port) {
+            return super::uhci::uhci_port_read(port, 16);
+        }
         if super::vga_legacy::ports_serve(port, 16, 0, false) {
             return super::vga_legacy::vga_port_read(port, 16);
         }
@@ -5119,6 +5127,9 @@ pub fn io_port_read32(port: i32) -> i32 {
         }
         if super::pci::serves(port, 32, 0, false) {
             return super::pci::pci_port_read(port, 32);
+        }
+        if super::uhci::serves(port) {
+            return super::uhci::uhci_port_read(port, 32);
         }
         if super::ide::bus_master_serves(port, 32, 0, false) {
             return super::ide::ide_bus_master_read(port, 32);
@@ -5151,6 +5162,7 @@ pub fn io_port_write8(port: i32, value: i32) {
             },
             _ if super::pit::serves_write(port, value) => super::pit::pit_port_write(port, value),
             _ if super::vga_legacy::ports_serve(port, 8, value, true) => super::vga_legacy::vga_port_write(port, 8, value),
+            _ if super::uhci::serves(port) => super::uhci::uhci_port_write(port, 8, value),
             _ if super::ide::serves(port, true) => super::ide::ide_port_write(port, value),
             _ if super::ide::bus_master_serves(port, 8, value, true) => super::ide::ide_bus_master_write(port, 8, value),
             _ if super::floppy::serves(port, true) => super::floppy::fdc_port_write(port, value),
@@ -5178,6 +5190,9 @@ pub fn io_port_write16(port: i32, value: i32) {
         if super::pci::serves(port, 16, value, true) {
             return super::pci::pci_port_write(port, 16, value);
         }
+        if super::uhci::serves(port) {
+            return super::uhci::uhci_port_write(port, 16, value);
+        }
         if super::vga_legacy::ports_serve(port, 16, value, true) {
             return super::vga_legacy::vga_port_write(port, 16, value);
         }
@@ -5198,6 +5213,9 @@ pub fn io_port_write32(port: i32, value: i32) {
         }
         if super::pci::serves(port, 32, value, true) {
             return super::pci::pci_port_write(port, 32, value);
+        }
+        if super::uhci::serves(port) {
+            return super::uhci::uhci_port_write(port, 32, value);
         }
         if super::ide::bus_master_serves(port, 32, value, true) {
             return super::ide::ide_bus_master_write(port, 32, value);

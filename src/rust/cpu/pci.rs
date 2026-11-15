@@ -178,6 +178,9 @@ pub unsafe fn set_irq(bdf: usize, level: bool) {
     }
 }
 
+/// a function's command register (bit 2: bus master)
+pub unsafe fn command(bdf: usize) -> i32 { pci().spaces[bdf][1] & 0xFFFF }
+
 /// the I/O base of BAR 0 of a function (bit 0 set: an I/O BAR), or -1
 pub unsafe fn io_bar0(bdf: usize) -> i32 { io_bar(bdf, 0) }
 

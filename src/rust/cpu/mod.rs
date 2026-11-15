@@ -32,6 +32,7 @@ pub mod smp;
 pub mod sse_instr;
 pub mod string;
 pub mod uart;
+pub mod uhci;
 pub mod vga;
 pub mod virtio;
 pub mod vga_legacy;
