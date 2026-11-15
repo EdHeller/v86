@@ -1,6 +1,6 @@
 import { LOG_PCI } from "./const.js";
 import { Q35 } from "./q35.js";
-import { h } from "./lib.js";
+import { h, view } from "./lib.js";
 import { dbg_assert, dbg_log } from "./log.js";
 
 // For Types Only
@@ -19,15 +19,24 @@ export function PCI(cpu, machine_type)
 {
     /** the Q35 chipset (src/q35.js), or null: the i440FX */
     this.q35 = null;
-    this.pci_addr = new Uint8Array(4);
-    this.pci_value = new Uint8Array(4);
-    this.pci_response = new Uint8Array(4);
-    this.pci_status = new Uint8Array(4);
 
-    this.pci_addr32 = new Int32Array(this.pci_addr.buffer);
+    // The configuration spaces and the address and data registers are in the core (struct Pci in
+    // src/rust/cpu/pci.rs), which answers ports 0xCF8 and 0xCFC and plain configuration writes. Kept views of the
+    // module's memory go through view() (src/lib.js): the memory grows when the core's heap does, which detaches
+    // a plain typed array.
+    cpu.pci_init();
+    const memory = cpu.wasm_memory, base = cpu.get_pci_addr();
+    this.memory = memory;
+    this.space_base = base;
+    this.pci_addr = view(Uint8Array, memory, base + 65536, 4);
+    this.pci_value = new Uint8Array(4);
+    this.pci_response = view(Uint8Array, memory, base + 65540, 4);
+    this.pci_status = view(Uint8Array, memory, base + 65544, 4);
+
+    this.pci_addr32 = view(Int32Array, memory, base + 65536, 1);
     this.pci_value32 = new Int32Array(this.pci_value.buffer);
-    this.pci_response32 = new Int32Array(this.pci_response.buffer);
-    this.pci_status32 = new Int32Array(this.pci_status.buffer);
+    this.pci_response32 = view(Int32Array, memory, base + 65540, 1);
+    this.pci_status32 = view(Int32Array, memory, base + 65544, 1);
 
     this.device_spaces = [];
     this.devices = [];
@@ -202,7 +211,7 @@ export function PCI(cpu, machine_type)
         name: "82371SB PIIX3 ISA",
     };
     this.isa_bridge_space = this.register_device(this.isa_bridge);
-    this.isa_bridge_space8 = new Uint8Array(this.isa_bridge_space.buffer);
+    this.isa_bridge_space8 = this.space8(this.isa_bridge.pci_id);
 
     // 00:1e.0 PCI bridge: Intel Corporation 82801 PCI Bridge (rev 90)
     //this.register_device([
@@ -219,13 +228,15 @@ PCI.prototype.get_state = function()
 
     for(var i = 0; i < 256; i++)
     {
-        state[i] = this.device_spaces[i];
+        // (copies: the spaces are views of the core's memory)
+        state[i] = this.device_spaces[i] && this.space32(i).slice();
     }
 
-    state[256] = this.pci_addr;
+    const registers = new Uint8Array(this.memory.buffer, this.space_base + 65536, 12);
+    state[256] = registers.slice(0, 4);
     state[257] = this.pci_value;
-    state[258] = this.pci_response;
-    state[259] = this.pci_status;
+    state[258] = registers.slice(4, 8);
+    state[259] = registers.slice(8, 12);
 
     return state;
 };
@@ -306,7 +317,7 @@ PCI.prototype.pci_query = function()
     {
         this.pci_status32[0] = 0x80000000 | 0;
 
-        if(addr < device.byteLength)
+        if(addr < 256)
         {
             this.pci_response32[0] = device[addr >> 2];
         }
@@ -318,7 +329,7 @@ PCI.prototype.pci_query = function()
 
         dbg_line += " " + h(this.pci_addr32[0] >>> 0, 8) + " -> " + h(this.pci_response32[0] >>> 0, 8);
 
-        if(addr >= device.byteLength)
+        if(addr >= 256)
         {
             dbg_line += " (undef)";
         }
@@ -343,7 +354,7 @@ PCI.prototype.pci_write8_raw = function(address, written)
     {
         return;
     }
-    var space = new Uint8Array(this.device_spaces[bdf].buffer);
+    var space = new Uint8Array(this.memory.buffer, this.space_base + bdf * 256, 256);
     var device = this.devices[bdf];
 
     dbg_assert(!(addr >= 0x10 && addr < 0x2C || addr >= 0x30 && addr < 0x34),
@@ -382,7 +393,7 @@ PCI.prototype.config_read8 = function(bdf, offset)
 
 PCI.prototype.update_pam = function()
 {
-    const space = new Uint8Array(this.device_spaces[0].buffer);
+    const space = new Uint8Array(this.memory.buffer, this.space_base, 256);
     // PAM0 to PAM6: the i440FX's at 0x59, the Q35 MCH's at 0x90
     const pam = this.q35 ? 0x90 : 0x59;
     let lo = 0, hi = 0;
@@ -416,7 +427,7 @@ PCI.prototype.pci_write16_raw = function(address, written)
     {
         return;
     }
-    var space = new Uint16Array(this.device_spaces[bdf].buffer);
+    var space = new Uint16Array(this.memory.buffer, this.space_base + bdf * 256, 128);
     var device = this.devices[bdf];
 
     if(addr >= 0x10 && addr < 0x2C)
@@ -589,6 +600,7 @@ PCI.prototype.config_written = function(address, size)
 {
     const device = this.devices[address >> 8 & 0xFFFF];
     if(!device) return;
+    this.update_flags(address >> 8 & 0xFF);
     const offset = address & 0xFF;
     if(device.on_command_change && offset < 6 && offset + size > 4) device.on_command_change();
     if(device.on_config_write) device.on_config_write(offset, size);
@@ -611,13 +623,17 @@ PCI.prototype.register_device = function(device)
     dbg_assert(device.pci_space.length >= 64);
     dbg_assert(device_id < this.devices.length);
 
-    // convert bytewise notation from lspci to double words
-    var space = new Int32Array(64);
-    space.set(new Int32Array(new Uint8Array(device.pci_space).buffer));
+    // convert bytewise notation from lspci to double words, in the core's memory
+    dbg_assert(device_id < 256);
+    const fresh = this.space32(device_id);
+    fresh.fill(0);
+    fresh.set(new Int32Array(new Uint8Array(device.pci_space).buffer).subarray(0, 64));
+    var space = view(Int32Array, this.memory, this.space_base + device_id * 256, 64);
     this.device_spaces[device_id] = space;
     this.devices[device_id] = device;
+    this.update_flags(device_id);
 
-    var bar_space = space.slice(4, 10);
+    var bar_space = fresh.slice(4, 10);
 
     for(var i = 0; i < device.pci_bars.length; i++)
     {
@@ -652,6 +668,38 @@ PCI.prototype.register_device = function(device)
     }
 
     return space;
+};
+
+/**
+ * A function's configuration space as a typed array for immediate use (not to be kept: see the constructor)
+ * @param {number} bdf
+ * @return {!Int32Array}
+ */
+PCI.prototype.space32 = function(bdf)
+{
+    return new Int32Array(this.memory.buffer, this.space_base + bdf * 256, 64);
+};
+
+/**
+ * A function's configuration space by bytes, to be kept
+ * @param {number} bdf
+ */
+PCI.prototype.space8 = function(bdf)
+{
+    return view(Uint8Array, this.memory, this.space_base + bdf * 256, 256);
+};
+
+/**
+ * Tells the core which functions exist and which of their configuration writes it must leave to JavaScript: the
+ * host bridge's (PAM), and every write of a device with hooks. (Writes to the BARs and the ROM address always come
+ * here.) A plugin device may set its hooks after registering: called again from config_written's callers.
+ * @param {number} bdf
+ */
+PCI.prototype.update_flags = function(bdf)
+{
+    const device = this.devices[bdf];
+    const js_writes = !device || bdf === 0 || this.q35 || device.on_command_change || device.on_config_write;
+    this.cpu.pci_set_flags(bdf, device ? 1 | (js_writes ? 2 : 0) : 0);
 };
 
 PCI.prototype.set_io_bars = function(bar, from, to)

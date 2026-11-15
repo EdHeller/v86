@@ -98,7 +98,7 @@ export function device_handle(cpu, owner)
         "msi_config_written": () => {},
         "msi_enabled": () => false,
         "msi_notify": () => {},
-        "pci_config": () => new Uint8Array(pci().device_spaces[owner.pci_id].buffer),
+        "pci_config": () => pci().space8(owner.pci_id),
 
         "isa_raise_irq": irq => cpu.device_raise_irq(irq),
         "isa_lower_irq": irq => cpu.device_lower_irq(irq),

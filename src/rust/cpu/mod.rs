@@ -17,6 +17,7 @@ pub mod mmio_ram;
 pub mod misc_instr;
 pub mod modrm;
 pub mod parallel;
+pub mod pci;
 pub mod pic;
 pub mod pit;
 pub mod ps2;

@@ -197,6 +197,11 @@ libv86.js fails with "Missing import").
 
 ## Plan: the Rust port (branch `Vibe-Claude-rust`)
 
+**Views of the module's memory**: the core's heap grows the WebAssembly memory after the devices are made (the
+JIT's hash maps), and growing detaches every typed array JavaScript holds on the old buffer. A device in Rust is
+reached from JavaScript through views made at each use, or kept through `view()` (src/lib.js), which makes a
+fresh one on every access. (PCI's first version kept plain arrays: SeaBIOS saw no host bridge.)
+
 Task 11, device by device. Each device moves to `src/rust/cpu/<name>.rs` with its state in a `#[repr(C)]` struct;
 the JavaScript file shrinks to a shim (snapshot format, bus messages, the ports when they are reached through
 JavaScript: 16-bit accesses, machines with more cores). The core's port dispatch (`io_port_read8` / `write8` in
@@ -212,7 +217,7 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | ACPI PM block, GPE, PM timer | `acpi.js` 273 -> 176 | `acpi.rs` | ✅ 2026-11-14 (the PCI function and the hotplug registers stay in the shim); the timer pass of the main loop calls JavaScript only for plugin timers |
 | PS/2 controller, keyboard, mouse | `ps2.js` 901 -> 205 | `ps2.rs` | ✅ 2026-11-14 |
 | DMA registers | `dma.js` 430 -> 235 | `dma.rs` | ✅ 2026-11-14 (transfers stay with JavaScript's buffers) |
-| PCI configuration space | `pci.js` 724 | | ⬜ |
+| PCI configuration spaces, 0xCF8/0xCFC | `pci.js` 724 (kept: BARs, ROM, PAM, hooks, IRQ routing, Q35) | `pci.rs` | ✅ 2026-11-15; the guest's device list matches `Vibe-Claude` on i440FX and Q35 |
 | IDE / ATAPI | `ide.js` 2928 | | ⬜ the register file and PIO data in Rust, disk buffers stay with JavaScript's async I/O |
 | VGA | `vga.js` 2654 | `vga.rs` (part) | ⬜ registers and memory in Rust, drawing in JavaScript |
 | Floppy, NE2000, SB16, virtio, USB, HDA, graphics adapters | about 20,000 | | ⬜ |

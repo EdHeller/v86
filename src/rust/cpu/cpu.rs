@@ -5052,6 +5052,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             0x4D1 => pic::port4D1_read() as i32,
             _ if super::pit::serves_read(port) => super::pit::pit_port_read(port),
             _ if super::uart::serves_read(port) => super::uart::uart_port_read(port),
+            _ if super::pci::serves(port, 8, 0, false) => super::pci::pci_port_read(port, 8),
             _ if super::ps2::serves_read(port) => super::ps2::ps2_port_read(port),
             _ if super::dma::serves_read(port) => super::dma::dma_port_read(port),
             _ if super::acpi::serves(port, 8) => super::acpi::acpi_port_read(port, 8),
@@ -5076,6 +5077,9 @@ pub fn io_port_read16(port: i32) -> i32 {
         if super::acpi::serves(port, 16) {
             return super::acpi::acpi_port_read(port, 16);
         }
+        if super::pci::serves(port, 16, 0, false) {
+            return super::pci::pci_port_read(port, 16);
+        }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_read16(port)
     }
@@ -5084,6 +5088,9 @@ pub fn io_port_read32(port: i32) -> i32 {
     unsafe {
         if super::acpi::serves(port, 32) {
             return super::acpi::acpi_port_read(port, 32);
+        }
+        if super::pci::serves(port, 32, 0, false) {
+            return super::pci::pci_port_read(port, 32);
         }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_read32(port)
@@ -5107,6 +5114,7 @@ pub fn io_port_write8(port: i32, value: i32) {
             },
             _ if super::pit::serves_write(port, value) => super::pit::pit_port_write(port, value),
             _ if super::uart::serves_write(port) => super::uart::uart_port_write(port, value),
+            _ if super::pci::serves(port, 8, value, true) => super::pci::pci_port_write(port, 8, value),
             _ if super::ps2::serves_write(port, value) => super::ps2::ps2_port_write(port, value),
             _ if super::dma::serves_write(port) => super::dma::dma_port_write(port, value),
             _ if super::acpi::serves(port, 8) => super::acpi::acpi_port_write(port, 8, value),
@@ -5123,6 +5131,9 @@ pub fn io_port_write16(port: i32, value: i32) {
         if super::acpi::serves(port, 16) {
             return super::acpi::acpi_port_write(port, 16, value);
         }
+        if super::pci::serves(port, 16, value, true) {
+            return super::pci::pci_port_write(port, 16, value);
+        }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_write16(port, value)
     }
@@ -5131,6 +5142,9 @@ pub fn io_port_write32(port: i32, value: i32) {
     unsafe {
         if super::acpi::serves(port, 32) {
             return super::acpi::acpi_port_write(port, 32, value);
+        }
+        if super::pci::serves(port, 32, value, true) {
+            return super::pci::pci_port_write(port, 32, value);
         }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_write32(port, value)

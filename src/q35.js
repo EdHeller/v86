@@ -63,7 +63,7 @@ export function Q35(cpu, pci)
         on_config_write: (offset, size) => this.mch_config_written(offset, size),
     };
     this.mch_space = pci.register_device(this.mch);
-    this.mch_space8 = new Uint8Array(this.mch_space.buffer);
+    this.mch_space8 = pci.space8(this.mch.pci_id);
 
     // 00:1f.0 ISA bridge: Intel Corporation 82801IB (ICH9) LPC Interface Controller (rev 02)
     const lpc_space = new Array(256).fill(0);
@@ -82,7 +82,7 @@ export function Q35(cpu, pci)
         on_config_write: (offset, size) => this.lpc_config_written(offset, size),
     };
     this.lpc_space = pci.register_device(this.lpc);
-    this.lpc_space8 = new Uint8Array(this.lpc_space.buffer);
+    this.lpc_space8 = pci.space8(this.lpc.pci_id);
 
     this.rcba = new Uint8Array(RCBA_SIZE);
     for(const offset of Object.values(RCBA_DIR))
