@@ -182,38 +182,52 @@ const SECTOR_SIZE_CODE  = 2;    // sector size code 2: 512 bytes/sector
 
 // class FloppyController ----------------------------------------------------
 
+// struct Fdc in src/rust/cpu/floppy.rs: 28 32-bit fields, cmd_buffer at 112, response_data at 129, the drives at 144
+const FDC_FIELDS = [
+    "sra", "srb", "dor", "tdr", "msr", "dsr", "cmd_phase", "cmd_code", "cmd_flags", "cmd_cursor", "cmd_remaining",
+    "response_cursor", "response_length", "status0", "status1", "curr_drive_no", "reset_sense_int_count", "locked",
+    "step_rate_interval", "head_load_time", "fdc_config", "precomp_trk", "eot",
+];
+const FDC_XFER = 24, FDC_XFER_OFFSET = 25, FDC_XFER_LENGTH = 26;
+const FDC_DRIVES = 144, FDC_DRIVE_SIZE = 44;
+// struct Drive: eleven 32-bit fields
+const DRIVE_FIELDS = [
+    "drive_type", "max_track", "max_head", "max_sect", "curr_track", "curr_head", "curr_sect", "perpendicular",
+    "read_only", "media_changed",
+];
+const DRIVE_HAS_MEDIA = 10;
+
 /**
+ * Turns fields of an object into accessors of 32-bit fields of the core's memory (made at each use: it can grow)
+ * @param {!Object} object
+ * @param {?} cpu
+ * @param {number} address
+ * @param {!Array<string>} names in the order of the fields
+ * @param {!Object<string, boolean>=} booleans fields that read as booleans
+ */
+function core_fields(object, cpu, address, names, booleans)
+{
+    names.forEach((name, index) => {
+        const as_boolean = booleans && booleans[name];
+        Object.defineProperty(object, name, {
+            get: () => {
+                const v = new Int32Array(cpu.wasm_memory.buffer, address, index + 1)[index];
+                return as_boolean ? !!v : v;
+            },
+            set: value => { new Int32Array(cpu.wasm_memory.buffer, address, index + 1)[index] = +value; },
+        });
+    });
+}
+
+/**
+ * The floppy disk controller. Its registers and commands are in the core (src/rust/cpu/floppy.rs), which answers
+ * ports 0x3F0-0x3F7. Here: the drives' disk images, the DMA transfers of READ and WRITE (the core leaves them,
+ * this runs them after the slice and reports back) and the snapshot format.
  * @constructor
- *
  * @param {CPU} cpu
- * @param {SyncBuffer|Uint8Array|null|undefined} fda_image
- * @param {SyncBuffer|Uint8Array|null|undefined} fdb_image
+ * @param {Uint8Array|SyncBuffer|undefined} fda_image
+ * @param {Uint8Array|SyncBuffer|undefined} fdb_image
  * @param {Object=} fdc_config
- *
- * Structure and defaults of optional configuration object fdc_config:
- *
- *   fdc_config = {
- *       fda: { drive_type: undefined, read_only: false },
- *       fdb: { drive_type: undefined, read_only: false }
- *   }
- *
- * drive_type:
- *     Fixed drive type code whether or not a buffer is defined:
- *       0: no floppy drive
- *       1: 360 KB 5"1/4 drive
- *       2: 1.2 MB 5"1/4 drive
- *       3: 720 KB 3"1/2 drive
- *       4: 1.44 MB 3"1/2 drive (default)
- *       5: 2.88 MB 3"1/2 drive
- *     If undefined, the drive type is either derived from the given
- *     buffer or set to the default of 4 if no buffer is specified.
- * read_only:
- *     If true, treat the given disk image as write-protected.
- *     Ignored if no disk image is provided. Default: false.
- *
- * NOTE: To hide fdb from the guest set its drive_type to 0, i.e.:
- *
- *   fdc_config = { fdb: { drive_type: 0 } }
  */
 export function FloppyController(cpu, fda_image, fdb_image, fdc_config)
 {
@@ -226,866 +240,67 @@ export function FloppyController(cpu, fda_image, fdb_image, fdc_config)
     /** @const @type {DMA} */
     this.dma = cpu.devices.dma;
 
-    /** @const */
-    this.cmd_table = this.build_cmd_lookup_table();
-
-    this.sra = 0;
-    this.srb = SRB_RESET;
-    this.dor = DOR_NRESET | DOR_DMAEN;
-    this.tdr = 0;
-    this.msr = MSR_RQM;
-    this.dsr = 0;
-
-    this.cmd_phase = CMD_PHASE_COMMAND;
-    this.cmd_code = 0;
-    this.cmd_flags = 0;
-    this.cmd_buffer = new Uint8Array(17);    // CMD_RESTORE has 17 argument bytes
-    this.cmd_cursor = 0;
-    this.cmd_remaining = 0;
-
-    this.response_data = new Uint8Array(15); // CMD_SAVE response size is 15 bytes
-    this.response_cursor = 0;
-    this.response_length = 0;
-    this.status0 = 0;
-    this.status1 = 0;
-
-    this.curr_drive_no = 0;         // was: this.drive; qemu: fdctrl->cur_drv
-    this.reset_sense_int_count = 0; // see SENSE INTERRUPT
-    this.locked = false;            // see LOCK
-    this.step_rate_interval = 0;    // see SPECIFY, qemu: timer0
-    this.head_load_time = 0;        // see SPECIFY, qemu: timer1
-    this.fdc_config = CONFIG_EIS | CONFIG_EFIFO;    // see CONFIGURE, qemu: config
-    this.precomp_trk = 0;           // see CONFIGURE
-    this.eot = 0;                   // see READ/WRITE
+    cpu.fdc_init();
+    const base = cpu.get_fdc_addr();
+    this.base = base;
+    core_fields(this, cpu, base, FDC_FIELDS, { "locked": true });
+    for(const [name, offset, length] of [["cmd_buffer", 112, 17], ["response_data", 129, 15]])
+    {
+        Object.defineProperty(this, name, { get: () => new Uint8Array(cpu.wasm_memory.buffer, base + offset, length) });
+    }
 
     this.drives = [
-        new FloppyDrive("fda", fdc_config?.fda, fda_image, CMOS_FDD_TYPE_1440),
-        new FloppyDrive("fdb", fdc_config?.fdb, fdb_image, CMOS_FDD_TYPE_1440)
+        new FloppyDrive(cpu, base + FDC_DRIVES, "fda", fdc_config?.fda, fda_image, CMOS_FDD_TYPE_1440),
+        new FloppyDrive(cpu, base + FDC_DRIVES + FDC_DRIVE_SIZE, "fdb", fdc_config?.fdb, fdb_image, CMOS_FDD_TYPE_1440),
     ];
+    this.transfer_running = false;
 
-    Object.seal(this);
-
-    // To make the floppy drives visible to the guest OS we MUST write a
-    // drive type other than 0 (CMOS_FDD_TYPE_NO_DRIVE) to either nibble of
-    // CMOS register 0x10 before the guest is started (CMOS registers are
-    // usually read only once at startup).
     this.cpu.devices.rtc.cmos_write(CMOS_FLOPPY_DRIVE_TYPE, (this.drives[0].drive_type << 4) | this.drives[1].drive_type);
 
     const fdc_io_base = 0x3F0;  // alt: 0x370
+    for(const reg of [REG_SRA, REG_SRB, REG_DOR, REG_TDR, REG_MSR, REG_FIFO, REG_DIR])
+    {
+        this.io.register_read(fdc_io_base | reg, this, () => cpu.fdc_port_read(fdc_io_base | reg));
+    }
+    for(const reg of [REG_DOR, REG_TDR, REG_DSR, REG_FIFO, REG_CCR])
+    {
+        this.io.register_write(fdc_io_base | reg, this, value => { cpu.fdc_port_write(fdc_io_base | reg, value); });
+    }
 
-    this.io.register_read(fdc_io_base | REG_SRA, this, this.read_reg_sra);
-    this.io.register_read(fdc_io_base | REG_SRB, this, this.read_reg_srb);
-    this.io.register_read(fdc_io_base | REG_DOR, this, this.read_reg_dor);
-    this.io.register_read(fdc_io_base | REG_TDR, this, this.read_reg_tdr);
-    this.io.register_read(fdc_io_base | REG_MSR, this, this.read_reg_msr);
-    this.io.register_read(fdc_io_base | REG_FIFO, this, this.read_reg_fifo);
-    this.io.register_read(fdc_io_base | REG_DIR, this, this.read_reg_dir);
-
-    this.io.register_write(fdc_io_base | REG_DOR, this, this.write_reg_dor);
-    this.io.register_write(fdc_io_base | REG_TDR, this, this.write_reg_tdr);
-    this.io.register_write(fdc_io_base | REG_DSR, this, this.write_reg_dsr);
-    this.io.register_write(fdc_io_base | REG_FIFO, this, this.write_reg_fifo);
-    this.io.register_write(fdc_io_base | REG_CCR, this, this.write_reg_ccr);
-
-    dbg_log("floppy controller ready", LOG_FLOPPY);
+    cpu.slice_hooks.push(() => this.run_transfer());
 }
 
-FloppyController.prototype.build_cmd_lookup_table = function()
+/** A READ or WRITE the core left: its data through DMA channel 2 */
+FloppyController.prototype.run_transfer = function()
 {
-    /**
-     * NOTE: The order of items in the table below is significant.
-     * @see {@link https://github.com/qemu/qemu/blob/aec6836c73403cffa56b9a4c5556451ee16071fe/hw/block/fdc.c#L2160}
-     */
-    const CMD_DESCRIPTOR = [
-        { code: CMD_READ, mask: 0x1f, argc: 8, name: "READ", handler: this.exec_read },
-        { code: CMD_WRITE, mask: 0x3f, argc: 8, name: "WRITE", handler: this.exec_write },
-        { code: CMD_SEEK, mask: 0xff, argc: 2, name: "SEEK", handler: this.exec_seek },
-        { code: CMD_SENSE_INTERRUPT_STATUS, mask: 0xff, argc: 0, name: "SENSE INTERRUPT STATUS", handler: this.exec_sense_interrupt_status },
-        { code: CMD_RECALIBRATE, mask: 0xff, argc: 1, name: "RECALIBRATE", handler: this.exec_recalibrate },
-        { code: CMD_FORMAT_TRACK, mask: 0xbf, argc: 5, name: "FORMAT TRACK", handler: this.exec_format_track },
-        { code: CMD_READ_TRACK, mask: 0xbf, argc: 8, name: "READ TRACK", handler: this.exec_unimplemented },
-        { code: CMD_RESTORE, mask: 0xff, argc: 17, name: "RESTORE", handler: this.exec_unimplemented },
-        { code: CMD_SAVE, mask: 0xff, argc: 0, name: "SAVE", handler: this.exec_unimplemented },
-        { code: CMD_READ_DELETED_DATA, mask: 0x1f, argc: 8, name: "READ DELETED DATA", handler: this.exec_unimplemented },
-        { code: CMD_SCAN_EQUAL, mask: 0x1f, argc: 8, name: "SCAN EQUAL", handler: this.exec_unimplemented },
-        { code: CMD_VERIFY, mask: 0x1f, argc: 8, name: "VERIFY", handler: this.exec_unimplemented },
-        { code: CMD_SCAN_LOW_OR_EQUAL, mask: 0x1f, argc: 8, name: "SCAN LOW OR EQUAL", handler: this.exec_unimplemented },
-        { code: CMD_SCAN_HIGH_OR_EQUAL, mask: 0x1f, argc: 8, name: "SCAN HIGH OR EQUAL", handler: this.exec_unimplemented },
-        { code: CMD_WRITE_DELETED_DATA, mask: 0x3f, argc: 8, name: "WRITE DELETED DATA", handler: this.exec_unimplemented },
-        { code: CMD_READ_ID, mask: 0xbf, argc: 1, name: "READ ID", handler: this.exec_read_id },
-        { code: CMD_SPECIFY, mask: 0xff, argc: 2, name: "SPECIFY", handler: this.exec_specify },
-        { code: CMD_SENSE_DRIVE_STATUS, mask: 0xff, argc: 1, name: "SENSE DRIVE STATUS", handler: this.exec_sense_drive_status },
-        { code: CMD_PERPENDICULAR_MODE, mask: 0xff, argc: 1, name: "PERPENDICULAR MODE", handler: this.exec_perpendicular_mode },
-        { code: CMD_CONFIGURE, mask: 0xff, argc: 3, name: "CONFIGURE", handler: this.exec_configure },
-        { code: CMD_POWERDOWN_MODE, mask: 0xff, argc: 2, name: "POWERDOWN MODE", handler: this.exec_unimplemented },
-        { code: CMD_OPTION, mask: 0xff, argc: 1, name: "OPTION", handler: this.exec_unimplemented },
-        { code: CMD_DRIVE_SPECIFICATION, mask: 0xff, argc: 5, name: "DRIVE SPECIFICATION", handler: this.exec_unimplemented },
-        { code: CMD_RELATIVE_SEEK_OUT, mask: 0xff, argc: 2, name: "RELATIVE SEEK OUT", handler: this.exec_unimplemented },
-        { code: CMD_FORMAT_AND_WRITE, mask: 0xff, argc: 10, name: "FORMAT AND WRITE", handler: this.exec_unimplemented },
-        { code: CMD_RELATIVE_SEEK_IN, mask: 0xff, argc: 2, name: "RELATIVE SEEK IN", handler: this.exec_unimplemented },
-        { code: CMD_LOCK, mask: 0x7f, argc: 0, name: "LOCK", handler: this.exec_lock },
-        { code: CMD_DUMP_REGS, mask: 0xff, argc: 0, name: "DUMP REGISTERS", handler: this.exec_dump_regs },
-        { code: CMD_VERSION, mask: 0xff, argc: 0, name: "VERSION", handler: this.exec_version },
-        { code: CMD_PART_ID, mask: 0xff, argc: 0, name: "PART ID", handler: this.exec_part_id },
-
-        { code: 0, mask: 0x00, argc: 0, name: "UNKNOWN COMMAND", handler: this.exec_unimplemented },    // default handler
-    ];
-
-    const cmd_table = new Array(256);
-    for(let i = CMD_DESCRIPTOR.length-1; i >= 0; i--)
+    const fields = new Int32Array(this.cpu.wasm_memory.buffer, this.base, 28);
+    const kind = fields[FDC_XFER];
+    if(!kind || this.transfer_running)
     {
-        const cmd_desc = CMD_DESCRIPTOR[i];
-        if(cmd_desc.mask === 0xff)
-        {
-            cmd_table[cmd_desc.code] = cmd_desc;
-        }
-        else
-        {
-            for(let j = 0; j < 256; j++)
-            {
-                if((j & cmd_desc.mask) === cmd_desc.code)
-                {
-                    cmd_table[j] = cmd_desc;
-                }
-            }
-        }
-    }
-    return cmd_table;
-};
-
-FloppyController.prototype.raise_irq = function(reason)
-{
-    if(!(this.sra & SRA_INTPEND))
-    {
-        this.cpu.device_raise_irq(FDC_IRQ_CHANNEL);
-        this.sra |= SRA_INTPEND;
-        dbg_log("IRQ raised, reason: " + reason, LOG_FLOPPY);
-    }
-    this.reset_sense_int_count = 0;
-};
-
-FloppyController.prototype.lower_irq = function(reason)
-{
-    this.status0 = 0;
-    if(this.sra & SRA_INTPEND)
-    {
-        this.cpu.device_lower_irq(FDC_IRQ_CHANNEL);
-        this.sra &= ~SRA_INTPEND;
-        dbg_log("IRQ lowered, reason: " + reason, LOG_FLOPPY);
-    }
-};
-
-FloppyController.prototype.set_curr_drive_no = function(curr_drive_no)
-{
-    this.curr_drive_no = curr_drive_no & 1;
-    return this.drives[this.curr_drive_no];
-};
-
-FloppyController.prototype.enter_command_phase = function()
-{
-    this.cmd_phase = CMD_PHASE_COMMAND;
-    this.cmd_cursor = 0;
-    this.cmd_remaining = 0;
-    this.msr &= ~(MSR_CMDBUSY | MSR_DIO);
-    this.msr |= MSR_RQM;
-};
-
-FloppyController.prototype.enter_result_phase = function(fifo_len)
-{
-    this.cmd_phase = CMD_PHASE_RESULT;
-    this.response_cursor = 0;
-    this.response_length = fifo_len;
-    this.msr |= MSR_CMDBUSY | MSR_RQM | MSR_DIO;
-};
-
-FloppyController.prototype.reset_fdc = function()
-{
-    dbg_log("resetting controller", LOG_FLOPPY);
-    this.lower_irq("controller reset");
-
-    this.sra = 0;   // NOTE: set SRA to SRA_NDRV2 if fdb does not exist
-    this.srb = SRB_RESET;
-    this.dor = DOR_NRESET | DOR_DMAEN;
-    this.msr = MSR_RQM;
-    this.curr_drive_no = 0;
-    this.status0 |= SR0_RDYCHG;
-
-    this.response_cursor = 0;
-    this.response_length = 0;
-
-    this.drives[0].seek(0, 0, 1);
-    this.drives[1].seek(0, 0, 1);
-
-    // raise interrupt
-    this.enter_command_phase();
-    this.raise_irq("controller reset");
-    this.reset_sense_int_count = RESET_SENSE_INT_MAX;
-};
-
-// Register I/O callbacks ----------------------------------------------------
-
-FloppyController.prototype.read_reg_sra = function()
-{
-    dbg_log("SRA read: " + h(this.sra), LOG_FLOPPY);
-    return this.sra;
-};
-
-FloppyController.prototype.read_reg_srb = function()
-{
-    dbg_log("SRB read: " + h(this.srb), LOG_FLOPPY);
-    return this.srb;
-};
-
-FloppyController.prototype.read_reg_dor = function()
-{
-    const dor_byte = (this.dor & ~(DOR_SEL_LO|DOR_SEL_HI)) | this.curr_drive_no;
-    dbg_log("DOR read: " + h(dor_byte), LOG_FLOPPY);
-    return dor_byte;
-};
-
-FloppyController.prototype.read_reg_tdr = function()
-{
-    dbg_log("TDR read: " + h(this.tdr), LOG_FLOPPY);
-    return this.tdr;
-};
-
-FloppyController.prototype.read_reg_msr = function()
-{
-    dbg_log("MSR read: " + h(this.msr), LOG_FLOPPY);
-    this.dsr &= ~DSR_PWRDOWN;
-    this.dor |= DOR_NRESET;
-    return this.msr;
-};
-
-FloppyController.prototype.read_reg_fifo = function()
-{
-    this.dsr &= ~DSR_PWRDOWN;
-    if(!(this.msr & MSR_RQM) || !(this.msr & MSR_DIO))
-    {
-        dbg_log("FIFO read rejected: controller not ready for reading", LOG_FLOPPY);
-        return 0;
-    }
-    else if(this.cmd_phase !== CMD_PHASE_RESULT)
-    {
-        dbg_log("FIFO read rejected: floppy controller not in RESULT phase, phase: " + this.cmd_phase, LOG_FLOPPY);
-        return 0;
-    }
-
-    if(this.response_cursor < this.response_length)
-    {
-        const fifo_byte = this.response_data[this.response_cursor++];
-        if(this.response_cursor === this.response_length)
-        {
-            const lower_irq_reason = DEBUG ? "end of " + this.cmd_table[this.cmd_code].name + " response" : "";
-            this.msr &= ~MSR_RQM;
-            this.enter_command_phase();
-            this.lower_irq(lower_irq_reason);
-        }
-        return fifo_byte;
-    }
-    else
-    {
-        dbg_log("FIFO read: empty", LOG_FLOPPY);
-        return 0;
-    }
-};
-
-FloppyController.prototype.read_reg_dir = function()
-{
-    const curr_drive = this.drives[this.curr_drive_no];
-    const dir_byte = curr_drive.media_changed ? DIR_DOOR : 0;
-    dbg_log("DIR read: " + h(dir_byte), LOG_FLOPPY);
-    return dir_byte;
-};
-
-FloppyController.prototype.write_reg_dor = function(dor_byte)
-{
-    // update motor and drive bits in Status Register B
-    this.srb = (this.srb & ~(SRB_MTR0 | SRB_MTR1 | SRB_DR0)) |
-        (dor_byte & DOR_MOTEN0 ? SRB_MTR0 : 0) |
-        (dor_byte & DOR_MOTEN1 ? SRB_MTR1 : 0) |
-        (dor_byte & DOR_SEL_LO ? SRB_DR0 : 0);
-
-    // RESET-state transitions
-    if(this.dor & DOR_NRESET)
-    {
-        if(!(dor_byte & DOR_NRESET))
-        {
-            dbg_log("enter RESET state", LOG_FLOPPY);
-        }
-    }
-    else
-    {
-        if(dor_byte & DOR_NRESET)
-        {
-            this.reset_fdc();
-            this.dsr &= ~DSR_PWRDOWN;
-            dbg_log("exit RESET state", LOG_FLOPPY);
-        }
-    }
-
-    // select current drive
-    const new_drive_no = dor_byte & (DOR_SEL_LO|DOR_SEL_HI);
-    dbg_log("DOR write: " + h(dor_byte) + ", motors: " + h(dor_byte >> 4) +
-        ", dma: " + !!(dor_byte & DOR_DMAEN) + ", reset: " + !(dor_byte & DOR_NRESET) +
-        ", drive: " + new_drive_no, LOG_FLOPPY);
-    if(new_drive_no > 1)
-    {
-        dbg_log("*** WARNING: floppy drive number " + new_drive_no + " not implemented!", LOG_FLOPPY);
-    }
-    this.curr_drive_no = new_drive_no & DOR_SEL_LO;
-
-    this.dor = dor_byte;
-};
-
-FloppyController.prototype.write_reg_tdr = function(tdr_byte)
-{
-    if(!(this.dor & DOR_NRESET))
-    {
-        dbg_log("TDR write " + h(tdr_byte) + " rejected: Floppy controller in RESET mode!", LOG_FLOPPY);
         return;
     }
-
-    dbg_log("TDR write: " + h(tdr_byte), LOG_FLOPPY);
-    this.tdr = tdr_byte & TDR_BOOTSEL;  // Disk boot selection indicator
-};
-
-FloppyController.prototype.write_reg_dsr = function(dsr_byte)
-{
-    if(!(this.dor & DOR_NRESET))
-    {
-        dbg_log("DSR write: " + h(dsr_byte) + " rejected: Floppy controller in RESET mode!", LOG_FLOPPY);
-        return;
-    }
-
-    dbg_log("DSR write: " + h(dsr_byte), LOG_FLOPPY);
-    if(dsr_byte & DSR_SWRESET)
-    {
-        this.dor &= ~DOR_NRESET;
-        this.reset_fdc();
-        this.dor |= DOR_NRESET;
-    }
-    if(dsr_byte & DSR_PWRDOWN)
-    {
-        this.reset_fdc();
-    }
-    this.dsr = dsr_byte;
-};
-
-FloppyController.prototype.write_reg_fifo = function(fifo_byte)
-{
-    this.dsr &= ~DSR_PWRDOWN;
-    if(!(this.dor & DOR_NRESET))
-    {
-        dbg_log("FIFO write " + h(fifo_byte) + " rejected: floppy controller in RESET mode!", LOG_FLOPPY);
-        return;
-    }
-    else if(!(this.msr & MSR_RQM) || (this.msr & MSR_DIO))
-    {
-        dbg_log("FIFO write " + h(fifo_byte) + " rejected: controller not ready for writing", LOG_FLOPPY);
-        return;
-    }
-    else if(this.cmd_phase !== CMD_PHASE_COMMAND)
-    {
-        dbg_log("FIFO write " + h(fifo_byte) + " rejected: floppy controller not in COMMAND phase, phase: " + this.cmd_phase, LOG_FLOPPY);
-        return;
-    }
-
-    if(this.cmd_remaining === 0)
-    {
-        // start reading command, fifo_byte contains the command code
-        const cmd_desc = this.cmd_table[fifo_byte];
-        this.cmd_code = fifo_byte;
-        this.cmd_remaining = cmd_desc.argc;
-        this.cmd_cursor = 0;
-        this.cmd_flags = 0;
-        if((cmd_desc.code === CMD_READ || cmd_desc.code === CMD_WRITE) && (this.cmd_code & 0x80)) // 0x80: Multi-track (MT)
+    const drive = this.drives[this.curr_drive_no];
+    const do_write = kind === 2;
+    this.transfer_running = true;
+    const do_dma = do_write ? this.dma.do_write : this.dma.do_read;
+    do_dma.call(this.dma, drive.buffer, fields[FDC_XFER_OFFSET], fields[FDC_XFER_LENGTH], FDC_DMA_CHANNEL, dma_error => {
+        this.transfer_running = false;
+        if(dma_error)
         {
-            this.cmd_flags |= CMD_FLAG_MULTI_TRACK;
+            dbg_log("DMA floppy error", LOG_FLOPPY);
         }
-        if(this.cmd_remaining)
-        {
-            this.msr |= MSR_RQM;
-        }
-        this.msr |= MSR_CMDBUSY;
-    }
-    else
-    {
-        // continue reading command, fifo_byte contains an argument value
-        this.cmd_buffer[this.cmd_cursor++] = fifo_byte;
-        this.cmd_remaining--;
-    }
-
-    if(this.cmd_remaining === 0)
-    {
-        // done reading command: execute
-        this.cmd_phase = CMD_PHASE_EXECUTION;
-        const cmd_desc = this.cmd_table[this.cmd_code];
-        const args = this.cmd_buffer.slice(0, this.cmd_cursor);
-        if(DEBUG)
-        {
-            const args_hex = [];
-            for(const arg of args)
-            {
-                args_hex.push(h(arg, 2));
-            }
-            dbg_log("FD command " + h(this.cmd_code) + ": " + cmd_desc.name + "(" + args_hex.join(", ") + ")", LOG_FLOPPY);
-        }
-        cmd_desc.handler.call(this, args);
-    }
-};
-
-FloppyController.prototype.write_reg_ccr = function(ccr_byte)
-{
-    if(!(this.dor & DOR_NRESET))
-    {
-        dbg_log("CCR write: " + h(ccr_byte) + " rejected: Floppy controller in RESET mode!", LOG_FLOPPY);
-        return;
-    }
-
-    dbg_log("CCR write: " + h(ccr_byte), LOG_FLOPPY);
-    // only the rate selection bits used in AT mode, and we store those in the DSR
-    this.dsr = (this.dsr & ~DSR_DRATEMASK) | (ccr_byte & DSR_DRATEMASK);
-};
-
-// Floppy command handler ----------------------------------------------------
-
-FloppyController.prototype.exec_unimplemented = function(args)
-{
-    dbg_assert(false, "Unimplemented floppy command code " + h(this.cmd_code) + "!");
-    this.status0 = SR0_INVCMD;
-    this.response_data[0] = this.status0;
-
-    // no interrupt
-    this.enter_result_phase(1);
-};
-
-FloppyController.prototype.exec_read = function(args)
-{
-    this.start_read_write(args, false);
-};
-
-FloppyController.prototype.exec_write = function(args)
-{
-    this.start_read_write(args, true);
-};
-
-FloppyController.prototype.exec_seek = function(args)
-{
-    const curr_drive = this.set_curr_drive_no(args[0] & DOR_SELMASK);
-    const track = args[1];
-
-    this.enter_command_phase();
-    curr_drive.seek(curr_drive.curr_head, track, curr_drive.curr_sect);
-
-    // raise interrupt without response
-    this.status0 |= SR0_SEEK;
-    this.raise_irq("SEEK command");
-};
-
-FloppyController.prototype.exec_sense_interrupt_status = function(args)
-{
-    const curr_drive = this.drives[this.curr_drive_no];
-
-    let status0;
-    if(this.reset_sense_int_count > 0)
-    {
-        const drv_nr = RESET_SENSE_INT_MAX - this.reset_sense_int_count--;
-        status0 = SR0_RDYCHG | drv_nr;
-    }
-    else if(this.sra & SRA_INTPEND)
-    {
-        status0 = (this.status0 & ~(SR0_HEAD | SR0_DS1 | SR0_DS0)) | this.curr_drive_no;
-    }
-    else
-    {
-        dbg_log("No interrupt pending, aborting SENSE INTERRUPT command!", LOG_FLOPPY);
-        this.response_data[0] = SR0_INVCMD;
-        this.enter_result_phase(1);
-        return;
-    }
-
-    this.response_data[0] = status0;
-    this.response_data[1] = curr_drive.curr_track;
-
-    // lower interrupt
-    this.enter_result_phase(2);
-    this.lower_irq("SENSE INTERRUPT command");
-    this.status0 = SR0_RDYCHG;
-};
-
-FloppyController.prototype.exec_recalibrate = function(args)
-{
-    const curr_drive = this.set_curr_drive_no(args[0] & DOR_SELMASK);
-
-    curr_drive.seek(0, 0, 1);
-
-    // raise interrupt without response
-    this.enter_command_phase();
-    this.status0 |= SR0_SEEK;
-    this.raise_irq("RECALIBRATE command");
-};
-
-FloppyController.prototype.exec_format_track = function(args)
-{
-    const curr_drive = this.set_curr_drive_no(args[0] & DOR_SELMASK);
-
-    let status0 = 0, status1 = 0;
-    if(curr_drive.read_only)
-    {
-        status0 = SR0_ABNTERM | SR0_SEEK;
-        status1 = SR1_NW;
-    }
-
-    // raise interrupt
-    this.end_read_write(status0, status1, 0);
-};
-
-FloppyController.prototype.exec_read_id = function(args)
-{
-    const head_sel = args[0];
-    const curr_drive = this.drives[this.curr_drive_no];
-
-    curr_drive.curr_head = (head_sel >> 2) & 1;
-    if(curr_drive.max_sect !== 0)
-    {
-        curr_drive.curr_sect = (curr_drive.curr_sect % curr_drive.max_sect) + 1;
-    }
-
-    // raise interrupt
-    this.end_read_write(0, 0, 0);
-};
-
-FloppyController.prototype.exec_specify = function(args)
-{
-    const hut_srt = args[0]; // 0..3: Head Unload Time (HUT), 4..7: Step Rate Interval (SRT)
-    const nd_hlt = args[1];  // 0: Non-DMA mode flag (ND), 1..7: Head Load Time (HLT)
-
-    this.step_rate_interval = hut_srt >> 4;
-    this.head_load_time = nd_hlt >> 1;
-    if(nd_hlt & 0x1)
-    {
-        this.dor &= ~DOR_DMAEN;
-    }
-    else
-    {
-        this.dor |= DOR_DMAEN;
-    }
-
-    // no interrupt or response
-    this.enter_command_phase();
-};
-
-FloppyController.prototype.exec_sense_drive_status = function(args)
-{
-    const drv_sel = args[0];
-    const curr_drive = this.set_curr_drive_no(drv_sel & DOR_SELMASK);
-    curr_drive.curr_head = (drv_sel >> 2) & 1;
-
-    this.response_data[0] = (curr_drive.read_only ? 0x40 : 0) |    // response byte is Status Register 3
-        (curr_drive.curr_track === 0 ? 0x10 : 0) |
-        (curr_drive.curr_head << 2) |
-        this.curr_drive_no |
-        0x28;   // bits 3 and 5 unused, always "1"
-
-    // no interrupt
-    this.enter_result_phase(1);
-};
-
-FloppyController.prototype.exec_perpendicular_mode = function(args)
-{
-    const perp_mode = args[0];
-
-    if(perp_mode & 0x80)  // 0x80: OW, bits D0 and D1 can be overwritten
-    {
-        const curr_drive = this.drives[this.curr_drive_no];
-        curr_drive.perpendicular = perp_mode & 0x7;
-    }
-
-    // no interrupt or response
-    this.enter_command_phase();
-};
-
-FloppyController.prototype.exec_configure = function(args)
-{
-    // args[0] is always 0
-    this.fdc_config = args[1];
-    this.precomp_trk = args[2];
-
-    // no interrupt or response
-    this.enter_command_phase();
-};
-
-FloppyController.prototype.exec_lock = function(args)
-{
-    if(this.cmd_code & 0x80)
-    {
-        // LOCK command
-        this.locked = true;
-        this.response_data[0] = 0x10;
-    }
-    else
-    {
-        // UNLOCK command
-        this.locked = false;
-        this.response_data[0] = 0;
-    }
-
-    // no interrupt
-    this.enter_result_phase(1);
-};
-
-FloppyController.prototype.exec_dump_regs = function(args)
-{
-    const curr_drive = this.drives[this.curr_drive_no];
-
-    // drive positions
-    this.response_data[0] = this.drives[0].curr_track;
-    this.response_data[1] = this.drives[1].curr_track;
-    this.response_data[2] = 0;
-    this.response_data[3] = 0;
-    // timers
-    this.response_data[4] = this.step_rate_interval;
-    this.response_data[5] = (this.head_load_time << 1) | ((this.dor & DOR_DMAEN) ? 1 : 0);
-    this.response_data[6] = curr_drive.max_sect;
-    this.response_data[7] = (this.locked ? 0x80 : 0) | (curr_drive.perpendicular << 2);
-    this.response_data[8] = this.fdc_config;
-    this.response_data[9] = this.precomp_trk;
-
-    // no interrupt
-    this.enter_result_phase(10);
-};
-
-FloppyController.prototype.exec_version = function(args)
-{
-    this.response_data[0] = 0x90;   // 0x80: Standard controller, 0x81: Intel 82077, 0x90: Intel 82078
-
-    // no interrupt
-    this.enter_result_phase(1);
-};
-
-FloppyController.prototype.exec_part_id = function(args)
-{
-    this.response_data[0] = 0x41;   // Stepping 1 (PS/2 mode)
-
-    // no interrupt
-    this.enter_result_phase(1);
-};
-
-// ---------------------------------------------------------------------------
-
-FloppyController.prototype.start_read_write = function(args, do_write)
-{
-    const curr_drive = this.set_curr_drive_no(args[0] & DOR_SELMASK);
-    const track = args[1];
-    const head = args[2];
-    const sect = args[3];
-    const ssc = args[4];    // sector size code 0..7 (0:128, 1:256, 2:512, ..., 7:16384 bytes/sect)
-    const eot = args[5];    // last sector number of current track
-    const dtl = args[7] < 128 ? args[7] : 128;  // data length in bytes if ssc is 0, else unused
-
-    switch(curr_drive.seek(head, track, sect))
-    {
-    case 2: // error: sect too big
-        this.end_read_write(SR0_ABNTERM, 0, 0);
-        this.response_data[3] = track;
-        this.response_data[4] = head;
-        this.response_data[5] = sect;
-        return;
-    case 3: // error: track too big
-        this.end_read_write(SR0_ABNTERM, SR1_EC, 0);
-        this.response_data[3] = track;
-        this.response_data[4] = head;
-        this.response_data[5] = sect;
-        return;
-    case 1: // track changed
-        this.status0 |= SR0_SEEK;
-        break;
-    }
-
-    const sect_size = 128 << (ssc > 7 ? 7 : ssc);               // sector size in bytes
-    const sect_start = curr_drive.chs2lba(track, head, sect);   // linear start sector
-    const data_offset = sect_start * sect_size;                 // data offset in bytes
-    let data_length;                                            // data length in bytes
-    if(sect_size === 128)
-    {
-        // if requested data length (dtl) is < 128:
-        // - READ: return only dtl bytes, skipping the sector's remaining bytes (OK)
-        // - WRITE: we must fill the sector's remaining bytes with 0 (TODO!)
-        if(do_write && dtl < 128)
-        {
-            dbg_assert(false, "dtl=" + dtl + " is less than 128, zero-padding is still unimplemented!");
-        }
-        data_length = dtl;
-    }
-    else
-    {
-        if(this.cmd_flags & CMD_FLAG_MULTI_TRACK)
-        {
-            data_length = (2 * eot - sect + 1) * sect_size;
-        }
-        else
-        {
-            data_length = (eot - sect + 1) * sect_size;
-        }
-        if(data_length <= 0)
-        {
-            dbg_log("invalid data_length: " + data_length + " sect=" + sect + " eot=" + eot, LOG_FLOPPY);
-            this.end_read_write(SR0_ABNTERM, SR1_MA, 0);
-            this.response_data[3] = track;
-            this.response_data[4] = head;
-            this.response_data[5] = sect;
-            return;
-        }
-    }
-    this.eot = eot;
-
-    if(DEBUG)
-    {
-        dbg_log("Floppy " + this.cmd_table[this.cmd_code].name +
-            " from: " + h(data_offset) + ", length: " + h(data_length) +
-            ", C/H/S: " + track + "/" + head + "/" + sect + ", ro: " + curr_drive.read_only +
-            ", #S: " + curr_drive.max_sect + ", #H: " + curr_drive.max_head,
-            LOG_FLOPPY);
-    }
-
-    if(do_write && curr_drive.read_only)
-    {
-        this.end_read_write(SR0_ABNTERM | SR0_SEEK, SR1_NW, 0);
-        this.response_data[3] = track;
-        this.response_data[4] = head;
-        this.response_data[5] = sect;
-        return;
-    }
-
-    if(this.dor & DOR_DMAEN)
-    {
-        // start DMA transfer
-        this.msr &= ~MSR_RQM;
-        const do_dma = do_write ? this.dma.do_write : this.dma.do_read;
-        do_dma.call(this.dma,
-            curr_drive.buffer,
-            data_offset,
-            data_length,
-            FDC_DMA_CHANNEL,
-            dma_error => {
-                if(dma_error)
-                {
-                    dbg_log("DMA floppy error", LOG_FLOPPY);
-                    this.end_read_write(SR0_ABNTERM, 0, 0);
-                }
-                else
-                {
-                    this.seek_next_sect();
-                    this.end_read_write(0, 0, 0);
-                }
-            }
-        );
-    }
-    else
-    {
-        // start PIO transfer
-        dbg_assert(false, this.cmd_table[this.cmd_code].name + " in PIO mode not supported!");
-    }
-};
-
-FloppyController.prototype.end_read_write = function(status0, status1, status2)
-{
-    const curr_drive = this.drives[this.curr_drive_no];
-
-    this.status0 &= ~(SR0_DS0 | SR0_DS1 | SR0_HEAD);
-    this.status0 |= this.curr_drive_no;
-    if(curr_drive.curr_head)
-    {
-        this.status0 |= SR0_HEAD;
-    }
-    this.status0 |= status0;
-
-    this.msr |= MSR_RQM | MSR_DIO;
-    this.msr &= ~MSR_NDMA;
-
-    this.response_data[0] = this.status0;
-    this.response_data[1] = status1;
-    this.response_data[2] = status2;
-    this.response_data[3] = curr_drive.curr_track;
-    this.response_data[4] = curr_drive.curr_head;
-    this.response_data[5] = curr_drive.curr_sect;
-    this.response_data[6] = SECTOR_SIZE_CODE;
-
-    // raise interrupt
-    this.enter_result_phase(7);
-    this.raise_irq(this.cmd_table[this.cmd_code].name + " command");
-};
-
-FloppyController.prototype.seek_next_sect = function()
-{
-    // Seek to next sector
-    // returns 0 when end of track reached (for DBL_SIDES on head 1). otherwise returns 1
-    const curr_drive = this.drives[this.curr_drive_no];
-
-    // XXX: curr_sect >= max_sect should be an error in fact (TODO: this comment comes from qemu, not sure what to make of it)
-    let new_track = curr_drive.curr_track;
-    let new_head = curr_drive.curr_head;
-    let new_sect = curr_drive.curr_sect;
-    let ret = 1;
-
-    if(new_sect >= curr_drive.max_sect || new_sect === this.eot)
-    {
-        new_sect = 1;
-        if(this.cmd_flags & CMD_FLAG_MULTI_TRACK)
-        {
-            if(new_head === 0 && curr_drive.max_head === 2)
-            {
-                new_head = 1;
-            }
-            else
-            {
-                new_head = 0;
-                new_track++;
-                this.status0 |= SR0_SEEK;
-                if(curr_drive.max_head === 1)
-                {
-                    ret = 0;
-                }
-            }
-        }
-        else
-        {
-            this.status0 |= SR0_SEEK;
-            new_track++;
-            ret = 0;
-        }
-    }
-    else
-    {
-        new_sect++;
-    }
-
-    curr_drive.seek(new_head, new_track, new_sect);
-    return ret;
+        this.cpu.fdc_transfer_done(!!dma_error);
+    });
 };
 
 FloppyController.prototype.get_state = function()
 {
-    // NOTE: Old-style state snapshots (state indices 0..18) did not include
-    // the disk image buffer, only a few register states, so a floppy drive
-    // remained essentially unchangd when a state snapshot was applied.
-    // The snapshotted registers can be safely ignored when restoring state,
-    // hence the entire old-style state is now ignored and deprecated.
     const state = [];
-    state[19] = this.sra;
-    state[20] = this.srb;
-    state[21] = this.dor;
-    state[22] = this.tdr;
-    state[23] = this.msr;
-    state[24] = this.dsr;
-    state[25] = this.cmd_phase;
-    state[26] = this.cmd_code;
-    state[27] = this.cmd_flags;
-    state[28] = this.cmd_buffer;    // Uint8Array
+    FDC_FIELDS.forEach((name, i) => { state[19 + i] = this[name]; });
+    state[28] = this.cmd_buffer.slice();
     state[29] = this.cmd_cursor;
     state[30] = this.cmd_remaining;
-    state[31] = this.response_data; // Uint8Array
+    state[31] = this.response_data.slice();
     state[32] = this.response_cursor;
     state[33] = this.response_length;
     state[34] = this.status0;
@@ -1107,7 +322,7 @@ FloppyController.prototype.set_state = function(state)
 {
     if(typeof state[19] === "undefined")
     {
-        // see comment above in get_state()
+        // old state format
         return;
     }
     this.sra = state[19];
@@ -1119,10 +334,10 @@ FloppyController.prototype.set_state = function(state)
     this.cmd_phase = state[25];
     this.cmd_code = state[26];
     this.cmd_flags = state[27];
-    this.cmd_buffer.set(state[28]);     // Uint8Array
+    this.cmd_buffer.set(state[28]);
     this.cmd_cursor = state[29];
     this.cmd_remaining = state[30];
-    this.response_data.set(state[31]);  // Uint8Array
+    this.response_data.set(state[31]);
     this.response_cursor = state[32];
     this.response_length = state[33];
     this.status0 = state[34];
@@ -1138,8 +353,6 @@ FloppyController.prototype.set_state = function(state)
     this.drives[0].set_state(state[44]);
     this.drives[1].set_state(state[45]);
 };
-
-// class FloppyDrive ---------------------------------------------------------
 
 /**
  * Floppy disk formats
@@ -1211,8 +424,19 @@ const DISK_FORMATS = [
  * @param {SyncBuffer|Uint8Array|null|undefined} buffer
  * @param {number} fallback_drive_type
  */
-function FloppyDrive(name, fdd_config, buffer, fallback_drive_type)
+function FloppyDrive(cpu, address, name, fdd_config, buffer, fallback_drive_type)
 {
+    // (the geometry and head position are in the core: struct Drive in src/rust/cpu/floppy.rs)
+    core_fields(this, cpu, address, DRIVE_FIELDS, { "read_only": true, "media_changed": true });
+    let image = null;
+    Object.defineProperty(this, "buffer", {
+        get: () => image,
+        set: value => {
+            image = value;
+            new Int32Array(cpu.wasm_memory.buffer, address, DRIVE_HAS_MEDIA + 1)[DRIVE_HAS_MEDIA] = value ? 1 : 0;
+        },
+    });
+
     /** @const */
     this.name = name;
 
@@ -1231,7 +455,6 @@ function FloppyDrive(name, fdd_config, buffer, fallback_drive_type)
     this.media_changed = true;
     this.buffer = null;
 
-    Object.seal(this);
 
     // Drive type this.drive_type is either (in this order):
     // - specified in fdd_config.drive_type (if defined),
