@@ -219,6 +219,12 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | Port and MMIO tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | ⬜ last |
 | `src/browser/` (DOM, canvas, audio, network, files) | 13,000 | | stays JavaScript |
 
+Calls from the core into JavaScript (`tools/profile --count-crossings`, Alpine x86 to a shell): 4,149,603 on
+`Vibe-Claude`; 4,147,693 with PIT, RTC, UART, ACPI, PS/2 and DMA in Rust; **135,428** with `rep insw/insd` read in
+blocks (`io_port_read_block`, the IDE data port: 4.01 M of the calls were reads of port 0x170). x86_64: 144,140.
+Boot time: not separable from noise (+0.7 %, rounds -5.0 % to +4.5 %): a call cost about 100 ns, 0.4 s of 41 s.
+The 135,000 left: IDE status and control ports (0x177, 0x376), VGA (0x3C9, 0x3D4 and MMIO writes), PCI (0xCF8).
+
 Measured so far (Alpine x86 to a serial login and a command, 3 rounds): RTC and UART in Rust -1.0 % CPU time
 (-1.1 % to -0.5 %, faster in every round).
 

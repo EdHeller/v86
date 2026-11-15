@@ -282,6 +282,28 @@ emulator.add_listener("emulator-ready", async () => {
             return timers.call(cpu, acpi_enabled, now);
         };
     }
+    // Calls from the core into JavaScript, by kind: port I/O, memory-mapped I/O, the timer pass
+    if(opt.count_crossings)
+    {
+        const cpu = v86.cpu, io = cpu.io;
+        result.crossings = {};
+        const count = (obj, name, label) => {
+            const f = obj[name];
+            if(typeof f !== "function") return;
+            result.crossings[label] = 0;
+            obj[name] = function(...a) { result.crossings[label]++; return f.apply(this, a); };
+        };
+        for(const n of ["port_read8", "port_read16", "port_read32", "port_write8", "port_write16", "port_write32"]) count(io, n, "port " + n.slice(5));
+        for(const n of ["mmap_read8", "mmap_read32", "mmap_write8", "mmap_write16", "mmap_write32", "mmap_write64", "mmap_write128"]) count(cpu, n, "mmio " + n.slice(5));
+        count(cpu, "run_hardware_timers", "timer pass");
+        // (per port, the ten most frequent, to see what is left)
+        result.ports = {};
+        for(const n of ["port_read8", "port_read16", "port_read32", "port_write8", "port_write16", "port_write32"])
+        {
+            const f = io[n];
+            io[n] = function(port, ...a) { const k = n.slice(5) + " 0x" + port.toString(16); result.ports[k] = (result.ports[k] || 0) + 1; return f.call(this, port, ...a); };
+        }
+    }
     if(opt.step_profile && v86.cpu.wm.exports["step_profile_enable"]) v86.cpu.wm.exports["step_profile_enable"](1);
     for(const [k, v] of Object.entries(opt.jit_config || {})) v86.cpu.wm.exports["set_jit_config"](+k, +v);
 

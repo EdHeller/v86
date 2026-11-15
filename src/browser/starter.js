@@ -88,6 +88,7 @@ export function V86(options)
         "stop_idling": function() { return cpu.stop_idling(); },
 
         "io_port_read8": function(addr) { return cpu.io.port_read8(addr); },
+        "io_port_read_block": function(port, addr, count, size) { return cpu.io.port_read_block(port, addr >>> 0, count >>> 0, size); },
         "io_port_read16": function(addr) { return cpu.io.port_read16(addr); },
         "io_port_read32": function(addr) { return cpu.io.port_read32(addr); },
         "io_port_write8": function(addr, value) { cpu.io.port_write8(addr, value); },
@@ -940,7 +941,7 @@ V86.prototype.zstd_decompress_worker = async function(decompressed_size, src)
                     const env = Object.fromEntries([
                         "cpu_exception_hook", "run_hardware_timers",
                         "cpu_event_halt", "microtick", "get_rand_int", "stop_idling",
-                        "io_port_read8", "io_port_read16", "io_port_read32",
+                        "io_port_read8", "io_port_read16", "io_port_read32", "io_port_read_block",
                         "io_port_write8", "io_port_write16", "io_port_write32",
                         "mmap_read8", "mmap_read32",
                         "mmap_write8", "mmap_write16", "mmap_write32", "mmap_write64", "mmap_write128",

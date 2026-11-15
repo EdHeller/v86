@@ -37,6 +37,9 @@ pub mod js {
     extern "C" {
         pub fn cpu_exception_hook(interrupt: i32) -> bool;
         pub fn microtick() -> f64;
+        /// rep ins in bulk: up to `count` items of `size` bytes from `port` to guest memory at `phys`; returns
+        /// how many it moved (0 when the port's device has no block reader)
+        pub fn io_port_read_block(port: i32, phys: u32, count: u32, size: u32) -> u32;
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();
@@ -5059,6 +5062,14 @@ pub fn io_port_read8(port: i32) -> i32 {
             },
         }
     }
+}
+/// rep ins in bulk (see js::io_port_read_block); 0 when the port reads item by item
+pub unsafe fn io_port_read_block(port: i32, phys: u32, count: u32, size: u32) -> u32 {
+    if super::parallel::WORKER || phys as u64 + count as u64 * size as u64 > *memory_size as u64 {
+        return 0;
+    }
+    super::pit::JS_TIMERS_DUE = 0.0;
+    js::io_port_read_block(port, phys, count, size).min(count)
 }
 pub fn io_port_read16(port: i32) -> i32 {
     unsafe {

@@ -471,6 +471,26 @@ IO.prototype.port_read16 = function(port_addr)
     return value;
 };
 
+/**
+ * A device that can move many items of its data port at once (rep ins): fn(addr, count, size) writes up to count
+ * items of size bytes to guest memory at addr and returns how many
+ * @param {number} port_addr
+ * @param {!Object} device
+ * @param {function(number,number,number):number} fn
+ */
+IO.prototype.register_read_block = function(port_addr, device, fn)
+{
+    this.ports[port_addr].read_block = fn;
+    this.ports[port_addr].device = device;
+};
+
+/** @return {number} the items moved, 0 when the port reads item by item */
+IO.prototype.port_read_block = function(port_addr, addr, count, size)
+{
+    const entry = this.ports[port_addr];
+    return entry.read_block ? entry.read_block.call(entry.device, addr, count, size) : 0;
+};
+
 IO.prototype.port_read32 = function(port_addr)
 {
     var entry = this.ports[port_addr];

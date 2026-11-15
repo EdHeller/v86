@@ -428,6 +428,12 @@ function IDEChannel(controller, channel_nr, channel_config, command_base, contro
         return this.current_interface.read_data(4);
     });
 
+    // rep insw / insd: the sector's data in one call (the core's string loop asks for the rest of the page)
+    cpu.io.register_read_block(this.command_base | ATA_REG_DATA, this, function(addr, count, size)
+    {
+        return this.current_interface.read_data_block(addr, count, size);
+    });
+
     cpu.io.register_read(this.command_base | ATA_REG_ERROR, this, function()
     {
         if(LOG_DETAILS & LOG_DETAIL_REG_IO)
@@ -2062,6 +2068,32 @@ IDEInterface.prototype.read_data = function(length)
         this.data_pointer += length;
         return 0;
     }
+};
+
+/**
+ * Up to count items of size bytes of the data port into guest memory at addr, as count calls of read_data would,
+ * up to the end of the current data block (read_end may start the next one)
+ * @return {number} the items moved
+ */
+IDEInterface.prototype.read_data_block = function(addr, count, size)
+{
+    if(this.data_pointer >= this.data_end || this.data_pointer % size !== 0)
+    {
+        return 0;
+    }
+    const n = Math.min(count, Math.floor((this.data_end - this.data_pointer) / size));
+    if(n === 0)
+    {
+        return 0;
+    }
+    const bytes = n * size;
+    this.cpu.mem8.set(this.data.subarray(this.data_pointer, this.data_pointer + bytes), addr);
+    this.data_pointer += bytes;
+    if(this.data_pointer >= this.data_end)
+    {
+        this.read_end();
+    }
+    return n;
 };
 
 IDEInterface.prototype.read_end = function()

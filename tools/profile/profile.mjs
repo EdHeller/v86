@@ -40,6 +40,8 @@
 //                            System.map of the guest's kernel (boot it with nokaslr), or "none" for addresses
 //   --step-profile           x86_64: the instructions jit64 does not compile, by opcode: those run by the
 //                            interpreter inside a compiled block, and those a block ended at
+//   --count-crossings        count the calls from the core into JavaScript (port I/O, MMIO, the timer pass), and
+//                            the ports behind them
 //   --runs N                 timing runs per build (default 0); --no-profile leaves the profiled run out
 //   --pin N                  run the guest's process on CPU N only (taskset); --node-flags "..." flags for node,
 //                            e.g. --single-threaded (no compiler threads) to see what the engine's tiering adds
@@ -61,7 +63,7 @@ const here = path.dirname(url.fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
 
 const multi = new Set(["wasm", "mark", "screen-mark", "insn-mark", "send", "keys", "jit-config", "plugin"]);
-const flags = new Set(["no-profile", "help", "step-profile"]);
+const flags = new Set(["no-profile", "help", "step-profile", "count-crossings"]);
 const args = {};
 const order = [];       // (the marks keep the order of the command line, whatever their kind)
 for(let i = 2; i < process.argv.length; i++)
@@ -128,7 +130,7 @@ const base = {
     cdrom: abs(args.cdrom), hda: abs(args.hda), fda: abs(args.fda), bzimage: abs(args.bzimage), initrd: abs(args.initrd),
     state: abs(args.state), cmdline: args.cmdline,
     memory: +args.memory || 512, timeout: +args.timeout || 600, interval: +args.interval || 200,
-    marks, stat_names, guest_profile: !!args["guest-map"], step_profile: !!args["step-profile"],
+    marks, stat_names, guest_profile: !!args["guest-map"], step_profile: !!args["step-profile"], count_crossings: !!args["count-crossings"],
     jit_config: Object.fromEntries((args["jit-config"] || []).map(split)),
     v86: args.v86 ? JSON.parse(args.v86) : undefined,
 };

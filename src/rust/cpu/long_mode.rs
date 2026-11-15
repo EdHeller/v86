@@ -15,6 +15,7 @@
 //! - only a subset of the instruction set is implemented, unknown opcodes assert in debug builds
 //!   and raise #UD otherwise
 
+use crate::cpu::cpu::io_port_read_block;
 use crate::cpu::cpu::*;
 use crate::cpu::long_mem::*;
 use crate::cpu::sse_instr::sse_integer_round;
@@ -1197,6 +1198,9 @@ unsafe fn string_op(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
     if p.rep != 0 && !df && !p.asz32 && matches!(opcode, 0xA4 | 0xA5 | 0xAA | 0xAB) {
         string_fast(opcode, bits, seg_base)?;
     }
+    if p.rep != 0 && !df && !p.asz32 && opcode == 0x6D {
+        ins_fast(port, bits)?;
+    }
 
     loop {
         if p.rep != 0 && get_reg(RCX, abits, true) == 0 {
@@ -1269,6 +1273,29 @@ unsafe fn string_op(p: &Prefixes, opcode: u8) -> OrPageFault<()> {
 /// rep movs / stos upwards between ordinary ram pages: whole stretches inside a page at once. Whatever it
 /// does not take (page ends, other memory, pages with code, overlapping copies) is left to the loop of
 /// `string_op`, which sees the registers as they are after each stretch.
+/// rep insw / insd from a device that reads in blocks (the IDE data port), a page at a time; what is left (another
+/// device, a page with code or device memory) runs element by element
+unsafe fn ins_fast(port: i32, bits: u32) -> OrPageFault<()> {
+    use crate::cpu::memory::{in_mapped_range, write_ignored};
+    let step = bits as u64 / 8;
+    let user = *cpl == 3;
+    loop {
+        let count = r64(RCX);
+        let di = r64(RDI);
+        if count == 0 || !is_canonical(di) || !is_canonical(di.wrapping_add(count.min(0x1000) * step)) { return Ok(()) }
+        let n = count.min((0x1000 - (di & 0xFFF)) / step);
+        if n == 0 { return Ok(()) }
+        let dphys = translate(di, true, user, false)?;
+        let dpage = dphys & !0xFFF;
+        if in_mapped_range(dpage) || write_ignored(dpage) || crate::jit::jit_page_has_code(crate::page::Page::page_of(dpage)) { return Ok(()) }
+        let done = io_port_read_block(port, dphys, n as u32, step as u32) as u64;
+        if done == 0 { return Ok(()) }
+        set_reg(RDI, 64, true, di.wrapping_add(done * step));
+        set_reg(RCX, 64, true, count - done);
+        if done < n { return Ok(()) }
+    }
+}
+
 unsafe fn string_fast(opcode: u8, bits: u32, seg_base: u64) -> OrPageFault<()> {
     use crate::cpu::memory::{in_mapped_range, mem8, write_ignored};
     let step = bits as u64 / 8;
