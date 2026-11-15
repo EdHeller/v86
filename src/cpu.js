@@ -509,6 +509,7 @@ CPU.prototype.wasm_patch = function()
 
     this.get_ide_addr = get_import("get_ide_addr");
     this.ide_channel_init = get_import("ide_channel_init");
+    this.ide_set_bus_master = get_import("ide_set_bus_master");
 
     this.get_pci_addr = get_import("get_pci_addr");
     this.pci_init = get_import("pci_init");

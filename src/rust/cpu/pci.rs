@@ -179,7 +179,10 @@ pub unsafe fn set_irq(bdf: usize, level: bool) {
 }
 
 /// the I/O base of BAR 0 of a function (bit 0 set: an I/O BAR), or -1
-pub unsafe fn io_bar0(bdf: usize) -> i32 {
-    let bar = pci().spaces[bdf][4];
+pub unsafe fn io_bar0(bdf: usize) -> i32 { io_bar(bdf, 0) }
+
+/// the I/O base of a BAR of a function, or -1
+pub unsafe fn io_bar(bdf: usize, n: usize) -> i32 {
+    let bar = pci().spaces[bdf][4 + n];
     if bar & 1 != 0 { bar & !1 & 0xFFFF } else { -1 }
 }

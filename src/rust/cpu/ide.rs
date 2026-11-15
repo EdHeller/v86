@@ -41,6 +41,10 @@ pub struct Channel {
     control_base: i32,       // 100
     irq: i32,                // 104
     present: i32,            // 108
+    // the bus master registers (BAR4: the primary channel's at +0, the secondary's at +8)
+    prdt_addr: i32,          // 112
+    dma_status: i32,         // 116
+    dma_command: i32,        // 120
 }
 
 const IFACE0: Iface = Iface {
@@ -57,7 +61,112 @@ const IFACE0: Iface = Iface {
     drive_connected: 0,
 };
 const CHANNEL0: Channel =
-    Channel { iface: [IFACE0; 2], current: 0, device_control: 0, command_base: -1, control_base: -1, irq: 0, present: 0 };
+    Channel {
+        iface: [IFACE0; 2],
+        current: 0,
+        device_control: 0,
+        command_base: -1,
+        control_base: -1,
+        irq: 0,
+        present: 0,
+        prdt_addr: 0,
+        dma_status: 0,
+        dma_command: 0,
+    };
+
+/// the bus master registers' fixed base and the controller's PCI function (whose BAR4 the BIOS may move)
+static mut BUS_MASTER_BASE: i32 = -1;
+static mut PCI_BDF: i32 = -1;
+
+#[no_mangle]
+pub unsafe fn ide_set_bus_master(base: i32, pci_bdf: i32) {
+    BUS_MASTER_BASE = base;
+    PCI_BDF = pci_bdf;
+}
+
+/// (channel, register 0..7) of a bus master port, at the fixed base or at BAR4 when the BIOS moved it above 0x1000
+#[inline]
+unsafe fn bus_master(port: i32) -> Option<(usize, i32)> {
+    if BUS_MASTER_BASE < 0 {
+        return None;
+    }
+    let bar = if PCI_BDF >= 0 { super::pci::io_bar(PCI_BDF as usize & 0xFF, 4) } else { -1 };
+    let base = if port & !0xF == BUS_MASTER_BASE { BUS_MASTER_BASE } else if bar >= 0x1000 && port & !0xF == bar { bar } else { return None };
+    let n = ((port - base) >> 3) as usize;
+    if channel(n).present == 0 {
+        return None;
+    }
+    Some((n, (port - base) & 7))
+}
+
+/// Whether the core answers this bus master or device control access itself. Setting the start bit starts a
+/// transfer (JavaScript's); a device control write with the soft reset bit resets the drives (JavaScript's)
+#[inline]
+pub unsafe fn bus_master_serves(port: i32, size: i32, value: i32, write: bool) -> bool {
+    if super::parallel::WORKER {
+        return false;
+    }
+    if write && size == 8 {
+        for n in 0..2 {
+            let c = channel(n);
+            if c.present != 0 && port == c.control_base {
+                return value & 4 == 0;
+            }
+        }
+    }
+    let Some((n, reg)) = bus_master(port) else { return false };
+    let c = channel(n);
+    match (reg, size, write) {
+        (0, 8, false) | (0, 32, false) | (2, 8, false) | (2, 8, true) | (4, 32, false) | (4, 32, true) => true,
+        // (the start bit set where it was clear: the transfer begins)
+        (0, 8, true) | (0, 32, true) => !(value & 1 != 0 && c.dma_command & 1 == 0),
+        _ => false,
+    }
+}
+
+#[no_mangle]
+pub unsafe fn ide_bus_master_read(port: i32, size: i32) -> i32 {
+    let Some((n, reg)) = bus_master(port) else { return -1 };
+    let c = channel(n);
+    match (reg, size) {
+        (0, 32) => c.dma_command | c.dma_status << 16,
+        (0, _) => c.dma_command,
+        (2, _) => c.dma_status,
+        (4, _) => c.prdt_addr,
+        _ => -1,
+    }
+}
+
+#[no_mangle]
+pub unsafe fn ide_bus_master_write(port: i32, size: i32, value: i32) {
+    for n in 0..2 {
+        let c = channel(n);
+        if c.present != 0 && port == c.control_base {
+            // (without a soft reset: see bus_master_serves)
+            c.device_control = value & 0xFF;
+            return;
+        }
+    }
+    let Some((n, reg)) = bus_master(port) else { return };
+    let c = channel(n);
+    let write_command = |c: &mut Channel, value: i32| {
+        let old = c.dma_command;
+        c.dma_command = value & 0x09;
+        if old & 1 != value & 1 && value & 1 == 0 {
+            c.dma_status &= !1;
+        }
+    };
+    match (reg, size) {
+        (0, 32) => {
+            write_command(c, value & 0xFF);
+            c.dma_status &= !(value >> 16 & 6);
+        },
+        (0, _) => write_command(c, value & 0xFF),
+        (2, _) => c.dma_status &= !(value & 6),
+        (4, _) => c.prdt_addr = value,
+        _ => {},
+    }
+}
 
 static mut CHANNELS: [Channel; 2] = [CHANNEL0; 2];
 

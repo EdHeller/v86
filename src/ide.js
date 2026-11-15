@@ -321,6 +321,8 @@ export function IDEController(cpu, bus, ide_config)
 
         this.name = "ide";
         this.pci_id = 0x1E << 3;
+        // (the bus master registers: answered by the core, at BUS_MASTER_BASE and where the BIOS moves BAR4)
+        this.cpu.ide_set_bus_master(BUS_MASTER_BASE, this.pci_id);
         this.pci_space = [
             vendor_id & 0xFF, vendor_id >> 8, device_id & 0xFF, device_id >> 8, 0x05, 0x00, 0xA0, 0x02,
             0x00, prog_if, subclass, class_code, 0x00, 0x00, 0x00, 0x00,
@@ -432,7 +434,8 @@ function IDEChannel(controller, channel_nr, channel_config, command_base, contro
     // answers their ports; the fields here are accessors on them.
     const core = this.cpu;
     core.ide_channel_init(channel_nr, command_base, control_base, irq);
-    define_core_fields(this, core, () => core.get_ide_addr(channel_nr), { "device_control_reg": 23 });
+    define_core_fields(this, core, () => core.get_ide_addr(channel_nr),
+        { "device_control_reg": 23, "prdt_addr": 28, "dma_status": 29, "dma_command": 30 });
     Object.defineProperty(this, "current_interface", {
         get: () => core_i32(core, core.get_ide_addr(channel_nr), 22) ? this.slave : this.master,
         set: iface => { set_core_i32(core, core.get_ide_addr(channel_nr), 22, iface === this.slave ? 1 : 0); },
