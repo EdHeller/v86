@@ -56,7 +56,7 @@ register_usb_plugin({
             const port = free_port();
             if(port < 0) throw new Error("usb: no free port for " + JSON.stringify(id) + " (the " + NAME + " controller has " + PORTS + ")");
             const backend = machine.block_backend(buffer);
-            const disk = new MassStorage(backend, { id, read_only });
+            const disk = new MassStorage(backend, { id, read_only, core: controller.core ? machine.core_storage() : null });
             disk.on_eject = () => machine.send("usb-disk-ejected", id);
             devices.set(id, { device: disk, port, backend });
             controller.attach(port, disk);

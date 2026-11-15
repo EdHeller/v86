@@ -394,6 +394,12 @@ DeviceMachine.prototype.core_uhci = function()
     return this.handle["core_uhci"] || null;
 };
 
+/** @return {Object} the USB disks' data stages in the core, or null (src/device_plugin.js) */
+DeviceMachine.prototype.core_storage = function()
+{
+    return this.handle["core_storage"] || null;
+};
+
 /** @return {Object} the core's USB tablet, or null (src/device_plugin.js) */
 DeviceMachine.prototype.core_tablet = function()
 {

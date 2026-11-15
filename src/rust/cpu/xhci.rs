@@ -1025,6 +1025,9 @@ impl Xhci {
         if let Some(result) = super::usb_tablet::route(1 << port, -1, pid, endpoint, ptr as *mut u8, length as usize, &mut self.reset_pending) {
             return result;
         }
+        if let Some(result) = super::usb_storage::route(1 << port, -1, pid, endpoint, ptr as *mut u8, length as usize) {
+            return result;
+        }
         js::usb_transaction(1 << port, -1, pid, endpoint, ptr, length)
     }
 

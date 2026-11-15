@@ -134,11 +134,17 @@ export function serial_of(id)
  * @extends {USBDevice}
  * @param {!Object} backend the image: the handle's block backend ("read",
  *     "write", "flush", "reset", "byte_length")
- * @param {{id: string, read_only: boolean}} options
+ * @param {{id: string, read_only: boolean, core: (Object|undefined)}} options core: the plugin handle's core_storage,
+ *     where the controller is the core's (the data stage goes there)
  */
 export function MassStorage(backend, options)
 {
     this.backend = backend;
+    this.core = options.core || null;
+    /** the disk's index in the core */
+    this.slot = this.core ? this.core["new"]() : -1;
+    if(this.slot < 0) this.core = null;
+    if(this.core) this.core["after_slice"](() => this.after_slice());
     this.id = options.id;
     this.read_only = options.read_only;
     this.sectors = Math.floor(backend["byte_length"] / SECTOR_SIZE);
@@ -186,9 +192,98 @@ export function MassStorage(backend, options)
 
 MassStorage.prototype = Object.create(USBDevice.prototype);
 
+// the core's fields (src/rust/cpu/usb_storage.rs)
+const F_PORT = 0, F_ADDRESS = 1, F_ACTIVE = 2, F_HOST_LEFT = 3, F_DEVICE_LEFT = 4, F_READING = 5, F_IO = 6, F_READ_MORE = 7,
+    F_CHUNK_ROOM = 8, F_DONE = 9, F_NEED_READ = 10;
+
+/** @return {Int32Array} the core's fields, or null */
+MassStorage.prototype.fields = function()
+{
+    return this.core ? this.core["fields"](this.slot) : null;
+};
+
+/** @param {number} port the port of the core's controller the disk is in, or -1 */
+MassStorage.prototype.set_port = function(port)
+{
+    if(this.core) this.fields()[F_PORT] = port;
+};
+
+/** What the core did of the data stage since the last look: done here too, the host's data to the image */
+MassStorage.prototype.sync_from_core = function()
+{
+    const f = this.fields();
+    if(!f) return;
+    const need_read = f[F_NEED_READ];
+    f[F_NEED_READ] = 0;
+    const done = f[F_DONE] >>> 0;
+    if(done)
+    {
+        f[F_DONE] = 0;
+        this.done += done;
+        this.queued = this.core["queued"](this.slot);
+        if(this.phase === PHASE_OUT)
+        {
+            // (the device's part of what came: the rest is ignored, as data_out has it)
+            const out = this.core["take_out"](this.slot);
+            if(out.length) this.accept(out);
+        }
+    }
+    // (the core took the queue low: the next piece, as take does)
+    if(need_read || done && this.phase === PHASE_IN) this.read_ahead();
+};
+
+/** The data stage, as it is now, to the core */
+MassStorage.prototype.sync_to_core = function()
+{
+    const f = this.fields();
+    if(!f) return;
+    f[F_ADDRESS] = this.address;
+    const halted = this.halted.has(0x81) || this.halted.has(0x02);
+    f[F_ACTIVE] = halted || !this.configuration ? 0 : this.phase === PHASE_IN ? 1 : this.phase === PHASE_OUT ? 2 : 0;
+    f[F_HOST_LEFT] = this.host_length - this.done;
+    f[F_DEVICE_LEFT] = Math.max(0, this.device_length - this.done);
+    f[F_READING] = this.reading ? 1 : 0;
+    f[F_IO] = this.io;
+    f[F_READ_MORE] = this.read_left ? 1 : 0;
+    f[F_CHUNK_ROOM] = this.chunk ? this.chunk.length - this.fill : 0;
+};
+
+MassStorage.prototype.transaction = function(pid, endpoint, data, max_length)
+{
+    this.sync_from_core();
+    const result = USBDevice.prototype.transaction.call(this, pid, endpoint, data, max_length);
+    this.sync_to_core();
+    return result;
+};
+
+/** After the slice: the core took the queue low (read ahead) */
+MassStorage.prototype.after_slice = function()
+{
+    const f = this.fields();
+    if(!f || !f[F_NEED_READ]) return;
+    this.sync_from_core();
+    this.sync_to_core();
+};
+
+/** Data to the host, read: to the queue */
+MassStorage.prototype.queue_push = function(bytes)
+{
+    if(this.core) this.core["push"](this.slot, bytes);
+    else this.queue.push(bytes);
+    this.queued += bytes.length;
+};
+
+MassStorage.prototype.queue_clear = function()
+{
+    if(this.core) this.core["clear"](this.slot);
+    this.queue = [];
+    this.queued = 0;
+};
+
 /** A bus reset: also the disk's state (a medium the guest ejected is back) */
 MassStorage.prototype.reset = function()
 {
+    this.sync_from_core();
     USBDevice.prototype.reset.call(this);
     this.bot_reset();
     /** @type {!Array<number>} */
@@ -206,6 +301,13 @@ MassStorage.prototype.reset = function()
  */
 MassStorage.prototype.bot_reset = function()
 {
+    const f = this.fields();
+    if(f)
+    {
+        // (what the core did of the dropped stage is dropped too)
+        f[F_DONE] = 0;
+        f[F_ACTIVE] = 0;
+    }
     this.epoch++;
     this.backend["reset"]();
     this.phase = PHASE_CBW;
@@ -220,9 +322,9 @@ MassStorage.prototype.bot_reset = function()
     this.status = STATUS_PASSED;
     /** host I/O of the command not finished */
     this.io = 0;
-    /** @type {!Array<!Uint8Array>} data to the host, read and not taken yet */
+    /** @type {!Array<!Uint8Array>} data to the host, read and not taken yet (the core's, where it has the data stage) */
     this.queue = [];
-    this.queued = 0;
+    this.queue_clear();
     /** the image's bytes to read: where, how many not asked for yet, how many being read */
     this.read_at = 0;
     this.read_left = 0;
@@ -235,6 +337,7 @@ MassStorage.prototype.bot_reset = function()
     this.received = 0;
     /** SYNCHRONIZE CACHE under way */
     this.flushing = false;
+    this.sync_to_core();
 };
 
 /**
@@ -348,8 +451,7 @@ MassStorage.prototype.receive_cbw = function(bytes)
     this.done = 0;
     this.device_length = 0;
     this.status = STATUS_PASSED;
-    this.queue = [];
-    this.queued = 0;
+    this.queue_clear();
     this.read_left = 0;
     this.chunk = null;
     this.fill = 0;
@@ -399,11 +501,7 @@ MassStorage.prototype.fail = function(sense)
 MassStorage.prototype.reply = function(bytes, allocation)
 {
     bytes = bytes.subarray(0, Math.min(bytes.length, allocation));
-    if(this.begin(DATA_IN, bytes.length))
-    {
-        this.queue.push(bytes);
-        this.queued = bytes.length;
-    }
+    if(this.begin(DATA_IN, bytes.length)) this.queue_push(bytes);
 };
 
 /**
@@ -646,19 +744,22 @@ MassStorage.prototype.read_ahead = function()
         this.reading = 0;
         this.io--;
         // (a view the backend may reuse)
-        this.queue.push(bytes.slice(0, length));
-        this.queued += length;
+        this.sync_from_core();
+        this.queue_push(this.core ? bytes.subarray(0, length) : bytes.slice(0, length));
         this.read_ahead();
+        this.sync_to_core();
     }, () =>
     {
         if(epoch !== this.epoch) return;
         // the backend's error (a disk whose policy reports them): what was
         // read goes, then padding
+        this.sync_from_core();
         this.reading = 0;
         this.io--;
         this.read_left = 0;
         this.device_length = this.done + this.queued;
         this.fail(READ_ERROR);
+        this.sync_to_core();
     });
 };
 
@@ -669,6 +770,13 @@ MassStorage.prototype.read_ahead = function()
  */
 MassStorage.prototype.take = function(packet, length)
 {
+    if(this.core)
+    {
+        packet.set(this.core["take"](this.slot, length));
+        this.queued -= length;
+        this.read_ahead();
+        return;
+    }
     let at = 0;
     while(at < length)
     {
@@ -712,14 +820,19 @@ MassStorage.prototype.write_chunk = function()
     const epoch = this.epoch;
     this.backend["write"](at, data, () =>
     {
-        if(epoch === this.epoch) this.io--;
+        if(epoch !== this.epoch) return;
+        this.sync_from_core();
+        this.io--;
+        this.sync_to_core();
     }, () =>
     {
         if(epoch !== this.epoch) return;
         // (the rest of the data is taken and not written)
+        this.sync_from_core();
         this.io--;
         this.chunk = null;
         this.fail(WRITE_ERROR);
+        this.sync_to_core();
     });
 };
 
@@ -732,8 +845,10 @@ MassStorage.prototype.flush = function()
     const done = () =>
     {
         if(epoch !== this.epoch) return;
+        this.sync_from_core();
         this.flushing = false;
         this.io--;
+        this.sync_to_core();
     };
     this.backend["flush"](done, () =>
     {
@@ -752,7 +867,14 @@ MassStorage.prototype.unplugged = function()
 MassStorage.prototype.get_state = function()
 {
     // (a snapshot waits for host I/O; a read still under way is read again)
+    this.sync_from_core();
     const queued = new Uint8Array(this.queued);
+    if(this.core)
+    {
+        // (a look: the queue stays)
+        queued.set(this.core["take"](this.slot, this.queued));
+        this.core["push"](this.slot, queued);
+    }
     let at = 0;
     for(const part of this.queue) { queued.set(part, at); at += part.length; }
     return [USBDevice.prototype.get_state.call(this), this.phase, this.tag, this.host_length, +this.host_in, this.done,
@@ -773,8 +895,8 @@ MassStorage.prototype.set_state = function(state)
     this.device_length = state[6];
     this.status = state[7];
     this.sense = state[8].slice();
-    this.queue = state[9].length ? [state[9]] : [];
-    this.queued = state[9].length;
+    this.queue_clear();
+    if(state[9].length) this.queue_push(state[9]);
     this.read_at = state[10];
     this.read_left = state[11];
     if(state[12])
@@ -790,4 +912,5 @@ MassStorage.prototype.set_state = function(state)
     this.unit_attention = !!state[19];
     if(state[16]) this.flush();
     this.read_ahead();
+    this.sync_to_core();
 };

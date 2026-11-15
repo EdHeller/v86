@@ -155,6 +155,27 @@ export function device_handle(cpu, owner)
             },
             "after_slice": hook => cpu.slice_hooks.push(hook),
         },
+        // the USB disks' data stages in the core (src/rust/cpu/usb_storage.rs)
+        "core_storage": cpu.devices.pci && cpu.devices.pci.q35 ? null : {
+            "new": () => cpu.wm.exports["storage_new"](),
+            "fields": slot => new Int32Array(cpu.wasm_memory.buffer, cpu.wm.exports["storage_fields"](slot), 11),
+            "queued": slot => cpu.wm.exports["storage_queued"](slot),
+            "push": (slot, bytes) => {
+                const at = cpu.wm.exports["storage_push"](slot, bytes.length);
+                new Uint8Array(cpu.wasm_memory.buffer, at, bytes.length).set(bytes);
+            },
+            "take": (slot, length) => {
+                const at = cpu.wm.exports["storage_take"](slot, length);
+                return new Uint8Array(cpu.wasm_memory.buffer, at, length).slice();
+            },
+            "take_out": slot => {
+                const length = cpu.wm.exports["storage_out_length"](slot);
+                const at = cpu.wm.exports["storage_take_out"](slot);
+                return new Uint8Array(cpu.wasm_memory.buffer, at, length).slice();
+            },
+            "clear": slot => cpu.wm.exports["storage_clear"](slot),
+            "after_slice": hook => cpu.slice_hooks.push(hook),
+        },
         // the core's xHCI controller (src/rust/cpu/xhci.rs), on i440FX machines as UHCI's
         "core_xhci": cpu.devices.pci && cpu.devices.pci.q35 ? null : {
             "init": pci_id => cpu.wm.exports["xhci_init"](pci_id),

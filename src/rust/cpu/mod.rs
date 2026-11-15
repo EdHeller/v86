@@ -33,6 +33,7 @@ pub mod sse_instr;
 pub mod string;
 pub mod uart;
 pub mod uhci;
+pub mod usb_storage;
 pub mod usb_tablet;
 pub mod xhci;
 pub mod vga;

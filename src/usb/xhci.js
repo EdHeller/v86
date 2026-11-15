@@ -112,8 +112,8 @@ export function XHCIController(machine)
     this.legsup = LEGSUP_BIOS_OWNED;
     /** the core's controller, or null (Q35) */
     this.core = machine.core_xhci();
-    /** @type {Object} the core's tablet, when one of the ports has had it */
-    this.core_tablet = null;
+    /** @type {!Array<!Object>} the devices with a part in the core that the ports have had */
+    this.core_devices = [];
     if(this.core) this.use_core();
     else this.reset();
 
@@ -161,9 +161,9 @@ XHCIController.prototype.core_attach = function(port, device, notify)
         device.speeds.includes(SPEED_FULL) ? SPEED_FULL : SPEED_LOW;
     if(device) device.set_speed(speed);
     this.core["attach"](port, !!device, superspeed, device && !superspeed ? speed : 0, notify);
-    // (the core's tablet answers the core directly: its port)
-    if(device && device.is_core) { this.core_tablet = device; device.set_port(port); }
-    else if(this.core_tablet && this.core_tablet.port === port) this.core_tablet.set_port(-1);
+    // (the devices with a part in the core, the tablet and the disks' data stages, answer it directly: their ports)
+    for(const d of this.devices) if(d && d.set_port && !this.core_devices.includes(d)) this.core_devices.push(d);
+    for(const d of this.core_devices) d.set_port(this.devices.indexOf(d));
 };
 
 /** The devices the core put to their default state (port reset, Address Device, Reset Device) */

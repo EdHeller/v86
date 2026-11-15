@@ -79,8 +79,8 @@ export function UHCIController(machine, identity, multifunction)
      * for EHCI's companions. Then the registers here are accessors of the core's, and the devices are asked for
      * their transactions through on_transaction */
     this.core = identity ? null : machine.core_uhci();
-    /** @type {Object} the core's tablet, when one of the ports has had it */
-    this.core_tablet = null;
+    /** @type {!Array<!Object>} the devices with a part in the core that the ports have had */
+    this.core_devices = [];
     if(this.core) this.use_core();
     this.reset();
     this.register_ports();
@@ -136,12 +136,11 @@ UHCIController.prototype.use_core = function()
         this.core_transaction(port_mask, address, pid, endpoint, buffer, max_length));
 };
 
-/** The core's tablet told its port (it answers the core directly) */
-UHCIController.prototype.core_tablet_port = function()
+/** The devices with a part in the core (the tablet, the disks' data stages) told their ports */
+UHCIController.prototype.core_device_ports = function()
 {
-    let port = -1;
-    for(let i = 0; i < PORTS; i++) if(this.devices[i] && this.devices[i].is_core) { this.core_tablet = this.devices[i]; port = i; }
-    if(this.core_tablet) this.core_tablet.set_port(port);
+    for(const device of this.devices) if(device && device.set_port && !this.core_devices.includes(device)) this.core_devices.push(device);
+    for(const device of this.core_devices) device.set_port(this.devices.indexOf(device));
 };
 
 /** The devices the core reset (bus, port or controller reset) to their default state, before they are asked again */
@@ -154,7 +153,7 @@ UHCIController.prototype.apply_core_resets = function()
         fields[CORE_ATTACHED + i] = this.devices[i] ? 1 : 0;
         fields[CORE_LOW_SPEED + i] = this.devices[i] && this.devices[i].speed === SPEED_LOW ? 1 : 0;
     }
-    this.core_tablet_port();
+    this.core_device_ports();
     const pending = fields[CORE_RESET_PENDING];
     if(!pending) return;
     fields[CORE_RESET_PENDING] = 0;

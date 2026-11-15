@@ -315,10 +315,11 @@ impl Uhci {
             return (false, link, 0);
         }
 
-        // (the tablet is the core's: asked here, its data straight in guest memory)
+        // (the tablet and the disks' data stages are the core's: asked here, their data straight in guest memory)
         let mut pending = self.reset_pending as u32;
         let tablet = match super::usb_tablet::guest(buffer, max_length as u32) {
-            Some(data) => super::usb_tablet::route(self.port_mask() as u32, device_address, pid as i32, endpoint, data, max_length as usize, &mut pending),
+            Some(data) => super::usb_tablet::route(self.port_mask() as u32, device_address, pid as i32, endpoint, data, max_length as usize, &mut pending)
+                .or_else(|| super::usb_storage::route(self.port_mask() as u32, device_address, pid as i32, endpoint, data, max_length as usize)),
             None => None,
         };
         self.reset_pending = pending as i32;
