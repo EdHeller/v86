@@ -423,7 +423,18 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
     this.image_mirror = null;
 
     // (vga_memory and plane0..3: views of the core's memory, see the top)
-    this.pixel_buffer = new Uint8Array(VGA_PIXEL_BUFFER_SIZE);
+    // (the palette indices of the pixels: in the core, which draws them, see vga_replot)
+    let pixels_of = null, pixels = null;
+    Object.defineProperty(this, "pixel_buffer", {
+        get: () => {
+            if(pixels_of !== cpu.wasm_memory.buffer)
+            {
+                pixels_of = cpu.wasm_memory.buffer;
+                pixels = new Uint8Array(pixels_of, cpu.vga_pixel_buffer_addr(), VGA_PIXEL_BUFFER_SIZE);
+            }
+            return pixels;
+        },
+    });
 
     io.mmap_register(0xA0000, 0x20000,
         addr => this.vga_memory_read(addr),
@@ -498,7 +509,7 @@ VGAScreen.prototype.get_state = function()
     state[58] = this.color_select;
     state[59] = this.clocking_mode;
     state[60] = this.line_compare;
-    state[61] = this.pixel_buffer;
+    state[61] = this.pixel_buffer.slice();
     state[62] = this.dac_mask;
     state[63] = this.character_map_select;
     state[64] = this.font_page_ab_enabled;
@@ -2433,119 +2444,21 @@ VGAScreen.prototype.vga_replot = function()
     // Round to multiple of 8 towards extreme
     var start = this.diff_plot_min & ~0xF;
     var end = Math.min((this.diff_plot_max | 0xF), VGA_PIXEL_BUFFER_SIZE - 1);
-
-    var addr_shift = this.vga_addr_shift_count();
-    var addr_substitution = ~this.crtc_mode & 0x3;
-
-    var shift_mode = this.planar_mode & 0x60;
-    var pel_width = this.attribute_mode & 0x40;
-
-    for(var pixel_addr = start; pixel_addr <= end;)
+    if(end < start)
     {
-        var addr = pixel_addr >>> addr_shift;
-        if(addr_substitution)
-        {
-            var row = pixel_addr / this.virtual_width | 0;
-            var col = pixel_addr - this.virtual_width * row;
-
-            switch(addr_substitution)
-            {
-                case 0x1:
-                    // Alternating rows using bit 13
-                    // Assumes max scan line = 1
-                    addr = (row & 0x1) << 13;
-                    row >>>= 1;
-                    break;
-                case 0x2:
-                    // Alternating rows using bit 14
-                    // Assumes max scan line = 3
-                    addr = (row & 0x1) << 14;
-                    row >>>= 1;
-                    break;
-                case 0x3:
-                    // Cycling through rows using bit 13 and 14
-                    // Assumes max scan line = 3
-                    addr = (row & 0x3) << 13;
-                    row >>>= 2;
-                    break;
-            }
-
-            addr |= (row * this.virtual_width + col >>> addr_shift) + this.start_address;
-        }
-
-        var byte0 = this.plane0[addr];
-        var byte1 = this.plane1[addr];
-        var byte2 = this.plane2[addr];
-        var byte3 = this.plane3[addr];
-
-        var shift_loads = new Uint8Array(8);
-        switch(shift_mode)
-        {
-            // Planar Shift Mode
-            // See http://www.osdever.net/FreeVGA/vga/vgaseq.htm
-            case 0x00:
-                // Shift these, so that the bits for the color are in
-                // the correct position in the for loop
-                byte0 <<= 0;
-                byte1 <<= 1;
-                byte2 <<= 2;
-                byte3 <<= 3;
-
-                for(var i = 7; i >= 0; i--)
-                {
-                    shift_loads[7 - i] =
-                            byte0 >> i & 1 |
-                            byte1 >> i & 2 |
-                            byte2 >> i & 4 |
-                            byte3 >> i & 8;
-                }
-                break;
-
-            // Packed Shift Mode, aka Interleaved Shift Mode
-            // Video Modes 4h and 5h
-            case 0x20:
-                shift_loads[0] = (byte0 >> 6 & 0x3) | (byte2 >> 4 & 0xC);
-                shift_loads[1] = (byte0 >> 4 & 0x3) | (byte2 >> 2 & 0xC);
-                shift_loads[2] = (byte0 >> 2 & 0x3) | (byte2 >> 0 & 0xC);
-                shift_loads[3] = (byte0 >> 0 & 0x3) | (byte2 << 2 & 0xC);
-
-                shift_loads[4] = (byte1 >> 6 & 0x3) | (byte3 >> 4 & 0xC);
-                shift_loads[5] = (byte1 >> 4 & 0x3) | (byte3 >> 2 & 0xC);
-                shift_loads[6] = (byte1 >> 2 & 0x3) | (byte3 >> 0 & 0xC);
-                shift_loads[7] = (byte1 >> 0 & 0x3) | (byte3 << 2 & 0xC);
-                break;
-
-            // 256-Color Shift Mode
-            // Video Modes 13h and unchained 256 color
-            case 0x40:
-            case 0x60:
-                shift_loads[0] = byte0 >> 4 & 0xF;
-                shift_loads[1] = byte0 >> 0 & 0xF;
-                shift_loads[2] = byte1 >> 4 & 0xF;
-                shift_loads[3] = byte1 >> 0 & 0xF;
-                shift_loads[4] = byte2 >> 4 & 0xF;
-                shift_loads[5] = byte2 >> 0 & 0xF;
-                shift_loads[6] = byte3 >> 4 & 0xF;
-                shift_loads[7] = byte3 >> 0 & 0xF;
-                break;
-        }
-
-        if(pel_width)
-        {
-            // Assemble from two sets of 4 bits.
-            for(var i = 0, j = 0; i < 4; i++, pixel_addr++, j += 2)
-            {
-                this.pixel_buffer[pixel_addr] = (shift_loads[j] << 4) | shift_loads[j + 1];
-            }
-        }
-        else
-        {
-            for(var i = 0; i < 8; i++, pixel_addr++)
-            {
-                this.pixel_buffer[pixel_addr] = shift_loads[i];
-            }
-        }
+        return;
     }
+    // (the planes to palette indices: in the core, src/rust/cpu/vga_legacy.rs)
+    this.cpu.vga_replot(start, end, this.vga_addr_shift_count(), ~this.crtc_mode & 0x3, this.planar_mode & 0x60,
+        !!(this.attribute_mode & 0x40), this.virtual_width, this.start_address);
+};
+
+/** The palettes to the core before it draws (1 KiB; they change through ports handled here) */
+VGAScreen.prototype.sync_palette_to_core = function()
+{
+    const buffer = this.cpu.wasm_memory.buffer;
+    new Int32Array(buffer, this.cpu.vga_palette_addr(), 256).set(this.vga256_palette);
+    new Uint8Array(buffer, this.cpu.vga_dac_map_addr(), 16).set(this.dac_map);
 };
 
 /**
@@ -2557,8 +2470,13 @@ VGAScreen.prototype.vga_replot = function()
 VGAScreen.prototype.vga_redraw = function()
 {
     var start = this.diff_addr_min;
-    var end = Math.min(this.diff_addr_max, VGA_PIXEL_BUFFER_SIZE - 1);
-    const buffer = new Int32Array(this.cpu.wasm_memory.buffer, this.dest_buffet_offset, this.virtual_width * this.virtual_height);
+    // (the screen's buffer holds virtual_width * virtual_height pixels: nothing past it is drawn)
+    var end = Math.min(this.diff_addr_max, VGA_PIXEL_BUFFER_SIZE - 1, this.virtual_width * this.virtual_height - 1);
+    // (no screen buffer yet: without ImageData none is made)
+    if(end < start || !this.dest_buffet_offset)
+    {
+        return;
+    }
 
     var mask = 0xFF;
     var colorset = 0x00;
@@ -2568,36 +2486,16 @@ VGAScreen.prototype.vga_redraw = function()
         mask &= 0xCF;
         colorset |= this.color_select << 4 & 0x30;
     }
-
-    if(this.attribute_mode & 0x40)
+    const eight_bit = !!(this.attribute_mode & 0x40);
+    if(!eight_bit)
     {
-        // 8 bit mode
-
-        for(var pixel_addr = start; pixel_addr <= end; pixel_addr++)
-        {
-            var color256 = (this.pixel_buffer[pixel_addr] & mask) | colorset;
-            var color = this.vga256_palette[color256];
-
-            buffer[pixel_addr] = color & 0xFF00 | color << 16 | color >> 16 | 0xFF000000;
-        }
-    }
-    else
-    {
-        // 4 bit mode
-
-        // Palette bits 7/6 select
+        // 4 bit mode: palette bits 7/6 select
         mask &= 0x3F;
         colorset |= this.color_select << 4 & 0xC0;
-
-        for(var pixel_addr = start; pixel_addr <= end; pixel_addr++)
-        {
-            var color16 = this.pixel_buffer[pixel_addr] & this.color_plane_enable;
-            var color256 = (this.dac_map[color16] & mask) | colorset;
-            var color = this.vga256_palette[color256];
-
-            buffer[pixel_addr] = color & 0xFF00 | color << 16 | color >> 16 | 0xFF000000;
-        }
     }
+    // (the palette indices to RGBA: in the core, src/rust/cpu/vga_legacy.rs)
+    this.sync_palette_to_core();
+    this.cpu.vga_redraw(start, end, this.dest_buffet_offset, mask, colorset, eight_bit, this.color_plane_enable);
 };
 
 /**
@@ -2658,17 +2556,14 @@ VGAScreen.prototype.screen_fill_buffer = function()
 
         if(this.svga_bpp === 8)
         {
-            // XXX: Slow, should be ported to rust, but it doesn't have access to vga256_palette
-            const buffer = new Int32Array(this.cpu.wasm_memory.buffer, this.dest_buffet_offset, this.screen_width * this.screen_height);
-            const svga_memory = new Uint8Array(this.cpu.wasm_memory.buffer, this.svga_memory.byteOffset, this.vga_memory_size);
+            // (through the DAC's palette in the core, src/rust/cpu/vga_legacy.rs)
             // svga_offset selects the visible part of svga_memory, used for page flipping (e.g. Master of Orion 2)
             const base = this.svga_offset;
-            const end = Math.min(buffer.length, this.vga_memory_size - base);
-
-            for(var i = 0; i < end; i++)
+            const end = Math.min(this.screen_width * this.screen_height, this.vga_memory_size - base);
+            if(end > 0 && this.dest_buffet_offset)
             {
-                var color = this.vga256_palette[svga_memory[base + i]];
-                buffer[i] = color & 0xFF00 | color << 16 | color >> 16 | 0xFF000000;
+                this.sync_palette_to_core();
+                this.cpu.vga_svga8_fill(this.dest_buffet_offset, this.svga_memory.byteOffset, base, end);
             }
         }
         else

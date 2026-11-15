@@ -77,6 +77,15 @@ const wasm = { modules: 0, bytes: 0, sync_ms: 0 };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+const reference_draw = opt.check_draw ? (await import("./vga_reference.mjs")).reference_draw : null;
+// (Node has no ImageData: the VGA keeps its frame in one; a stand-in with the same fields)
+if((opt.frames || opt.check_draw) && typeof globalThis.ImageData === "undefined")
+{
+    globalThis.ImageData = class
+    {
+        constructor(data, width, height) { this.data = data; this.width = width; this.height = height; }
+    };
+}
 const { V86 } = await import(url.pathToFileURL(path.resolve(opt.lib)).href);
 for(const extra of opt.plugins || []) await import(url.pathToFileURL(path.resolve(extra)).href);
 
@@ -159,6 +168,38 @@ const result = { build: opt.label, marks: [], ok: false };
 let t0 = 0, cpu0 = null, thread0 = null;
 let mark_index = 0, serial_from = 0, finished = false;
 
+/** --check-draw: the whole screen drawn by the build and by the JavaScript reference, compared pixel by pixel */
+function check_draw()
+{
+    const vga = emulator && emulator.v86 && emulator.v86.cpu.devices.vga;
+    if(!vga || !vga.graphical_mode || !vga.dest_buffet_offset) return "text";
+    if(vga.svga_enabled)
+    {
+        if(vga.svga_bpp !== 8) return "svga " + vga.svga_bpp + " bpp";
+        // (a pattern written into the frame buffer first: the BIOS cleared it)
+        const memory = new Uint8Array(emulator.v86.cpu.wasm_memory.buffer, vga.svga_memory.byteOffset, vga.vga_memory_size);
+        for(let i = 0; i < 1 << 20; i++) memory[i] = i * 7 + (i >> 9) & 0xFF;
+        vga.screen_fill_buffer();
+        const count = Math.min(vga.screen_width * vga.screen_height, vga.vga_memory_size - vga.svga_offset);
+        const drawn = new Int32Array(emulator.v86.cpu.wasm_memory.buffer, vga.dest_buffet_offset, count);
+        let differ = 0;
+        for(let i = 0; i < count; i++)
+        {
+            const color = vga.vga256_palette[memory[vga.svga_offset + i]];
+            if(drawn[i] !== (color & 0xFF00 | color << 16 | color >> 16 | 0xFF000000)) differ++;
+        }
+        return "svga " + vga.screen_width + "x" + vga.screen_height + " 8 bpp, " + differ + " pixels differ";
+    }
+    vga.complete_replot();
+    vga.screen_fill_buffer();
+    const drawn = new Int32Array(emulator.v86.cpu.wasm_memory.buffer, vga.dest_buffet_offset, vga.virtual_width * vga.virtual_height);
+    const expected = reference_draw(vga);
+    let differ = 0, colors = new Set();
+    const n = Math.min(expected.length, 8 * 64 * 1024);
+    for(let i = 0; i < n; i++) { if(drawn[i] !== expected[i]) differ++; colors.add(expected[i]); }
+    return vga.virtual_width + "x" + vga.virtual_height + " " + colors.size + " colours, " + differ + " pixels differ";
+}
+
 /** the VGA's planes (its memory in JavaScript or in the core, whichever this build has) */
 function vga_hash()
 {
@@ -188,6 +229,7 @@ function snapshot(name)
         insn: instructions(),
         idle: (VIRTUAL ? skipped_ms : idle_ms) / 1000,
         modules: wasm.modules, wasm_bytes: wasm.bytes, wasm_sync: wasm.sync_ms / 1000,
+        draw: opt.check_draw ? check_draw() : undefined,
         // (what the text screen showed: compares two builds' output without a serial console)
         screen: crypto_hash(screen_text()),
         vga: vga_hash(),
@@ -344,6 +386,21 @@ emulator.add_listener("emulator-ready", async () => {
     t0 = real_now(); cpu0 = process.cpuUsage(); thread0 = process.threadCpuUsage();
     timeline.push({ wall: 0, insn: 0, source: "", text: "(the start: firmware, boot loader, the kernel before its first line)" });
     emulator.run();
+
+    // (--frames: the screen filled 60 times a second, as a browser's animation frames do; Node's dummy screen
+    // never asks for a frame, so drawing would not show in a profile)
+    if(opt.frames)
+    {
+        result.frames = 0;
+        setInterval(() => {
+            const vga = emulator.v86.cpu.devices.vga;
+            if(vga && vga.screen_fill_buffer)
+            {
+                vga.screen_fill_buffer();
+                result.frames++;
+            }
+        }, 1000 / 60);
+    }
 
     // (screen marks, instruction marks and the time limit are polled; serial marks are checked on every byte)
     let polls = 0;

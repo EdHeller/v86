@@ -472,6 +472,13 @@ CPU.prototype.wasm_patch = function()
     this.uart_port_write = get_import("uart_port_write");
     this.uart_receive = get_import("uart_receive");
     this.uart_set_modem_status_bit = get_import("uart_set_modem_status_bit");
+    this.vga_replot = get_import("vga_replot");
+    this.vga_redraw = get_import("vga_redraw");
+    this.vga_svga8_fill = get_import("vga_svga8_fill");
+    this.vga_pixel_buffer_addr = get_import("vga_pixel_buffer_addr");
+    this.vga_palette_addr = get_import("vga_palette_addr");
+    this.vga_dac_map_addr = get_import("vga_dac_map_addr");
+
     this.get_vga_legacy_addr = get_import("get_vga_legacy_addr");
     this.vga_legacy_init = get_import("vga_legacy_init");
 

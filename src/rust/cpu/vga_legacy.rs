@@ -239,3 +239,152 @@ pub unsafe fn serves(addr: u32) -> bool {
 pub unsafe fn read8(addr: u32) -> i32 { vga().read(addr) }
 
 pub unsafe fn write8(addr: u32, value: i32) { vga().write(addr, value as u8) }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Drawing, once per frame (src/vga.js's screen_fill_buffer): the planes to one palette index per pixel (replot),
+// the indices through the attribute controller's and the DAC's palettes to RGBA (redraw), and the 256 colour VBE
+// modes' frame buffer through the DAC's palette. Was vga_replot / vga_redraw in src/vga.js, which passes the
+// registers they depend on and copies its palettes here before a redraw.
+
+const VGA_PIXEL_BUFFER_SIZE: usize = 8 * VGA_BANK_SIZE;
+static mut PIXEL_BUFFER: [u8; VGA_PIXEL_BUFFER_SIZE] = [0; VGA_PIXEL_BUFFER_SIZE];
+/// the DAC's 256 colours (0xRRGGBB) and the attribute controller's 16 entries, copied in by JavaScript
+static mut PALETTE: [i32; 256] = [0; 256];
+static mut DAC_MAP: [u8; 16] = [0; 16];
+
+#[no_mangle]
+pub fn vga_pixel_buffer_addr() -> u32 { &raw mut PIXEL_BUFFER as u32 }
+#[no_mangle]
+pub fn vga_palette_addr() -> u32 { &raw mut PALETTE as u32 }
+#[no_mangle]
+pub fn vga_dac_map_addr() -> u32 { &raw mut DAC_MAP as u32 }
+
+/// The palette indices of pixels start..=end from the planes (start rounded down and end up to 16 pixels by the
+/// caller's rule: see src/vga.js)
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn vga_replot(
+    start: i32,
+    end: i32,
+    addr_shift: i32,
+    addr_substitution: i32,
+    shift_mode: i32,
+    pel_width: bool,
+    virtual_width: i32,
+    start_address: i32,
+) {
+    let v = vga();
+    let pixels = &mut PIXEL_BUFFER;
+    let width = virtual_width.max(1);
+    let mut pixel_addr = start;
+    while pixel_addr <= end {
+        let mut addr = (pixel_addr as u32 >> addr_shift) as i32;
+        if addr_substitution != 0 {
+            let mut row = pixel_addr / width;
+            let col = pixel_addr - width * row;
+            match addr_substitution {
+                // Alternating rows using bit 13, assumes max scan line = 1
+                1 => {
+                    addr = (row & 1) << 13;
+                    row >>= 1;
+                },
+                // Alternating rows using bit 14, assumes max scan line = 3
+                2 => {
+                    addr = (row & 1) << 14;
+                    row >>= 1;
+                },
+                // Cycling through rows using bit 13 and 14, assumes max scan line = 3
+                _ => {
+                    addr = (row & 3) << 13;
+                    row >>= 2;
+                },
+            }
+            addr |= ((row * width + col) as u32 >> addr_shift) as i32 + start_address;
+        }
+
+        let a = addr as usize;
+        let (byte0, byte1, byte2, byte3) = if addr >= 0 {
+            (v.plane(0, a), v.plane(1, a), v.plane(2, a), v.plane(3, a))
+        }
+        else {
+            (0, 0, 0, 0)
+        };
+
+        let mut shift_loads = [0u32; 8];
+        match shift_mode {
+            // Planar Shift Mode, see http://www.osdever.net/FreeVGA/vga/vgaseq.htm
+            0x00 => {
+                for i in 0..8 {
+                    let bit = 7 - i;
+                    shift_loads[i] = byte0 >> bit & 1 | (byte1 << 1) >> bit & 2 | (byte2 << 2) >> bit & 4 | (byte3 << 3) >> bit & 8;
+                }
+            },
+            // Packed Shift Mode, aka Interleaved Shift Mode: video modes 4h and 5h
+            0x20 => {
+                shift_loads[0] = (byte0 >> 6 & 0x3) | (byte2 >> 4 & 0xC);
+                shift_loads[1] = (byte0 >> 4 & 0x3) | (byte2 >> 2 & 0xC);
+                shift_loads[2] = (byte0 >> 2 & 0x3) | (byte2 & 0xC);
+                shift_loads[3] = (byte0 & 0x3) | (byte2 << 2 & 0xC);
+                shift_loads[4] = (byte1 >> 6 & 0x3) | (byte3 >> 4 & 0xC);
+                shift_loads[5] = (byte1 >> 4 & 0x3) | (byte3 >> 2 & 0xC);
+                shift_loads[6] = (byte1 >> 2 & 0x3) | (byte3 & 0xC);
+                shift_loads[7] = (byte1 & 0x3) | (byte3 << 2 & 0xC);
+            },
+            // 256-Color Shift Mode: video mode 13h and unchained 256 colour
+            _ => {
+                shift_loads = [byte0 >> 4 & 0xF, byte0 & 0xF, byte1 >> 4 & 0xF, byte1 & 0xF, byte2 >> 4 & 0xF, byte2 & 0xF, byte3 >> 4 & 0xF, byte3 & 0xF];
+            },
+        }
+
+        if pel_width {
+            // Assemble from two sets of 4 bits.
+            for j in 0..4 {
+                if let Some(p) = pixels.get_mut(pixel_addr as usize) {
+                    *p = (shift_loads[2 * j] << 4 | shift_loads[2 * j + 1]) as u8;
+                }
+                pixel_addr += 1;
+            }
+        }
+        else {
+            for i in 0..8 {
+                if let Some(p) = pixels.get_mut(pixel_addr as usize) {
+                    *p = shift_loads[i] as u8;
+                }
+                pixel_addr += 1;
+            }
+        }
+    }
+}
+
+fn rgba(color: i32) -> i32 { color & 0xFF00 | color << 16 | color >> 16 & 0xFF | 0xFF000000u32 as i32 }
+
+/// Pixels start..=end of the palette indices to RGBA at dest (the screen's buffer in this module's memory)
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn vga_redraw(start: i32, end: i32, dest: u32, mask: i32, colorset: i32, eight_bit: bool, color_plane_enable: i32) {
+    let out = dest as *mut i32;
+    let end = end.min(VGA_PIXEL_BUFFER_SIZE as i32 - 1);
+    let mut pixel_addr = start.max(0);
+    while pixel_addr <= end {
+        let index = PIXEL_BUFFER[pixel_addr as usize] as i32;
+        let color256 = if eight_bit {
+            (index & mask) | colorset
+        }
+        else {
+            (DAC_MAP[(index & color_plane_enable & 0xF) as usize] as i32 & mask) | colorset
+        };
+        *out.add(pixel_addr as usize) = rgba(PALETTE[(color256 & 0xFF) as usize]);
+        pixel_addr += 1;
+    }
+}
+
+/// A 256 colour VBE mode: count bytes of the frame buffer at svga + base through the DAC's palette to dest
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn vga_svga8_fill(dest: u32, svga: u32, base: u32, count: u32) {
+    let out = dest as *mut i32;
+    let src = (svga + base) as *const u8;
+    for i in 0..count as usize {
+        *out.add(i) = rgba(PALETTE[*src.add(i) as usize]);
+    }
+}
