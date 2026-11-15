@@ -5052,6 +5052,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             0x4D1 => pic::port4D1_read() as i32,
             _ if super::pit::serves_read(port) => super::pit::pit_port_read(port),
             _ if super::ide::serves(port, false) => super::ide::ide_port_read(port),
+            _ if super::ne2k::serves(port, 8, 0, false) => super::ne2k::ne2k_port_read(port, 8),
             _ if super::uart::serves_read(port) => super::uart::uart_port_read(port),
             _ if super::pci::serves(port, 8, 0, false) => super::pci::pci_port_read(port, 8),
             _ if super::ps2::serves_read(port) => super::ps2::ps2_port_read(port),
@@ -5081,6 +5082,9 @@ pub fn io_port_read16(port: i32) -> i32 {
         if super::pci::serves(port, 16, 0, false) {
             return super::pci::pci_port_read(port, 16);
         }
+        if super::ne2k::serves(port, 16, 0, false) {
+            return super::ne2k::ne2k_port_read(port, 16);
+        }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_read16(port)
     }
@@ -5092,6 +5096,9 @@ pub fn io_port_read32(port: i32) -> i32 {
         }
         if super::pci::serves(port, 32, 0, false) {
             return super::pci::pci_port_read(port, 32);
+        }
+        if super::ne2k::serves(port, 32, 0, false) {
+            return super::ne2k::ne2k_port_read(port, 32);
         }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_read32(port)
@@ -5115,6 +5122,7 @@ pub fn io_port_write8(port: i32, value: i32) {
             },
             _ if super::pit::serves_write(port, value) => super::pit::pit_port_write(port, value),
             _ if super::ide::serves(port, true) => super::ide::ide_port_write(port, value),
+            _ if super::ne2k::serves(port, 8, value, true) => super::ne2k::ne2k_port_write(port, 8, value),
             _ if super::uart::serves_write(port) => super::uart::uart_port_write(port, value),
             _ if super::pci::serves(port, 8, value, true) => super::pci::pci_port_write(port, 8, value),
             _ if super::ps2::serves_write(port, value) => super::ps2::ps2_port_write(port, value),
@@ -5136,6 +5144,9 @@ pub fn io_port_write16(port: i32, value: i32) {
         if super::pci::serves(port, 16, value, true) {
             return super::pci::pci_port_write(port, 16, value);
         }
+        if super::ne2k::serves(port, 16, value, true) {
+            return super::ne2k::ne2k_port_write(port, 16, value);
+        }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_write16(port, value)
     }
@@ -5147,6 +5158,9 @@ pub fn io_port_write32(port: i32, value: i32) {
         }
         if super::pci::serves(port, 32, value, true) {
             return super::pci::pci_port_write(port, 32, value);
+        }
+        if super::ne2k::serves(port, 32, value, true) {
+            return super::ne2k::ne2k_port_write(port, 32, value);
         }
         super::pit::JS_TIMERS_DUE = 0.0;
         js::io_port_write32(port, value)

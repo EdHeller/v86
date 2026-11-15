@@ -17,6 +17,7 @@ pub mod memory;
 pub mod mmio_ram;
 pub mod misc_instr;
 pub mod modrm;
+pub mod ne2k;
 pub mod parallel;
 pub mod pci;
 pub mod pic;

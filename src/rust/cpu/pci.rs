@@ -151,3 +151,35 @@ pub unsafe fn pci_port_write(port: i32, size: i32, value: i32) {
         *dword = *dword & !(0xFF << shift) | ((value >> (8 * i)) & 0xFF) << shift;
     }
 }
+
+/// The Q35 chipset routes PCI interrupts in JavaScript (src/q35.js): devices in the core leave theirs to it
+static mut Q35: bool = false;
+
+#[no_mangle]
+pub unsafe fn pci_set_q35(q35: bool) { Q35 = q35; }
+
+pub unsafe fn is_q35() -> bool { Q35 }
+
+/// A PCI function's interrupt line through the i440FX's PIIX3 routing (PIRQ registers 0x60-0x63 of the ISA bridge,
+/// 00:01.0), as PCI.raise_irq / lower_irq in src/pci.js
+pub unsafe fn set_irq(bdf: usize, level: bool) {
+    let p = pci();
+    let pin = (p.spaces[bdf][0x3C >> 2] >> 8 & 0xFF) as i32;
+    // (raise: (pin - 1) + (device - 1); lower: pin + device - 2: the same)
+    let device = (bdf >> 3) as i32;
+    let parent_pin = (pin + device - 2) & 3;
+    let isa = &p.spaces[1 << 3];
+    let irq = (isa[(0x60 + parent_pin as usize) >> 2] >> (8 * ((0x60 + parent_pin) & 3))) as u8;
+    if level {
+        super::cpu::device_raise_irq(irq);
+    }
+    else {
+        super::cpu::device_lower_irq(irq);
+    }
+}
+
+/// the I/O base of BAR 0 of a function (bit 0 set: an I/O BAR), or -1
+pub unsafe fn io_bar0(bdf: usize) -> i32 {
+    let bar = pci().spaces[bdf][4];
+    if bar & 1 != 0 { bar & !1 & 0xFFFF } else { -1 }
+}

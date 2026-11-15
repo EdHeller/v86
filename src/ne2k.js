@@ -287,6 +287,12 @@ function dump_packet(packet, prefix)
     dbg_log(hex_dump(packet));
 }
 
+// struct Ne2k in src/rust/cpu/ne2k.rs: these 32-bit fields, then the MAC address at 72, the multicast filter at 78
+// and the buffer memory at 88
+const NE2K_CORE_FIELDS = [
+    "isr", "imr", "cr", "dcfg", "rcnt", "tcnt", "tpsr", "rsar", "pstart", "curpg", "boundary", "pstop", "rxcr", "txcr", "tsr",
+];
+
 /**
  * @constructor
  * @param {CPU} cpu
@@ -318,6 +324,28 @@ export function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_transl
 
     this.name = "ne2k";
 
+    // The first card's registers, MAC address and buffer memory are in the core (struct Ne2k in src/rust/cpu/ne2k.rs),
+    // which answers its ports; here they are accessors and views (made again when the module's memory grows).
+    // Transmitting and receiving stay here. Further cards are JavaScript's alone.
+    if(this.id === 0)
+    {
+        cpu.ne2k_init(this.port, (this.id === 0 ? 0x05 : (0x07 + this.id)) << 3);
+        const base = cpu.get_ne2k_addr();
+        NE2K_CORE_FIELDS.forEach((name, index) => {
+            Object.defineProperty(this, name, {
+                get: () => new Int32Array(cpu.wasm_memory.buffer, base, NE2K_CORE_FIELDS.length)[index],
+                set: value => { new Int32Array(cpu.wasm_memory.buffer, base, NE2K_CORE_FIELDS.length)[index] = value; },
+            });
+        });
+        for(const [name, offset, length] of [["mac", 72, 6], ["mar", 78, 8], ["memory", 88, 256 * 0x80]])
+        {
+            Object.defineProperty(this, name, {
+                get: () => new Uint8Array(cpu.wasm_memory.buffer, base + offset, length),
+                set: value => { new Uint8Array(cpu.wasm_memory.buffer, base + offset, length).set(value); },
+            });
+        }
+    }
+
     const use_pci = true;
 
     if(use_pci)
@@ -347,14 +375,14 @@ export function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_transl
 
     this.tcnt = 0;
     this.tpsr = 0;
-    this.memory = new Uint8Array(256 * 0x80);
+    if(this.id !== 0) this.memory = new Uint8Array(256 * 0x80);
 
     this.rxcr = 0;
     this.txcr = 0;
     this.tsr = 1;
 
     // mac address
-    this.mac = new Uint8Array([
+    this.mac = Uint8Array.from([
         0x00, 0x22, 0x15,
         Math.random() * 255 | 0,
         Math.random() * 255 | 0,
@@ -1083,8 +1111,9 @@ Ne2k.prototype.get_state = function()
     state[12] = this.rxcr;
     state[13] = this.txcr;
     state[14] = this.tsr;
-    state[15] = this.mac;
-    state[16] = this.memory;
+    // (copies: the arrays are views of the core's memory)
+    state[15] = this.mac.slice();
+    state[16] = this.memory.slice();
 
     return state;
 };

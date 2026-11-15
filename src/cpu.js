@@ -475,6 +475,10 @@ CPU.prototype.wasm_patch = function()
     this.get_vga_legacy_addr = get_import("get_vga_legacy_addr");
     this.vga_legacy_init = get_import("vga_legacy_init");
 
+    this.get_ne2k_addr = get_import("get_ne2k_addr");
+    this.ne2k_init = get_import("ne2k_init");
+    this.pci_set_q35 = get_import("pci_set_q35");
+
     this.get_ide_addr = get_import("get_ide_addr");
     this.ide_channel_init = get_import("ide_channel_init");
 

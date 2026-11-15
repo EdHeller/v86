@@ -168,6 +168,7 @@ export function PCI(cpu, machine_type)
     //    pci_bars: [],
     //};
 
+    cpu.pci_set_q35(machine_type === "q35");
     if(machine_type === "q35")
     {
         this.q35 = new Q35(cpu, this);
