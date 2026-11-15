@@ -17,38 +17,68 @@ mod ext_raw {
 mod ext {
     use super::ext_raw;
     use crate::cpu::pit::JS_TIMERS_DUE;
+    use crate::cpu::vga_legacy as vga;
     #[inline(always)]
     pub unsafe fn mmap_read8(addr: u32) -> i32 {
+        if vga::serves(addr) {
+            return vga::read8(addr);
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_read8(addr)
     }
     #[inline(always)]
     pub unsafe fn mmap_read32(addr: u32) -> i32 {
+        if vga::serves(addr) {
+            return vga::read8(addr) | vga::read8(addr + 1) << 8 | vga::read8(addr + 2) << 16 | vga::read8(addr + 3) << 24;
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_read32(addr)
     }
     #[inline(always)]
     pub unsafe fn mmap_write8(addr: u32, value: i32) {
+        if vga::serves(addr) {
+            return vga::write8(addr, value);
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_write8(addr, value)
     }
     #[inline(always)]
     pub unsafe fn mmap_write16(addr: u32, value: i32) {
+        if vga::serves(addr) {
+            vga::write8(addr, value & 0xFF);
+            return vga::write8(addr + 1, value >> 8 & 0xFF);
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_write16(addr, value)
     }
     #[inline(always)]
     pub unsafe fn mmap_write32(addr: u32, value: i32) {
+        if vga::serves(addr) {
+            for i in 0..4 {
+                vga::write8(addr + i, value >> (8 * i) & 0xFF);
+            }
+            return;
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_write32(addr, value)
     }
     #[inline(always)]
     pub unsafe fn mmap_write64(addr: u32, v0: i32, v1: i32) {
+        if vga::serves(addr) {
+            mmap_write32(addr, v0);
+            return mmap_write32(addr + 4, v1);
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_write64(addr, v0, v1)
     }
     #[inline(always)]
     pub unsafe fn mmap_write128(addr: u32, v0: i32, v1: i32, v2: i32, v3: i32) {
+        if vga::serves(addr) {
+            mmap_write32(addr, v0);
+            mmap_write32(addr + 4, v1);
+            mmap_write32(addr + 8, v2);
+            return mmap_write32(addr + 12, v3);
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_write128(addr, v0, v1, v2, v3)
     }

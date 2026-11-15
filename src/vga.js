@@ -52,6 +52,17 @@ const VGA_HOST_MEMORY_SPACE_SIZE = Uint32Array.from([
     0x8000, // 32K
 ]);
 
+// struct VgaLegacy in src/rust/cpu/vga_legacy.rs: these 32-bit fields, the dirty fields, then at 72 the bitmap of
+// written text cells and at 72 + 4096 the four planes
+const VGA_CORE_FIELDS = [
+    "svga_enabled", "miscellaneous_graphics_register", "planar_mode", "color_dont_care", "color_compare",
+    "plane_read", "graphical_mode", "sequencer_memory_mode", "plane_write_bm", "planar_bitmap", "planar_setreset",
+    "planar_setreset_enable", "planar_rotate_reg", "latch_dword",
+];
+const VGA_CORE_DIRTY_MIN = 14, VGA_CORE_DIRTY_MAX = 15, VGA_CORE_TEXT_DIRTY = 16;
+const VGA_CORE_TEXT_BITS = 72;
+const VGA_CORE_MEMORY = 72 + 4096;
+
 /**
  * @constructor
  * @param {CPU} cpu
@@ -62,6 +73,35 @@ const VGA_HOST_MEMORY_SPACE_SIZE = Uint32Array.from([
 export function VGAScreen(cpu, bus, screen, vga_memory_size)
 {
     this.cpu = cpu;
+
+    // The planar memory and the registers its host interface uses are in the core (struct VgaLegacy in
+    // src/rust/cpu/vga_legacy.rs), which answers 0xA0000-0xBFFFF; here they are accessors and views, made again
+    // when the module's memory has grown. sync_from_core redraws what the core's writes marked.
+    cpu.vga_legacy_init();
+    const core_base = cpu.get_vga_legacy_addr();
+    this.core_base = core_base;
+    VGA_CORE_FIELDS.forEach((name, index) => {
+        Object.defineProperty(this, name, {
+            get: () => new Int32Array(cpu.wasm_memory.buffer, core_base, VGA_CORE_FIELDS.length)[index],
+            set: value => { new Int32Array(cpu.wasm_memory.buffer, core_base, VGA_CORE_FIELDS.length)[index] = value; },
+        });
+    });
+    let views_of = null, views = null;
+    const current_views = () => {
+        const buffer = cpu.wasm_memory.buffer;
+        if(views_of !== buffer)
+        {
+            const memory = core_base + VGA_CORE_MEMORY;
+            views = [new Uint8Array(buffer, memory, 4 * VGA_BANK_SIZE)];
+            for(let i = 0; i < 4; i++) views.push(new Uint8Array(buffer, memory + i * VGA_BANK_SIZE, VGA_BANK_SIZE));
+            views_of = buffer;
+        }
+        return views;
+    };
+    ["vga_memory", "plane0", "plane1", "plane2", "plane3"].forEach((name, index) => {
+        Object.defineProperty(this, name, { get: () => current_views()[index] });
+    });
+    cpu.slice_hooks.push(() => this.sync_from_core());
 
     /** @const */
     this.bus = bus;
@@ -382,11 +422,7 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
     /** @type {?Uint8ClampedArray} */
     this.image_mirror = null;
 
-    this.vga_memory = new Uint8Array(4 * VGA_BANK_SIZE);
-    this.plane0 = new Uint8Array(this.vga_memory.buffer, 0 * VGA_BANK_SIZE, VGA_BANK_SIZE);
-    this.plane1 = new Uint8Array(this.vga_memory.buffer, 1 * VGA_BANK_SIZE, VGA_BANK_SIZE);
-    this.plane2 = new Uint8Array(this.vga_memory.buffer, 2 * VGA_BANK_SIZE, VGA_BANK_SIZE);
-    this.plane3 = new Uint8Array(this.vga_memory.buffer, 3 * VGA_BANK_SIZE, VGA_BANK_SIZE);
+    // (vga_memory and plane0..3: views of the core's memory, see the top)
     this.pixel_buffer = new Uint8Array(VGA_PIXEL_BUFFER_SIZE);
 
     io.mmap_register(0xA0000, 0x20000,
@@ -407,7 +443,7 @@ VGAScreen.prototype.get_state = function()
     state[3] = this.cursor_scanline_end;
     state[4] = this.max_cols;
     state[5] = this.max_rows;
-    state[6] = this.vga_memory;
+    state[6] = this.vga_memory.slice();
     state[7] = this.dac_state;
     state[8] = this.start_address;
     state[9] = this.graphical_mode;
@@ -889,7 +925,57 @@ VGAScreen.prototype.text_mode_redraw = function()
 VGAScreen.prototype.vga_memory_write_text_mode = function(addr, value)
 {
     this.vga_memory[addr] = value;
+    this.text_cell_update(addr);
+};
 
+/**
+ * What the core's writes to the legacy window marked since the last call: text cells to draw again, a range of
+ * graphics addresses to plot again. After each slice of the main loop.
+ */
+VGAScreen.prototype.sync_from_core = function()
+{
+    const fields = new Int32Array(this.cpu.wasm_memory.buffer, this.core_base, 17);
+    if(fields[VGA_CORE_TEXT_DIRTY])
+    {
+        fields[VGA_CORE_TEXT_DIRTY] = 0;
+        const bits = new Uint32Array(this.cpu.wasm_memory.buffer, this.core_base + VGA_CORE_TEXT_BITS, 1024);
+        for(let word = 0; word < 1024; word++)
+        {
+            let b = bits[word];
+            if(!b) continue;
+            bits[word] = 0;
+            while(b)
+            {
+                const bit = 31 - Math.clz32(b & -b);
+                b &= b - 1;
+                this.text_cell_update((word << 5 | bit) << 1);
+            }
+        }
+    }
+    const min = fields[VGA_CORE_DIRTY_MIN], max = fields[VGA_CORE_DIRTY_MAX];
+    if(max >= min)
+    {
+        fields[VGA_CORE_DIRTY_MIN] = 0x7FFFFFFF;
+        fields[VGA_CORE_DIRTY_MAX] = -1;
+        if((this.crtc_mode & 3) === 3)
+        {
+            // (one pixel range: without substituted address bits the address order is the pixel order)
+            this.partial_replot(this.vga_addr_to_pixel(min), this.vga_addr_to_pixel(max) + 7);
+        }
+        else
+        {
+            this.partial_replot(0, VGA_PIXEL_BUFFER_SIZE);
+        }
+    }
+};
+
+/**
+ * Draws the text cell of plane 0's address addr (the character at the even byte, its colour at the odd one)
+ * @param {number} addr
+ */
+VGAScreen.prototype.text_cell_update = function(addr)
+{
+    const value = this.vga_memory[addr];
     const max_cols = Math.max(this.max_cols, this.offset_register * 2);
     let row;
     let col;

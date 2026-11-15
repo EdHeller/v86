@@ -170,6 +170,8 @@ export function CPU(bus, wm, stop_idling)
     // (the serial ports: their output is collected in the core and taken after each slice, see after_slice)
     /** @type {!Array} */
     this.uarts = [];
+    /** what devices in the core collected for JavaScript, taken after each slice (see after_slice) @type {!Array<function()>} */
+    this.slice_hooks = [];
 
     this.instruction_pointer = view(Int32Array, memory, 556, 1);
     this.previous_ip = view(Int32Array, memory, 560, 1);
@@ -470,6 +472,9 @@ CPU.prototype.wasm_patch = function()
     this.uart_port_write = get_import("uart_port_write");
     this.uart_receive = get_import("uart_receive");
     this.uart_set_modem_status_bit = get_import("uart_set_modem_status_bit");
+    this.get_vga_legacy_addr = get_import("get_vga_legacy_addr");
+    this.vga_legacy_init = get_import("vga_legacy_init");
+
     this.get_ide_addr = get_import("get_ide_addr");
     this.ide_channel_init = get_import("ide_channel_init");
 
@@ -1402,6 +1407,7 @@ CPU.prototype.init = function(settings, device_bus)
 
     this.devices = {};
     this.uarts = [];
+    this.slice_hooks = [];
 
     // TODO: Make this more configurable
     if(settings.load_devices)
@@ -2324,6 +2330,10 @@ CPU.prototype.after_slice = function()
     for(const uart of this.uarts)
     {
         uart.drain();
+    }
+    for(const hook of this.slice_hooks)
+    {
+        hook();
     }
 };
 

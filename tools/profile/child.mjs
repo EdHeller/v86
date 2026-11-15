@@ -157,6 +157,24 @@ const result = { build: opt.label, marks: [], ok: false };
 let t0 = 0, cpu0 = null, thread0 = null;
 let mark_index = 0, serial_from = 0, finished = false;
 
+/** the VGA's planes (its memory in JavaScript or in the core, whichever this build has) */
+function vga_hash()
+{
+    const vga = emulator && emulator.v86 && emulator.v86.cpu.devices.vga;
+    const m = vga && vga.vga_memory;
+    if(!m) return "";
+    let h = 0x811C9DC5;
+    for(let i = 0; i < m.length; i += 4) h = Math.imul(h ^ (m[i] | m[i + 1] << 8 | m[i + 2] << 16 | m[i + 3] << 24), 0x01000193);
+    return (h >>> 0).toString(16) + "/" + (vga.graphical_mode ? "g" : "t");
+}
+
+function crypto_hash(text)
+{
+    let h = 0x811C9DC5;
+    for(let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+    return (h >>> 0).toString(16);
+}
+
 function snapshot(name)
 {
     const all = process.cpuUsage(cpu0), main = process.threadCpuUsage(thread0);
@@ -168,6 +186,9 @@ function snapshot(name)
         insn: instructions(),
         idle: (VIRTUAL ? skipped_ms : idle_ms) / 1000,
         modules: wasm.modules, wasm_bytes: wasm.bytes, wasm_sync: wasm.sync_ms / 1000,
+        // (what the text screen showed: compares two builds' output without a serial console)
+        screen: crypto_hash(screen_text()),
+        vga: vga_hash(),
     };
 }
 
@@ -178,7 +199,7 @@ function check()
         const m = opt.marks[mark_index];
         let hit = false;
         if(m.insn !== undefined) hit = instructions() >= m.insn;
-        else if(m.screen) hit = new RegExp(m.re).test(screen_text());
+        else if(m.screen) hit = new RegExp(m.re, "m").test(screen_text());
         else
         {
             const found = new RegExp(m.re).exec(serial.slice(serial_from));
@@ -246,6 +267,7 @@ async function finish(ok, error)
         if(!Object.keys(result.stats).length) delete result.stats;
     }
     if(opt.serial_log) fs.writeFileSync(opt.serial_log, serial);
+    if(opt.serial_log) fs.writeFileSync(opt.serial_log.replace(/serial\.txt$/, "screen.txt"), screen_text());
     if(!ok) result.serial_tail = serial.slice(-400);
     // (to a file: a long line on a pipe is cut off by process.exit)
     fs.writeFileSync(opt.result, JSON.stringify(result));
