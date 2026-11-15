@@ -758,7 +758,14 @@ V86.prototype.continue_init = async function(emulator, options)
         // a display adapter of v64's (graphics_adapter: "bochs_vga", "vmware_svga")
         // (Q35 with UEFI: OVMF puts the ECAM window where v86's own VGA has its
         // frame buffer; the bochs_vga plugin's BAR moves out of the way)
-        const graphics_adapter = options.graphics_adapter || (options.machine_type === "q35" && options.firmware ? "bochs_vga" : undefined);
+        let graphics_adapter = options.graphics_adapter || (options.machine_type === "q35" && options.firmware ? "bochs_vga" : undefined);
+        // (on i440FX the Bochs VGA is v86's own: the same device, 1234:1111 with the Bochs VBE, drawn and
+        // answered by the core; the plugin's JavaScript copy only where its BAR has to move, or a page names one)
+        if(graphics_adapter === "bochs_vga" && options.machine_type !== "q35" && !options.graphics_adapter_path)
+        {
+            graphics_adapter = undefined;
+            settings.vga_memory_size = options.vram_size || settings.vga_memory_size;
+        }
         if(graphics_adapter)
         {
             settings.graphics_adapter_plugin = await load_graphics_adapter(graphics_adapter, options.graphics_adapter_path);
