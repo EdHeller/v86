@@ -2,7 +2,6 @@
 // the bus messages (key codes, mouse movement, clicks, the wheel; "mouse-enable"), the reboot the controller can
 // ask for, the timer that sends the rest of a large mouse movement and the snapshot format.
 
-use crate::cpu::apic;
 use crate::cpu::cpu::{device_lower_irq, device_raise_irq, FLAG_INTERRUPT};
 use crate::cpu::global_pointers::flags;
 
@@ -611,15 +610,15 @@ pub unsafe fn ps2_mouse_wheel(delta_y: f64, delta_x: f64) {
     p.send_mouse_packet(0, 0);
 }
 
-/// Whether the core answers this port itself (a one-core machine). Through JavaScript go the commands to the
+/// Whether the core answers this port itself (not in a vCPU worker: the machine's instance has the devices). Through JavaScript go the commands to the
 /// mouse (two of them turn it on: a bus message) and the controller's reboot command
 #[inline]
-pub unsafe fn serves_read(port: i32) -> bool { (port == 0x60 || port == 0x64) && ps2().present != 0 && apic::CORE_COUNT == 1 }
+pub unsafe fn serves_read(port: i32) -> bool { (port == 0x60 || port == 0x64) && ps2().present != 0 && !super::parallel::WORKER }
 #[inline]
 pub unsafe fn serves_write(port: i32, value: i32) -> bool {
     match port {
-        0x60 => ps2().present != 0 && apic::CORE_COUNT == 1 && ps2().next_is_mouse_command == 0,
-        0x64 => ps2().present != 0 && apic::CORE_COUNT == 1 && value & 0xFF != 0xFE,
+        0x60 => ps2().present != 0 && !super::parallel::WORKER && ps2().next_is_mouse_command == 0,
+        0x64 => ps2().present != 0 && !super::parallel::WORKER && value & 0xFF != 0xFE,
         _ => false,
     }
 }

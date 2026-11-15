@@ -210,7 +210,9 @@ unsafe fn round() -> f64 {
     // (in a parallel machine the other cores run in workers)
     let n = if super::parallel::MACHINE { 1 } else { count() };
     let now = js::microtick();
-    let mut next = js::run_hardware_timers(*acpi_enabled, now);
+    // (a timer that is due exactly now reports 0 without firing: with every core halted main_loop would spin
+    // here until the clock moves, and never return on a clock that only JavaScript advances)
+    let mut next = super::pit::run_hardware_timers(*acpi_enabled, now).max(0.001);
     let first = ROUND % n;
     ROUND = ROUND.wrapping_add(1);
     for turn in 0..n {

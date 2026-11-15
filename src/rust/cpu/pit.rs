@@ -224,15 +224,15 @@ pub unsafe fn pit_port_write(port: i32, value: i32) {
     }
 }
 
-/// Whether the core answers this port itself: the PIT of a one-core machine. What the PC speaker hears (port
+/// Whether the core answers this port itself: the machine's instance, not a vCPU worker. What the PC speaker hears (port
 /// 0x61 written, counter 2 programmed) goes through JavaScript, which calls pit_port_write
 #[inline]
 pub unsafe fn serves_read(port: i32) -> bool {
-    (port & !3 == 0x40 && port != 0x43 || port == 0x61) && apic::CORE_COUNT == 1
+    (port & !3 == 0x40 && port != 0x43 || port == 0x61) && !super::parallel::WORKER
 }
 #[inline]
 pub unsafe fn serves_write(port: i32, value: i32) -> bool {
-    (port == 0x40 || port == 0x41 || port == 0x43 && value >> 6 & 3 != 2) && apic::CORE_COUNT == 1
+    (port == 0x40 || port == 0x41 || port == 0x43 && value >> 6 & 3 != 2) && !super::parallel::WORKER
 }
 
 #[no_mangle]
@@ -250,8 +250,8 @@ pub unsafe fn timers_changed() { JS_TIMERS_DUE = 0.0; }
 /// The timer pass of the main loop: the PIT and the APIC timers here, the rest in JavaScript when due.
 /// Returns the milliseconds until the next timer needs to run
 pub unsafe fn run_hardware_timers(acpi_enabled: bool, now: f64) -> f64 {
-    if apic::CORE_COUNT > 1 {
-        // (more cores: the workers are answered in JavaScript's pass, every time)
+    if super::parallel::WORKER {
+        // (a vCPU worker has no devices: the machine's instance runs the timers)
         return js::run_hardware_timers(acpi_enabled, now);
     }
     let mut t = pit().timer(now, false);
@@ -264,7 +264,8 @@ pub unsafe fn run_hardware_timers(acpi_enabled: bool, now: f64) -> f64 {
             t = t.min(super::acpi::acpi_timer(now));
         }
     }
-    if now >= JS_TIMERS_DUE || now < JS_TIMERS_DUE - JS_TIMERS_MAX {
+    // (with cores in workers JavaScript answers them in its pass: every time)
+    if now >= JS_TIMERS_DUE || now < JS_TIMERS_DUE - JS_TIMERS_MAX || super::parallel::MACHINE {
         let t_js = js::run_hardware_timers(acpi_enabled, now);
         JS_TIMERS_DUE = now + t_js.min(JS_TIMERS_MAX);
     }

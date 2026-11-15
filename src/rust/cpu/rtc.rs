@@ -1,7 +1,6 @@
 // RTC (real time clock) and CMOS: ports 0x70 and 0x71, IRQ 8. Was src/rtc.js, which keeps the snapshot format and
 // cmos_read / cmos_write for the machine's setup.
 
-use crate::cpu::apic;
 use crate::cpu::cpu::{device_lower_irq, device_raise_irq, js};
 
 const CMOS_RTC_SECONDS: u8 = 0x00;
@@ -284,10 +283,10 @@ pub unsafe fn rtc_port_write(port: i32, value: i32) {
 #[no_mangle]
 pub unsafe fn rtc_timer() -> f64 { rtc().timer() }
 
-/// Whether the core answers this port itself (a one-core machine with an RTC)
+/// Whether the core answers this port itself (the machine's instance, not a vCPU worker)
 #[inline]
-pub unsafe fn serves_read(port: i32) -> bool { port == 0x71 && PRESENT && apic::CORE_COUNT == 1 }
+pub unsafe fn serves_read(port: i32) -> bool { port == 0x71 && PRESENT && !super::parallel::WORKER }
 #[inline]
-pub unsafe fn serves_write(port: i32) -> bool { (port == 0x70 || port == 0x71) && PRESENT && apic::CORE_COUNT == 1 }
+pub unsafe fn serves_write(port: i32) -> bool { (port == 0x70 || port == 0x71) && PRESENT && !super::parallel::WORKER }
 #[inline]
 pub unsafe fn present() -> bool { PRESENT }

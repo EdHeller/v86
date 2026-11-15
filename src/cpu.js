@@ -2296,23 +2296,9 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
         this.parallel.service();
     }
 
-    // One core: the core's own timer pass (src/rust/cpu/pit.rs) has run the PIT and the APIC timer and calls this
-    // for the timers that are in JavaScript, when they are due. More cores: all of them, on every pass.
-    const all = this.cpu_cores > 1;
-    const pit_time = all ? this.devices.pit.timer(now, false) : 100;
-    const rtc_time = all ? this.devices.rtc.timer(now, false) : 100;
-
-    let acpi_time = 100;
-    let apic_time = 100;
-    if(acpi_enabled)
-    {
-        if(all)
-        {
-            acpi_time = this.devices.acpi.timer(now);
-            apic_time = this.apic_timer(now);
-        }
-    }
-
+    // The core's own timer pass (src/rust/cpu/pit.rs) has run the PIT, the RTC, the ACPI timer and the APIC
+    // timers of every core; it calls this for the timers that are in JavaScript, when they are due (and on
+    // every pass when cores run in workers, which are answered here).
     // (with workers the machine thread has to come back soon to answer them)
     let device_time = Infinity;
     for(const timer of this.device_timers)
@@ -2320,7 +2306,7 @@ CPU.prototype.run_hardware_timers = function(acpi_enabled, now)
         device_time = Math.min(device_time, timer(now));
     }
 
-    return Math.min(pit_time, rtc_time, acpi_time, apic_time, device_time, this.parallel ? 1 : Infinity);
+    return Math.min(100, device_time, this.parallel ? 1 : Infinity);
 };
 
 /**

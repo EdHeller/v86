@@ -6,7 +6,6 @@
 // http://wiki.osdev.org/UART
 // https://www.freebsd.org/doc/en/articles/serial-uart/
 
-use crate::cpu::apic;
 use crate::cpu::cpu::{device_lower_irq, device_raise_irq};
 use std::collections::VecDeque;
 
@@ -287,13 +286,13 @@ pub unsafe fn uart_set_modem_status_bit(com: i32, msr_bit: i32, set_bit: bool) {
     }
 }
 
-/// Whether the core answers this port itself: a UART of a one-core machine. Through JavaScript go the modem
+/// Whether the core answers this port itself: a UART, in the machine's instance (not a vCPU worker). Through JavaScript go the modem
 /// control register (its lines are bus messages) and a data byte when the output buffer is full (JavaScript
 /// empties it first)
 #[inline]
 pub unsafe fn serves_read(port: i32) -> bool {
     match com_of(port) {
-        Some(com) => uart(com).present != 0 && apic::CORE_COUNT == 1,
+        Some(com) => uart(com).present != 0 && !super::parallel::WORKER,
         None => false,
     }
 }
@@ -303,7 +302,7 @@ pub unsafe fn serves_write(port: i32) -> bool {
         Some(com) => {
             let u = uart(com);
             u.present != 0
-                && apic::CORE_COUNT == 1
+                && !super::parallel::WORKER
                 && port & 7 != 4
                 && !(port & 7 == 0 && u.output_length as usize >= OUTPUT_SIZE)
         },

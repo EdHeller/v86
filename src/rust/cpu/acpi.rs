@@ -2,7 +2,6 @@
 // src/acpi.js, which keeps the PCI function, where the block is mapped, the hotplug registers and the snapshot
 // format. http://www.uefi.org/sites/default/files/resources/ACPI_6_1.pdf
 
-use crate::cpu::apic;
 use crate::cpu::cpu::{device_lower_irq, device_raise_irq, js};
 
 const PMTIMER_FREQ_SECONDS: f64 = 3579545.0;
@@ -105,7 +104,7 @@ impl Acpi {
 #[inline]
 unsafe fn register(port: i32, size: i32) -> Option<i32> {
     let a = acpi();
-    if a.present == 0 || apic::CORE_COUNT != 1 {
+    if a.present == 0 || super::parallel::WORKER {
         return None;
     }
     if (0xAFE0..=0xAFE3).contains(&port) {

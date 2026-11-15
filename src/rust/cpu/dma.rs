@@ -2,7 +2,6 @@
 // keeps the transfers (they go through JavaScript's asynchronous disk and sound buffers), the listeners for a
 // channel being unmasked and the snapshot format.
 
-use crate::cpu::apic;
 
 // (the layout is read by src/dma.js)
 #[repr(C)]
@@ -168,19 +167,19 @@ pub unsafe fn dma_port_write(port: i32, value: i32) {
     }
 }
 
-/// Whether the core answers this port itself (a one-core machine). The mask registers are written through
+/// Whether the core answers this port itself (not in a vCPU worker: the machine's instance has the devices). The mask registers are written through
 /// JavaScript: devices there listen for a channel being unmasked
 #[inline]
 pub unsafe fn serves_read(port: i32) -> bool {
     (port < 0x10 || (0x81..=0x8F).contains(&port) || (0xC0..=0xDE).contains(&port) || (0x481..=0x48B).contains(&port))
         && dma().present != 0
-        && apic::CORE_COUNT == 1
+        && !super::parallel::WORKER
         && matches!(decode(port), Some(Reg::Addr(_) | Reg::Count(_) | Reg::Page(_) | Reg::PageHi(_) | Reg::MultiMask(_)))
 }
 #[inline]
 pub unsafe fn serves_write(port: i32) -> bool {
     (port < 0x10 || (0x81..=0x8F).contains(&port) || (0xC0..=0xDE).contains(&port) || (0x481..=0x48B).contains(&port))
         && dma().present != 0
-        && apic::CORE_COUNT == 1
+        && !super::parallel::WORKER
         && matches!(decode(port), Some(Reg::Addr(_) | Reg::Count(_) | Reg::Page(_) | Reg::PageHi(_) | Reg::Mode(_) | Reg::FlipFlop))
 }

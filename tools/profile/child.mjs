@@ -260,7 +260,8 @@ emulator.add_listener("emulator-ready", async () => {
         if(VIRTUAL)
         {
             // (a timer that is due exactly now reports 0: without a step the halted guest's clock would stand still)
-            if(this.cpu.in_hlt[0]) skipped_ms += Math.max(t, 0.001);
+            // (t > 0 without a halted current core: a machine with more cores, all of them idle)
+            if(this.cpu.in_hlt[0] || t > 0) skipped_ms += Math.max(t, 0.001);
             setImmediate(() => this.yield_callback(tick));
         }
         else if(t < 1) setImmediate(() => this.yield_callback(tick));
