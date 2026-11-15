@@ -86,7 +86,9 @@ const file = p => p ? { buffer: buf(p) } : undefined;
 emulator = new V86({
     wasm_path: opt.wasm,
     bios: file(opt.bios), vga_bios: file(opt.vga_bios),
-    cdrom: file(opt.cdrom), hda: file(opt.hda), fda: file(opt.fda),
+    cdrom: file(opt.cdrom), fda: file(opt.fda),
+    // (--hda-mb N: a blank hard disk of N MiB)
+    hda: opt.hda ? file(opt.hda) : opt.hda_mb ? { buffer: new ArrayBuffer(opt.hda_mb << 20) } : undefined,
     bzimage: file(opt.bzimage), initrd: file(opt.initrd), cmdline: opt.cmdline,
     initial_state: file(opt.state),
     memory_size: opt.memory * 1024 * 1024,

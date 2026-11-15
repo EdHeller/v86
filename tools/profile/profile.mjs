@@ -29,6 +29,7 @@
 //   --lib file               the JavaScript: src/main.js (default, no build needed) or a build/libv86.mjs
 //   --plugin file            more JavaScript to load after --lib (build/libv64.js beside a built libv86.mjs)
 //   --cdrom --hda --fda --bzimage --initrd --state <file>, --cmdline <text>, --memory <MiB> (512)
+//   --hda-mb N               a blank hard disk of N MiB
 //   --bios --vga-bios <file> (bios/seabios.bin, bios/vgabios.bin)
 //   --mark name=regex        a point of the boot, found in the serial output; in order; the last one ends the
 //                            run. Default: login=login:
@@ -128,7 +129,7 @@ const base = {
     lib: abs(args.lib || path.join(root, "src/main.js")), plugins: (args.plugin || []).map(abs),
     bios: abs(args.bios || path.join(root, "bios/seabios.bin")), vga_bios: abs(args["vga-bios"] || path.join(root, "bios/vgabios.bin")),
     cdrom: abs(args.cdrom), hda: abs(args.hda), fda: abs(args.fda), bzimage: abs(args.bzimage), initrd: abs(args.initrd),
-    state: abs(args.state), cmdline: args.cmdline,
+    state: abs(args.state), cmdline: args.cmdline, hda_mb: +args["hda-mb"] || 0,
     memory: +args.memory || 512, timeout: +args.timeout || 600, interval: +args.interval || 200,
     marks, stat_names, guest_profile: !!args["guest-map"], step_profile: !!args["step-profile"], count_crossings: !!args["count-crossings"],
     jit_config: Object.fromEntries((args["jit-config"] || []).map(split)),

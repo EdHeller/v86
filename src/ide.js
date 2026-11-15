@@ -376,6 +376,42 @@ IDEController.prototype.set_state = function(state)
     this.secondary && this.secondary.set_state(state[1]);
 };
 
+/** a 32-bit field of a device in the core's memory (made at each use: the memory can grow) */
+function core_i32(cpu, address, index)
+{
+    return new Int32Array(cpu.wasm_memory.buffer, address, index + 1)[index];
+}
+
+function set_core_i32(cpu, address, index, value)
+{
+    new Int32Array(cpu.wasm_memory.buffer, address, index + 1)[index] = value;
+}
+
+/**
+ * Turns fields of an object into accessors of 32-bit fields of a device in the core's memory
+ * @param {!Object} object
+ * @param {?} cpu
+ * @param {function():number} address
+ * @param {!Object<string, number>} fields name to index
+ */
+function define_core_fields(object, cpu, address, fields)
+{
+    for(const name of Object.keys(fields))
+    {
+        const index = fields[name];
+        Object.defineProperty(object, name, {
+            get: () => core_i32(cpu, address(), index),
+            set: value => { set_core_i32(cpu, address(), index, value); },
+        });
+    }
+}
+
+// The registers of an interface in struct Iface (src/rust/cpu/ide.rs)
+const IFACE_FIELDS = {
+    "status_reg": 0, "error_reg": 1, "sector_count_reg": 2, "lba_low_reg": 3, "lba_mid_reg": 4, "lba_high_reg": 5,
+    "device_reg": 6, "features_reg": 7, "is_lba": 8, "head": 9, "drive_connected": 10,
+};
+
 /**
  * @constructor
  * @param {IDEController} controller
@@ -391,6 +427,16 @@ function IDEChannel(controller, channel_nr, channel_config, command_base, contro
     this.control_base = control_base;
     this.irq = irq;
     this.name = "ide" + channel_nr;
+
+    // The task file registers and the drive selection are in the core (struct Channel in src/rust/cpu/ide.rs), which
+    // answers their ports; the fields here are accessors on them.
+    const core = this.cpu;
+    core.ide_channel_init(channel_nr, command_base, control_base, irq);
+    define_core_fields(this, core, () => core.get_ide_addr(channel_nr), { "device_control_reg": 23 });
+    Object.defineProperty(this, "current_interface", {
+        get: () => core_i32(core, core.get_ide_addr(channel_nr), 22) ? this.slave : this.master,
+        set: iface => { set_core_i32(core, core.get_ide_addr(channel_nr), 22, iface === this.slave ? 1 : 0); },
+    });
 
     const master_cfg = channel_config ? channel_config[0] : undefined;
     const slave_cfg = channel_config ? channel_config[1] : undefined;
@@ -832,6 +878,10 @@ IDEChannel.prototype.set_state = function(state)
  */
 function IDEInterface(channel, interface_nr, buffer, is_cd)
 {
+    // (the task file registers are in the core: see IDEChannel)
+    const core = channel.cpu, core_channel = channel.channel_nr;
+    define_core_fields(this, core, () => core.get_ide_addr(core_channel) + interface_nr * 44, IFACE_FIELDS);
+
     this.channel = channel;
     this.name = channel.name + "." + interface_nr;
 
@@ -850,7 +900,7 @@ function IDEInterface(channel, interface_nr, buffer, is_cd)
     this.buffer = null;
 
     /** @type {boolean} */
-    this.drive_connected = is_cd || !!buffer;
+    this.drive_connected = !!(is_cd || buffer);
 
     /** @type {number} */
     this.sector_size = is_cd ? CDROM_SECTOR_SIZE : HD_SECTOR_SIZE;
@@ -2955,6 +3005,6 @@ IDEInterface.prototype.set_state = function(state)
 
     this.buffer && this.buffer.set_state(state[28]);
 
-    this.drive_connected = this.is_atapi || this.buffer;
+    this.drive_connected = !!(this.is_atapi || this.buffer);
     this.medium_changed = MEDIUM_CHANGED_NONE;
 };

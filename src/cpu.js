@@ -470,6 +470,9 @@ CPU.prototype.wasm_patch = function()
     this.uart_port_write = get_import("uart_port_write");
     this.uart_receive = get_import("uart_receive");
     this.uart_set_modem_status_bit = get_import("uart_set_modem_status_bit");
+    this.get_ide_addr = get_import("get_ide_addr");
+    this.ide_channel_init = get_import("ide_channel_init");
+
     this.get_pci_addr = get_import("get_pci_addr");
     this.pci_init = get_import("pci_init");
     this.pci_set_flags = get_import("pci_set_flags");

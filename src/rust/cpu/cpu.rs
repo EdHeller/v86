@@ -5051,6 +5051,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             0x4D0 => pic::port4D0_read() as i32,
             0x4D1 => pic::port4D1_read() as i32,
             _ if super::pit::serves_read(port) => super::pit::pit_port_read(port),
+            _ if super::ide::serves(port, false) => super::ide::ide_port_read(port),
             _ if super::uart::serves_read(port) => super::uart::uart_port_read(port),
             _ if super::pci::serves(port, 8, 0, false) => super::pci::pci_port_read(port, 8),
             _ if super::ps2::serves_read(port) => super::ps2::ps2_port_read(port),
@@ -5113,6 +5114,7 @@ pub fn io_port_write8(port: i32, value: i32) {
                 handle_irqs()
             },
             _ if super::pit::serves_write(port, value) => super::pit::pit_port_write(port, value),
+            _ if super::ide::serves(port, true) => super::ide::ide_port_write(port, value),
             _ if super::uart::serves_write(port) => super::uart::uart_port_write(port, value),
             _ if super::pci::serves(port, 8, value, true) => super::pci::pci_port_write(port, 8, value),
             _ if super::ps2::serves_write(port, value) => super::ps2::ps2_port_write(port, value),

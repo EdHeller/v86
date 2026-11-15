@@ -218,7 +218,7 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | PS/2 controller, keyboard, mouse | `ps2.js` 901 -> 205 | `ps2.rs` | ✅ 2026-11-14 |
 | DMA registers | `dma.js` 430 -> 235 | `dma.rs` | ✅ 2026-11-14 (transfers stay with JavaScript's buffers) |
 | PCI configuration spaces, 0xCF8/0xCFC | `pci.js` 724 (kept: BARs, ROM, PAM, hooks, IRQ routing, Q35) | `pci.rs` | ✅ 2026-11-15; the guest's device list matches `Vibe-Claude` on i440FX and Q35 |
-| IDE / ATAPI | `ide.js` 2928 | | ⬜ the register file and PIO data in Rust, disk buffers stay with JavaScript's async I/O |
+| IDE task file (status, error, count, LBA, device, features, drive selection) | `ide.js` (accessors) | `ide.rs` | ✅ 2026-11-15; data reads in blocks (`io_port_read_block`); commands, DMA and ATAPI stay in `ide.js` (async disk buffers) |
 | VGA | `vga.js` 2654 | `vga.rs` (part) | ⬜ registers and memory in Rust, drawing in JavaScript |
 | Floppy, NE2000, SB16, virtio, USB, HDA, graphics adapters | about 20,000 | | ⬜ |
 | Port and MMIO tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | ⬜ last |
@@ -228,7 +228,7 @@ Calls from the core into JavaScript (`tools/profile --count-crossings`, Alpine x
 `Vibe-Claude`; 4,147,693 with PIT, RTC, UART, ACPI, PS/2 and DMA in Rust; **135,428** with `rep insw/insd` read in
 blocks (`io_port_read_block`, the IDE data port: 4.01 M of the calls were reads of port 0x170). x86_64: 144,140.
 Boot time: not separable from noise (+0.7 %, rounds -5.0 % to +4.5 %): a call cost about 100 ns, 0.4 s of 41 s.
-The 135,000 left: IDE status and control ports (0x177, 0x376), VGA (0x3C9, 0x3D4 and MMIO writes), PCI (0xCF8).
+With PCI and the IDE task file in Rust: **108,975**, of which port I/O 16,800 and MMIO 86,500 (VGA memory writes).
 
 Measured so far (Alpine x86 to a serial login and a command, 3 rounds): RTC and UART in Rust -1.0 % CPU time
 (-1.1 % to -0.5 %, faster in every round).
