@@ -475,6 +475,14 @@ CPU.prototype.wasm_patch = function()
     this.get_vga_legacy_addr = get_import("get_vga_legacy_addr");
     this.vga_legacy_init = get_import("vga_legacy_init");
 
+    this.virtio_chain_addr = get_import("virtio_chain_addr");
+    this.virtio_read_chain = get_import("virtio_read_chain");
+    this.virtio_count_requests = get_import("virtio_count_requests");
+    this.virtio_avail_entry = get_import("virtio_avail_entry");
+    this.virtio_push_reply = get_import("virtio_push_reply");
+    this.virtio_flush_replies = get_import("virtio_flush_replies");
+    this.virtio_notify_me_after = get_import("virtio_notify_me_after");
+
     this.get_fdc_addr = get_import("get_fdc_addr");
     this.fdc_init = get_import("fdc_init");
     this.fdc_port_read = get_import("fdc_port_read");

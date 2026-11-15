@@ -222,7 +222,8 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | VGA planar memory and host interface (0xA0000-0xBFFFF: read modes, latches, write modes, chain 4, odd/even, plane masks) | `vga.js` (views, accessors, `sync_from_core`) | `vga_legacy.rs` | ✅ 2026-11-15; text cells and graphics ranges marked in the core, drawn after each slice. The register ports (0x3C0-0x3DF, VBE) and drawing stay in `vga.js` |
 | NE2000 (first card: registers, buffer memory, remote DMA) | `ne2k.js` (accessors; transmit and receive stay) | `ne2k.rs` | ✅ 2026-11-15; i440FX interrupt routing in `pci.rs`; on Q35 the card runs in JavaScript |
 | Floppy controller (registers, all commands, drive geometry and heads) | `floppy.js` 1515 -> 670 (images, DMA transfers, snapshots) | `floppy.rs` | ✅ 2026-11-15 |
-| SB16, virtio, USB, HDA, graphics adapters | about 18,000 | | ⬜ |
+| Virtio split virtqueues (descriptor chains with indirect tables, available and used rings, interrupt decision) | `virtio.js` (queue state, transport capabilities, devices) | `virtio.rs` | ✅ 2026-11-15; one call per queue operation instead of five per descriptor. The PCI transport's capability registers and the device models (net, blk, rng, console, balloon, 9p, input, snd, gpu) stay JavaScript |
+| SB16, USB, HDA, graphics adapters | about 16,000 | | ⬜ |
 | Port and MMIO tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | ⬜ last |
 | `src/browser/` (DOM, canvas, audio, network, files) | 13,000 | | stays JavaScript |
 

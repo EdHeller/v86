@@ -1286,7 +1286,7 @@ VirtQueue.prototype.count_requests = function()
         this.fix_wrapping = false;
         this.avail_last_idx = (this.avail_get_idx() & ~this.mask) + (this.avail_last_idx & this.mask);
     }
-    return (this.avail_get_idx() - this.avail_last_idx) & 0xFFFF;
+    return this.cpu.virtio_count_requests(this.avail_addr, this.avail_last_idx);
 };
 
 /**
@@ -1306,7 +1306,7 @@ VirtQueue.prototype.pop_request = function()
     dbg_assert(this.avail_addr, "VirtQueue addresses must be configured before use");
     dbg_assert(this.has_request(), "VirtQueue must not pop nonexistent request");
 
-    const desc_idx = this.avail_get_entry(this.avail_last_idx);
+    const desc_idx = this.cpu.virtio_avail_entry(this.avail_addr, this.avail_last_idx, this.mask);
     dbg_log("Pop request: avail_last_idx=" + this.avail_last_idx +
         " desc_idx=" + desc_idx, LOG_VIRTIO);
 
@@ -1327,12 +1327,7 @@ VirtQueue.prototype.push_reply = function(bufchain)
 {
     dbg_assert(this.used_addr, "VirtQueue addresses must be configured before use");
     dbg_assert(this.num_staged_replies < this.size, "VirtQueue replies must not exceed queue size");
-
-    const used_idx = this.used_get_idx() + this.num_staged_replies & this.mask;
-    dbg_log("Push reply: used_idx=" + used_idx +
-        " desc_idx=" + bufchain.head_idx, LOG_VIRTIO);
-
-    this.used_set_entry(used_idx, bufchain.head_idx, bufchain.length_written);
+    this.cpu.virtio_push_reply(this.used_addr, this.mask, this.num_staged_replies, bufchain.head_idx, bufchain.length_written);
     this.num_staged_replies++;
 };
 
@@ -1346,43 +1341,15 @@ VirtQueue.prototype.flush_replies = function()
 
     if(this.num_staged_replies === 0)
     {
-        dbg_log("flush_replies: Nothing to flush", LOG_VIRTIO);
         return;
     }
-
-    dbg_log("Flushing " + this.num_staged_replies + " replies", LOG_VIRTIO);
-    const old_idx = this.used_get_idx();
-    const new_idx = old_idx + this.num_staged_replies & VIRTQ_IDX_MASK;
-    this.used_set_idx(new_idx);
-
+    // (the rings in the core: src/rust/cpu/virtio.rs)
+    const interrupt = this.cpu.virtio_flush_replies(this.used_addr, this.avail_addr, this.size, this.num_staged_replies,
+        this.virtio.is_feature_negotiated(VIRTIO_F_RING_EVENT_IDX));
     this.num_staged_replies = 0;
-
-    if(this.virtio.is_feature_negotiated(VIRTIO_F_RING_EVENT_IDX))
+    if(interrupt)
     {
-        const used_event = this.avail_get_used_event();
-
-        // Fire irq when idx values associated with the pushed reply buffers
-        // has reached or gone past used_event.
-        let has_passed = old_idx <= used_event && used_event < new_idx;
-
-        // Has overflowed? Assumes num_staged_replies > 0.
-        if(new_idx <= old_idx)
-        {
-            has_passed = used_event < new_idx || old_idx <= used_event;
-        }
-
-        // Commented out: Workaround for sometimes loading from the filesystem hangs and the emulator stays idle
-        //if(has_passed)
-        {
-            this.virtio.raise_irq(VIRTIO_ISR_QUEUE);
-        }
-    }
-    else
-    {
-        if(~this.avail_get_flags() & VIRTQ_AVAIL_F_NO_INTERRUPT)
-        {
-            this.virtio.raise_irq(VIRTIO_ISR_QUEUE);
-        }
+        this.virtio.raise_irq(VIRTIO_ISR_QUEUE);
     }
 };
 
@@ -1396,10 +1363,7 @@ VirtQueue.prototype.flush_replies = function()
 VirtQueue.prototype.notify_me_after = function(num_skipped_requests)
 {
     dbg_assert(num_skipped_requests >= 0, "Must skip a non-negative number of requests");
-
-    // The 16 bit idx field wraps around after 2^16.
-    const avail_event = this.avail_get_idx() + num_skipped_requests & 0xFFFF;
-    this.used_set_avail_event(avail_event);
+    this.cpu.virtio_notify_me_after(this.used_addr, this.avail_addr, this.size, num_skipped_requests);
 };
 
 /**
@@ -1504,70 +1468,25 @@ export function VirtQueueBufferChain(virtqueue, head_idx)
 
     // Traverse chain to discover buffers.
     // - There shouldn't be an excessive amount of descriptor elements.
-    let table_address = virtqueue.desc_addr;
-    let desc_idx = head_idx;
-    let chain_length = 0;
-    let chain_max = virtqueue.size;
-    let writable_region = false;
-    const has_indirect_feature = this.virtio.is_feature_negotiated(VIRTIO_F_RING_INDIRECT_DESC);
-    dbg_log("<<< Descriptor chain start", LOG_VIRTIO);
-    do
+    // the chain's descriptors, read in the core (src/rust/cpu/virtio.rs): readable ones, then writable ones
+    const cpu = this.cpu;
+    const n = cpu.virtio_read_chain(virtqueue.desc_addr, virtqueue.size, head_idx,
+        this.virtio.is_feature_negotiated(VIRTIO_F_RING_INDIRECT_DESC));
+    const chain = new Int32Array(cpu.wasm_memory.buffer, cpu.virtio_chain_addr(), 4 * n);
+    for(let i = 0; i < n; i++)
     {
-        const desc = virtqueue.get_descriptor(table_address, desc_idx);
-
-        dbg_log("descriptor: idx=" + desc_idx + " addr=" + h(desc.addr_high, 8) + ":" + h(desc.addr_low, 8) +
-            " len=" + h(desc.len, 8) + " flags=" + h(desc.flags, 4) + " next=" + h(desc.next, 4), LOG_VIRTIO);
-
-        if(has_indirect_feature && (desc.flags & VIRTQ_DESC_F_INDIRECT))
-        {
-            if(DEBUG && (desc.flags & VIRTQ_DESC_F_NEXT))
-            {
-                dbg_log("Driver bug: has set VIRTQ_DESC_F_NEXT flag in an indirect table descriptor", LOG_VIRTIO);
-            }
-
-            // Carry on using indirect table, starting at first entry.
-            table_address = desc.addr_low;
-            desc_idx = 0;
-            chain_length = 0;
-            chain_max = desc.len / VIRTQ_DESC_ENTRYSIZE;
-            dbg_log("start indirect", LOG_VIRTIO);
-            continue;
-        }
-
+        const desc = { addr_low: chain[4 * i], addr_high: chain[4 * i + 1], len: chain[4 * i + 2], flags: chain[4 * i + 3] };
         if(desc.flags & VIRTQ_DESC_F_WRITE)
         {
-            writable_region = true;
             this.write_buffers.push(desc);
             this.length_writable += desc.len;
         }
         else
         {
-            if(writable_region)
-            {
-                dbg_log("Driver bug: readonly buffer after writeonly buffer within chain", LOG_VIRTIO);
-                break;
-            }
             this.read_buffers.push(desc);
             this.length_readable += desc.len;
         }
-
-        chain_length++;
-        if(chain_length > chain_max)
-        {
-            dbg_log("Driver bug: descriptor chain cycle detected", LOG_VIRTIO);
-            break;
-        }
-
-        if(desc.flags & VIRTQ_DESC_F_NEXT)
-        {
-            desc_idx = desc.next;
-        }
-        else
-        {
-            break;
-        }
     }
-    while(true);
     dbg_log("Descriptor chain end >>>", LOG_VIRTIO);
 }
 

@@ -97,6 +97,8 @@ emulator = new V86({
     autostart: false,
     log_level: 0,
     ...(opt.v86 || {}),
+    // (--v86 '{"virtio_blk_mb": N}': a blank virtio block device of N MiB)
+    ...(opt.v86 && opt.v86.virtio_blk_mb ? { virtio_blk: { buffer: new ArrayBuffer(opt.v86.virtio_blk_mb << 20) } } : {}),
 });
 
 let serial = "";
