@@ -2912,9 +2912,10 @@ impl<'a> Gen<'a> {
             self.write_opd_saved(&dst, bits);
             return;
         }
-        if !simple || (flags_live && write && has_mem(&dst)) {
-            // adc / sbb read the carry flag; a memory destination is written after the flags are
-            // computed (like the interpreter does): use the helper
+        if !simple {
+            // adc / sbb read the carry flag: use the helper
+            // (a memory destination with live flags is inline: the flags become pending after the write, so a
+            // write that faults leaves them as they were, as the interpreter does)
             self.materialize();
             self.ea_to_local(&dst);
             self.ea_to_local(&src);

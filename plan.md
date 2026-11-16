@@ -161,6 +161,10 @@ libv86.js fails with "Missing import").
        (`tests/x64/manual/bench_alu.asm`, 30 M iterations): 1.44 s -> 0.34-0.45 s; Alpine x86_64 login -3.3 % (median of
        4 rounds, within the noise). Test: `tests/x64/jit/18_dead_flag_alu.asm`. Tried and dropped: a cheap hasher for the
        32-bit JIT's entry sets (no change), chaining (+6.7 %) and a lower JIT threshold (+3.8 % at 50K) re-measured.
+       Known deviation (old, by design: `FLAGS_ACROSS_ACCESSES`): an ALU instruction with a memory operand that faults
+       in compiled code shows the flags from before the previous flag-setting instruction in its exception frame
+       (that one's flags were dead); the retried instruction overwrites them all, so only a handler that reads the
+       frame's arithmetic flags sees it. Adding memory -> also memory destinations with live flags inline.
      - ⬜ Next: spinlock, smc and bitops (+3 to 4 %, near noise); more SSE inline (movaps/movdqa, comparisons, shuffles, the remaining conversions, divs/sqrt).
 7. ⬜ **virtio-gpu, the rest.**
    - ⬜ a. The ARM machine through `new V86({ cpu_type: "arm64", graphics_adapter: "virtio_gpu" })` (today only
