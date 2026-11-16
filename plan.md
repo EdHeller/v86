@@ -156,6 +156,11 @@ libv86.js fails with "Missing import").
        underflowing double products, conversions without flags), fixed.
      - ✅ bench11 (task 3): sse -8.9 %, scalar_fp -15.9 %, rep_small -4.9 %, interrupt +0.3 %, spinlock +4.1 %
        against upstream (were +34 %, +19 %, +8.5 %, +6 %, +28 %).
+     - ✅ jit64: imul, adc and sbb whose flags are dead compile inline (2026-11-16); they were 40 M of the 108 M helper
+       calls of an Alpine x86_64 boot (`jit64_alu_ops_addr`: the helper's counts per operation). Micro
+       (`tests/x64/manual/bench_alu.asm`, 30 M iterations): 1.44 s -> 0.34-0.45 s; Alpine x86_64 login -3.3 % (median of
+       4 rounds, within the noise). Test: `tests/x64/jit/18_dead_flag_alu.asm`. Tried and dropped: a cheap hasher for the
+       32-bit JIT's entry sets (no change), chaining (+6.7 %) and a lower JIT threshold (+3.8 % at 50K) re-measured.
      - ⬜ Next: spinlock, smc and bitops (+3 to 4 %, near noise); more SSE inline (movaps/movdqa, comparisons, shuffles, the remaining conversions, divs/sqrt).
 7. ⬜ **virtio-gpu, the rest.**
    - ⬜ a. The ARM machine through `new V86({ cpu_type: "arm64", graphics_adapter: "virtio_gpu" })` (today only

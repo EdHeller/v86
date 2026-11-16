@@ -2887,6 +2887,31 @@ impl<'a> Gen<'a> {
         self.set_previous_ip();
         let flags_live = self.cur_live_out;
         let simple = matches!(op, 0 | 1 | 4 | 5 | 6 | 7);
+        if matches!(op, 2 | 3) && !flags_live {
+            // adc / sbb with their flags not needed: the carry, then the sum or difference with it
+            self.ea_to_local(&dst);
+            self.ea_to_local(&src);
+            self.cond(2);
+            self.b.extend_unsigned_i32_to_i64();
+            let carry = self.b.set_new_local_i64();
+            self.pending = None;
+            self.read_opd_saved(&dst, bits);
+            self.read_opd_saved(&src, bits);
+            if op == 2 {
+                self.b.add_i64();
+                self.b.get_local_i64(&carry);
+                self.b.add_i64();
+            }
+            else {
+                self.b.sub_i64();
+                self.b.get_local_i64(&carry);
+                self.b.sub_i64();
+            }
+            self.b.free_local_i64(carry);
+            self.mask_result(bits);
+            self.write_opd_saved(&dst, bits);
+            return;
+        }
         if !simple || (flags_live && write && has_mem(&dst)) {
             // adc / sbb read the carry flag; a memory destination is written after the flags are
             // computed (like the interpreter does): use the helper
@@ -3225,6 +3250,15 @@ impl<'a> Gen<'a> {
                 self.pending = None;
                 self.ea_to_local(&a);
                 self.ea_to_local(&b);
+                if op == 24 && !self.cur_live_out {
+                    // imul with its flags not needed: the product's low half (the same signed or unsigned)
+                    self.read_opd_saved(&a, bits);
+                    self.read_opd_saved(&b, bits);
+                    self.b.mul_i64();
+                    self.mask_result(bits);
+                    self.set_reg(dst, bits, true);
+                    return;
+                }
                 self.b.const_i32(op as i32);
                 self.read_opd_saved(&a, bits);
                 self.read_opd_saved(&b, bits);
@@ -5476,3 +5510,9 @@ pub unsafe fn visits_bucket(i: usize) -> (u32, u32) {
     }
     r
 }
+
+/// the counters of the helper's ALU operations (64) and of why compiled code left to the interpreter (24), for tools
+#[cfg_attr(feature = "x86_64", no_mangle)]
+pub unsafe fn jit64_alu_ops_addr() -> u32 { (&raw const ALU_OPS) as u32 }
+#[cfg_attr(feature = "x86_64", no_mangle)]
+pub unsafe fn jit64_interp_why_addr() -> u32 { (&raw const INTERP_WHY) as u32 }
