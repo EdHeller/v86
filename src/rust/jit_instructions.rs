@@ -8,6 +8,7 @@ use crate::cpu::cpu::{
 };
 use crate::cpu::global_pointers;
 use crate::gen;
+use crate::profiler;
 use crate::jit::{Instruction, InstructionOperand, InstructionOperandDest, JitContext};
 use crate::modrm::{jit_add_seg_offset, jit_add_seg_offset_no_override, ModrmByte};
 use crate::prefix::{PREFIX_66, PREFIX_67, PREFIX_F2, PREFIX_F3};
@@ -1458,6 +1459,16 @@ fn gen_add32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         is_inc: false,
     };
 
+    if ctx.flags_dead {
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        ctx.builder.get_local(&dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.add_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
+
     codegen::gen_set_last_op1(ctx.builder, &dest_operand);
 
     ctx.builder.get_local(&dest_operand);
@@ -1514,6 +1525,16 @@ fn gen_sub32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         is_dec: false,
     };
 
+    if ctx.flags_dead {
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        ctx.builder.get_local(&dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.sub_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
+
     codegen::gen_set_last_op1(ctx.builder, &dest_operand);
 
     ctx.builder.get_local(&dest_operand);
@@ -1531,6 +1552,12 @@ fn gen_cmp(
     source_operand: &LocalOrImmediate,
     size: i32,
 ) {
+    if ctx.flags_dead {
+        // (cmp only sets the flags)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
     ctx.current_instruction = Instruction::Cmp {
         dest: local_to_instruction_operand(ctx, dest_operand),
         source: source_operand.to_instruction_operand(ctx),
@@ -1804,6 +1831,11 @@ fn gen_and32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
     ctx.builder.and_i32();
     ctx.builder.set_local(dest_operand);
 
+    if ctx.flags_dead {
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
     codegen::gen_set_last_result(ctx.builder, &dest_operand);
     codegen::gen_set_last_op_size_and_flags_changed(
         ctx.builder,
@@ -1819,6 +1851,12 @@ fn gen_test(
     source_operand: &LocalOrImmediate,
     size: i32,
 ) {
+    if ctx.flags_dead {
+        // (test only sets the flags)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
     let is_self_test = source_operand.eq_local(dest_operand);
     ctx.current_instruction = Instruction::Bitwise {
         opsize: size,
@@ -1891,6 +1929,11 @@ fn gen_or32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
     ctx.builder.or_i32();
     ctx.builder.set_local(dest_operand);
 
+    if ctx.flags_dead {
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
     codegen::gen_set_last_result(ctx.builder, &dest_operand);
     codegen::gen_set_last_op_size_and_flags_changed(
         ctx.builder,
@@ -1942,6 +1985,11 @@ fn gen_xor32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         ctx.builder.set_local(dest_operand);
     }
 
+    if ctx.flags_dead {
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
     codegen::gen_set_last_result(ctx.builder, &dest_operand);
     codegen::gen_set_last_op_size_and_flags_changed(
         ctx.builder,

@@ -357,6 +357,9 @@ pub struct JitContext<'a> {
     pub previous_instruction: Instruction,
     pub instruction_counter: WasmLocal,
     pub wasm_table_index: WasmTableIndex,
+    /// the arithmetic flags the current instruction writes are overwritten before anything reads them (see
+    /// flags_dead_after): its emitter may leave out storing them
+    pub flags_dead: bool,
 }
 impl<'a> JitContext<'a> {
     pub fn reg(&self, i: u32) -> WasmLocal {
@@ -1289,6 +1292,7 @@ fn jit_generate_module(
         previous_instruction: Instruction::Other,
         instruction_counter,
         wasm_table_index,
+        flags_dead: false,
     };
 
     let entry_blocks = {
@@ -2147,6 +2151,10 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
     ctx.current_instruction = Instruction::Other;
     ctx.previous_instruction = Instruction::Other;
 
+    let flags_dead =
+        if unsafe { FLAG_ELISION } { flags_dead_after(ctx.cpu, start_addr, stop_addr) } else { Vec::new() };
+    let mut instruction_index = 0;
+
     loop {
         let mut instruction = 0;
         if cfg!(feature = "profiler") {
@@ -2173,7 +2181,10 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
         ctx.start_of_current_instruction = ctx.cpu.eip;
         let start_eip = ctx.cpu.eip;
         let mut instruction_flags = 0;
+        ctx.flags_dead = flags_dead.get(instruction_index).copied().unwrap_or(false);
+        instruction_index += 1;
         jit_instructions::jit_instruction(ctx, &mut instruction_flags);
+        ctx.flags_dead = false;
         let end_eip = ctx.cpu.eip;
 
         let instruction_length = end_eip - start_eip;
@@ -2208,6 +2219,69 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
 
         ctx.previous_instruction = mem::replace(&mut ctx.current_instruction, Instruction::Other);
     }
+}
+
+/// Flag elision (set_jit_config(18, ..)): instructions whose arithmetic flags are overwritten before they are read
+/// do not store them
+pub static mut FLAG_ELISION: bool = true;
+/// and across memory accesses (set_jit_config(19, ..), see flag_effect)
+pub static mut FLAG_ELISION_ACROSS_ACCESSES: bool = true;
+
+/// What an instruction does to the arithmetic flags, from its bytes, for flags_dead_after: (reads them or may need
+/// them, writes them all). Conservative: what is not recognised reads them, and so does anything that may fault
+/// (an exception needs the flags of the instructions before it) or leave the block
+fn flag_effect(bytes: [u8; 3]) -> (bool, bool) {
+    const READS: (bool, bool) = (true, false);
+    const WRITES_ALL: (bool, bool) = (false, true);
+    const NONE: (bool, bool) = (false, false);
+    let (op, modrm) = if bytes[0] == 0x66 { (bytes[1], bytes[2]) } else { (bytes[0], bytes[1]) };
+    let reg_form = modrm >> 6 == 3;
+    // add, or, and, sub, xor, cmp (not adc, sbb): every one of them sets all of the arithmetic flags
+    let group_writes_all = |g: u8| matches!(g, 0 | 1 | 4 | 5 | 6 | 7);
+    match op {
+        0x00..=0x3F if op & 7 <= 3 && group_writes_all(op >> 3) => if reg_form { WRITES_ALL } else { READS },
+        0x00..=0x3F if (op & 7 == 4 || op & 7 == 5) && group_writes_all(op >> 3) => WRITES_ALL,
+        0x80 | 0x81 | 0x83 => if reg_form && group_writes_all(modrm >> 3 & 7) { WRITES_ALL } else { READS },
+        // test
+        0x84 | 0x85 => if reg_form { WRITES_ALL } else { READS },
+        0xA8 | 0xA9 => WRITES_ALL,
+        // mov between registers, mov of an immediate to a register, lea (computes an address: does not fault), nop
+        0x88..=0x8B if reg_form => NONE,
+        // plain loads and stores, push and pop: they may fault, and an exception's frame would then hold older flags.
+        // The instruction runs again after the exception and the flags are overwritten before anything reads them,
+        // so only a handler that reads the frame's arithmetic flags sees it (as jit64: FLAGS_ACROSS_ACCESSES)
+        0x88..=0x8B | 0xC6 | 0xC7 | 0x50..=0x5F | 0x68 | 0x6A => {
+            if unsafe { FLAG_ELISION_ACROSS_ACCESSES } && (op < 0xC6 || modrm >> 3 & 7 == 0) { NONE } else { READS }
+        },
+        0xB0..=0xBF | 0x90 => NONE,
+        0x8D => if reg_form { READS } else { NONE },
+        _ => READS,
+    }
+}
+
+/// For each instruction of the basic block from `start` to `stop`: whether the arithmetic flags it writes are
+/// overwritten before anything reads them (the block's end counts as a read)
+fn flags_dead_after(cpu: &CpuContext, start: u32, stop: u32) -> Vec<bool> {
+    let mut effects = Vec::new();
+    let mut c = cpu.clone();
+    c.eip = start;
+    while c.eip < stop {
+        let at = c.eip;
+        let byte = |i: u32| if (at + i) & 0xFFF >= (at & 0xFFF) { memory::read8(at + i) as u8 } else { 0xFF };
+        effects.push(flag_effect([byte(0), byte(1), byte(2)]));
+        analysis::analyze_step(&mut c);
+        if c.eip <= at {
+            break;
+        }
+    }
+    let mut dead = vec![false; effects.len()];
+    let mut live = true;
+    for i in (0..effects.len()).rev() {
+        dead[i] = !live;
+        let (reads, writes_all) = effects[i];
+        live = reads || live && !writes_all;
+    }
+    dead
 }
 
 pub fn jit_increase_hotness_and_maybe_compile(
@@ -2699,6 +2773,8 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         10 => crate::cpu::cpu::TRACE_ON = value != 0,
         14 => crate::cpu::long_mode::SYSCALL_TRACE = value,
         17 => crate::cpu::cpu::JIT_CHAINING = value != 0,
+        18 => FLAG_ELISION = value != 0,
+        19 => FLAG_ELISION_ACROSS_ACCESSES = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
         _ => dbg_assert!(false),

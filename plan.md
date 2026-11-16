@@ -131,8 +131,14 @@ libv86.js fails with "Missing import").
 6. ⬜ **Speed ideas from copy/v86#924** (copy's comment of 2023-09-19). Profile first as copy suggests: the Firefox
    profiler (https://profiler.firefox.com/docs/), `make debug-with-profiler` (stats at the bottom of debug.html), the
    generated wasm and x86 code (`docs/profiling.md`).
-   - ⬜ a. Register and flag analysis, to omit flags and fuse cmp+jcc (copy/v86#466). jit64 drops dead flags
-     (`flag_liveness`); the 32-bit JIT does not yet. Needs task 2's fuzzer.
+   - ✅ a. Dead flags in the 32-bit JIT (2026-11-16): a pass over each basic block (`flags_dead_after`, `flag_effect`)
+     finds add/sub/cmp/and/or/xor/test whose flags the next such instruction overwrites before a read; the 32-bit
+     add/sub/bitwise emitters and cmp/test of any size then store nothing. Unknown instructions, block ends and other
+     memory instructions count as reads; plain loads, stores, push and pop do not (`set_jit_config(19, 0)` makes them
+     reads: the frame of an exception they raise would hold older arithmetic flags, as jit64 already accepts).
+     Alpine x86 boot: 334 M of 1,305 M flag stores left out; login -2.5 % (median of 4 rounds, -5.5 % to +0.1 %);
+     registers only (19 = 0): 245 M left out, no measurable change. `set_jit_config(18, 0)` turns it off.
+     Tests: `tests/x64/jit/19_flag_elision_32.asm`, `run.mjs 32 jit` 0 forms differ. cmp+jcc fusing was there.
    - ⬜ b. Function boundaries instead of one big br_table; call/ret as wasm calls. jit64 has one function per page;
      call/ret still return to Rust; the 32-bit JIT is as upstream.
    - ⬜ c. VGA memory writes through the memory fast path (copy/v86#301).
