@@ -137,6 +137,8 @@ libv86.js fails with "Missing import").
      memory instructions count as reads; plain loads, stores, push and pop do not (`set_jit_config(19, 0)` makes them
      reads: the frame of an exception they raise would hold older arithmetic flags, as jit64 already accepts).
      Alpine x86 boot: 334 M of 1,305 M flag stores left out; login -2.5 % (median of 4 rounds, -5.5 % to +0.1 %);
+     with movzx/movsx and mov to/from a fixed address as neutral: 356 M, login -3.0 % (faster in every round, -5.9 %
+     to -0.8 %);
      registers only (19 = 0): 245 M left out, no measurable change. `set_jit_config(18, 0)` turns it off.
      Tests: `tests/x64/jit/19_flag_elision_32.asm`, `run.mjs 32 jit` 0 forms differ. cmp+jcc fusing was there.
    - ⬜ b. Function boundaries instead of one big br_table; call/ret as wasm calls. jit64 has one function per page;

@@ -2230,11 +2230,13 @@ pub static mut FLAG_ELISION_ACROSS_ACCESSES: bool = true;
 /// What an instruction does to the arithmetic flags, from its bytes, for flags_dead_after: (reads them or may need
 /// them, writes them all). Conservative: what is not recognised reads them, and so does anything that may fault
 /// (an exception needs the flags of the instructions before it) or leave the block
-fn flag_effect(bytes: [u8; 3]) -> (bool, bool) {
+fn flag_effect(bytes: [u8; 4]) -> (bool, bool) {
     const READS: (bool, bool) = (true, false);
     const WRITES_ALL: (bool, bool) = (false, true);
     const NONE: (bool, bool) = (false, false);
-    let (op, modrm) = if bytes[0] == 0x66 { (bytes[1], bytes[2]) } else { (bytes[0], bytes[1]) };
+    let skip = (bytes[0] == 0x66) as usize;
+    let (op, modrm) = (bytes[skip], bytes[skip + 1]);
+    let across = unsafe { FLAG_ELISION_ACROSS_ACCESSES };
     let reg_form = modrm >> 6 == 3;
     // add, or, and, sub, xor, cmp (not adc, sbb): every one of them sets all of the arithmetic flags
     let group_writes_all = |g: u8| matches!(g, 0 | 1 | 4 | 5 | 6 | 7);
@@ -2251,9 +2253,15 @@ fn flag_effect(bytes: [u8; 3]) -> (bool, bool) {
         // The instruction runs again after the exception and the flags are overwritten before anything reads them,
         // so only a handler that reads the frame's arithmetic flags sees it (as jit64: FLAGS_ACROSS_ACCESSES)
         0x88..=0x8B | 0xC6 | 0xC7 | 0x50..=0x5F | 0x68 | 0x6A => {
-            if unsafe { FLAG_ELISION_ACROSS_ACCESSES } && (op < 0xC6 || modrm >> 3 & 7 == 0) { NONE } else { READS }
+            if across && (op < 0xC6 || modrm >> 3 & 7 == 0) { NONE } else { READS }
         },
         0xB0..=0xBF | 0x90 => NONE,
+        // mov between eax and a fixed address
+        0xA0..=0xA3 => if across { NONE } else { READS },
+        // movzx, movsx
+        0x0F if matches!(modrm, 0xB6 | 0xB7 | 0xBE | 0xBF) => {
+            if bytes[skip + 2] >> 6 == 3 || across { NONE } else { READS }
+        },
         0x8D => if reg_form { READS } else { NONE },
         _ => READS,
     }
@@ -2268,7 +2276,7 @@ fn flags_dead_after(cpu: &CpuContext, start: u32, stop: u32) -> Vec<bool> {
     while c.eip < stop {
         let at = c.eip;
         let byte = |i: u32| if (at + i) & 0xFFF >= (at & 0xFFF) { memory::read8(at + i) as u8 } else { 0xFF };
-        effects.push(flag_effect([byte(0), byte(1), byte(2)]));
+        effects.push(flag_effect([byte(0), byte(1), byte(2), byte(3)]));
         analysis::analyze_step(&mut c);
         if c.eip <= at {
             break;
