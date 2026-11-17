@@ -249,7 +249,14 @@ pub unsafe fn timers_changed() { JS_TIMERS_DUE = 0.0; }
 
 /// The timer pass of the main loop: the PIT and the APIC timers here, the rest in JavaScript when due.
 /// Returns the milliseconds until the next timer needs to run
+/// The instruction pointer and CPL at the last timer pass (before interrupts are delivered): tools/profile samples it
+pub static mut SAMPLE_EIP: [i32; 2] = [0; 2];
+
+#[no_mangle]
+pub fn get_sample_eip_addr() -> u32 { (&raw const SAMPLE_EIP) as u32 }
+
 pub unsafe fn run_hardware_timers(acpi_enabled: bool, now: f64) -> f64 {
+    SAMPLE_EIP = [*super::global_pointers::instruction_pointer, *super::global_pointers::cpl as i32];
     if super::parallel::WORKER {
         // (a vCPU worker has no devices: the machine's instance runs the timers)
         return js::run_hardware_timers(acpi_enabled, now);

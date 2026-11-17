@@ -152,8 +152,8 @@ function note_screen()
     for(let i = 0; i < rows.length - 1; i++) if(rows[i + 1].trim()) note_line("screen", rows[i]);
 }
 
-// The guest's side: where its instructions go. The main loop comes back about every 100,000 instructions; the
-// guest's instruction pointer at those moments, before interrupts are delivered, is a sample (weighted with the instructions since the last one).
+// The guest's side: where its instructions go. The guest's instruction pointer at the end of each slice of the main
+// loop is a sample (weighted with the instructions since the last one).
 // Addresses are resolved in profile.mjs with a System.map of the guest's kernel (--guest-map).
 const guest = new Map();
 let guest_view = null, guest_last = 0;
@@ -167,8 +167,12 @@ function guest_sample()
     const now = instructions(), weight = now - guest_last;
     guest_last = now;
     if(weight <= 0) return;
-    const cpl = guest_view[612 >> 2] & 3;
-    const lo = guest_view[556 >> 2] >>> 0, hi = opt.arch === "x86_64" ? guest_view[1440 >> 2] >>> 0 : 0;
+    // (the core's record of eip at its last timer pass, before interrupts are delivered; else eip now)
+    const exports = emulator.v86.cpu.wm.exports;
+    const at = exports["get_sample_eip_addr"] ? exports["get_sample_eip_addr"]() >>> 0 : 0;
+    const sample = at ? new Int32Array(emulator.v86.cpu.wasm_memory.buffer, at, 2) : null;
+    const cpl = sample ? sample[1] & 3 : guest_view[612 >> 2] & 3;
+    const lo = sample ? sample[0] >>> 0 : guest_view[556 >> 2] >>> 0, hi = opt.arch === "x86_64" ? guest_view[1440 >> 2] >>> 0 : 0;
     // (64 bytes per bucket; the key is cpl, then the address in hex)
     const key = cpl + (hi ? hi.toString(16) + ((lo & ~63) >>> 0).toString(16).padStart(8, "0") : ((lo & ~63) >>> 0).toString(16));
     guest.set(key, (guest.get(key) || 0) + weight);
@@ -375,13 +379,14 @@ emulator.add_listener("emulator-ready", async () => {
     };
     if(opt.guest_profile)
     {
-        // (the core calls this after each batch of instructions, before it delivers interrupts: sampled later, the
-        // instruction pointer would mostly be an interrupt handler's first instruction)
-        const cpu = v86.cpu, timers = cpu.run_hardware_timers;
-        cpu.run_hardware_timers = function(acpi_enabled, now)
+        // (after each slice of the main loop: it ends after a fixed time of work, at whatever the guest was doing.
+        // The JavaScript timer pass was used before; with the timers in the core it runs mostly when an interrupt
+        // is due, and the samples were then mostly interrupt entry code)
+        const cpu = v86.cpu, after_slice = cpu.after_slice;
+        cpu.after_slice = function()
         {
             if(!cpu.in_hlt[0]) guest_sample(); else guest_last = instructions();
-            return timers.call(cpu, acpi_enabled, now);
+            return after_slice.call(cpu);
         };
     }
     // Calls from the core into JavaScript, by kind: port I/O, memory-mapped I/O, the timer pass
