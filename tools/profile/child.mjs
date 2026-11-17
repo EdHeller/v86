@@ -315,6 +315,10 @@ async function finish(ok, error)
             "helper calls: arithmetic and SSE (j64_alu)": g(6016),
             "helper calls: flags (j64_flags)": g(6018),
             "memory accesses on the slow path": [20, 21, 22, 23, 24, 25, 26, 27].reduce((n, i) => n + g(i), 0),
+            "dispatch: calls": g(36),
+            "dispatch: slot misses (another rip in the slot)": g(37),
+            "dispatch: ready slots run": g(34),
+            "dispatch: of them checked again (address space or module changed)": g(35),
             "clock reads: rdtsc": g(30),
             "clock reads: main loop": g(31),
         };

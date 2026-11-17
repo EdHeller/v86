@@ -148,6 +148,12 @@ libv86.js fails with "Missing import").
      A cmp/test/bitwise/add/sub right before a block's jcc, its flags dead after the jump, stores nothing when the
      jump computes its condition from registers (`codegen::condition_from_locals`; `set_jit_config(23, 0)` turns it
      off): 456 M of 1,305 M left out; login -0.9 % (5 rounds, -2.7 % to +1.2 %). Test: `21_flag_elision_jcc.asm`.
+   - ✅ jit64's dispatcher measured (2026-11-17): an Alpine x86_64 boot calls try_run_block 18 M times; 13 M run a
+     ready slot, 7.6 M of those after the slot's epoch changed (a MOV CR3 steps the user epoch, about 33 K times), so
+     the slot checks its page again (a page walk: probe_fetch does not fill the tlb). A per-epoch cache of those
+     probes did not change the boot (+1.0 %, within the noise); reverted. The hot path is cheap: 10 M calls and
+     returns across pages take 0.35 s (`tests/x64/manual/bench_dispatch.asm`). Counters: tools/profile for x86_64
+     ("dispatch: ..."). Where try_run_block's 1.4 s and call_block's 1.7 s of self time go is still open.
    - ✅ The JIT's per-page entry points in a bitmap instead of a hash set (2026-11-17): every interpreted run notes
      one, and SipHash cost 0.5 s of a boot (hotness bookkeeping 2.0 s -> 1.5 s inclusive in the profile).
    - ✅ b. call/ret as wasm calls, measured (2026-11-17), off by default: a call out of a module (32-bit JIT) calls

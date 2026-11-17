@@ -241,6 +241,8 @@ pub static mut WATCH_OFF: [u32; 4096] = [0; 4096];
 pub static mut PAGE_HIST: [(u64, u32); 4096] = [(0, 0); 4096];
 pub static mut INTERP_WHY: [u32; 24] = [0; 24];
 pub static mut ALU_OPS: [u32; 64] = [0; 64];
+/// try_run_block: [ready slots run, of them revalidated (epoch or module changed), calls, slot misses (another rip)]
+pub static mut DISPATCH_STATS: [u32; 4] = [0; 4];
 /// debugging: interpreter batches by the kind of their first rip (counts, instructions):
 /// 0 page without module, 1 served entry, 2 covered (inside a block), 3 not covered, 4 unmapped,
 /// 5 continuation (no dispatcher check before it)
@@ -4984,7 +4986,9 @@ unsafe fn try_run_block() -> bool {
     let user = *cpl == 3;
     let st = state();
     let si = slot_index(r);
+    DISPATCH_STATS[2] = DISPATCH_STATS[2].wrapping_add(1);
     if st.slots[si].rip != r {
+        DISPATCH_STATS[3] = DISPATCH_STATS[3].wrapping_add(1);
         st.slots[si] = Slot { rip: r, ..SLOT_EMPTY };
         // first visit: the code may be compiled already (another mapping of the same page)
         if !st.blocks.is_empty() {
@@ -5002,7 +5006,9 @@ unsafe fn try_run_block() -> bool {
             if slot.user != user {
                 return false;
             }
+            DISPATCH_STATS[0] = DISPATCH_STATS[0].wrapping_add(1);
             if slot.epoch != epoch(user) || INDEX_GEN[slot.index as usize] != slot.gen {
+                DISPATCH_STATS[1] = DISPATCH_STATS[1].wrapping_add(1);
                 // mappings may have changed or blocks were invalidated: check that rip still
                 // maps to the block of this slot
                 // (the module is still the one of the slot when its index has the same generation)
@@ -5198,6 +5204,7 @@ unsafe fn refill_slot(r: u64, key: u64, off: usize) {
 }
 
 unsafe fn probe_fetch(r: u64, user: bool) -> Option<u32> { crate::cpu::long_mem::probe_fetch(r, user) }
+
 
 /// incremental compiles: a page whose module does not serve an entry gets another module for the
 /// entries noted since (discovery stops at the entries the page's modules serve), up to MAX_PARTS of
