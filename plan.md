@@ -160,6 +160,18 @@ libv86.js fails with "Missing import").
      `set_jit_config(56, 0)` off) is what keeps the entries few: off, 197 M entries instead of 12.6 M and login
      +5.3 % (every round), unlike the 32-bit JIT's chaining (+6.7 %). Possible later: a smaller slot table (less
      than 1 %).
+   - ✅ 2026-11-17, 32-bit JIT on buildroot (i686) workloads (`tools/profile`, rounds against the build before):
+     rol/ror inline (sha256 -9 to -11 %); the last 15 bytes of a page compiled when the instruction ends before
+     the page's last byte (boot -4.3 %, shell loop -5.7 %, sha256 -7.2 %; Alpine -0.9 %); pages with code
+     recompiled after 50 K heat instead of 200 K (boot -1.6 %, loop -2.1 %); up to 4 modules compiled at once
+     (boot -6.3 %, loop -5.3 %); more flag elision (inc/dec, shifts; memory-operand ALU kills flags: noise).
+     Against `Vibe-Claude` on the host clock (`bench.mjs`, 3 rounds): sha256 -48 %, md5 -20 %, gzip -7 %, boot,
+     shell loop and forks about -3 %. Also: the guest sampler of `--guest-map` was mostly measuring IRQ stubs
+     (fixed: eip from the core's timer pass). Not better: a lower first-compile threshold (100 K, 50 K), 8
+     modules at once.
+   - ⬜ Next: instructions that cross a page are still interpreted (on buildroot's shell loop about 8 entries a
+     loop iteration on one busybox page); compiling them needs the next page's mapping checked at run time and its
+     writes tracked. The interpreter is still 36 % of buildroot's boot (code that runs once).
    - ⬜ For later (2026-11-17): a faster interpreter for cold code. An Alpine x86 boot interprets 255 M instructions
      (about 15 % of its time, about 28 ns each against 6 ns compiled): code that runs too rarely to be compiled
      (compiling earlier was slower: +3.8 % at a 50 K threshold). Idea: cache decoded instructions per page (the
