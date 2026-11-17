@@ -283,6 +283,12 @@ async function finish(ok, error)
         fs.writeFileSync(opt.profile, JSON.stringify(profile));
     }
     const cpu = emulator.v86.cpu, ex = cpu.wm.exports;
+    if(opt.arch !== "x86_64" && ex["get_jit_config"])
+    {
+        const g = i => ex["get_jit_config"](i) >>> 0;
+        // the 32-bit JIT's nested calls (made, and those after which the caller went on)
+        result.counters = { "nested calls made": g(32), "nested calls the caller went on after": g(33) };
+    }
     if(opt.arch === "x86_64" && ex["get_jit_config"])
     {
         const g = i => ex["get_jit_config"](i) >>> 0;

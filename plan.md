@@ -145,7 +145,15 @@ libv86.js fails with "Missing import").
      it off): flags at a block's end are dead when every successor in the module overwrites them first; 395 M of
      1,305 M left out. Test: `tests/x64/jit/20_flag_elision_blocks.asm`. Login -1.1 % against block-local elision
      (median of 6 rounds, -4.8 % to +4.7 %: within the noise).
-   - ⬜ b. Function boundaries instead of one big br_table; call/ret as wasm calls. jit64 has one function per page;
+   - ✅ b. call/ret as wasm calls, measured (2026-11-17), off by default: a call out of a module (32-bit JIT) calls
+     the callee's module (`codegen::gen_nested_call`, `set_jit_config(21, 1)`; depth at most 16; the callee's
+     instructions count for the caller's loop limit) and goes on at the return address when the callee returns.
+     Alpine boot: 58 M nested calls, the caller goes on after 43 M of them (each two passes through the dispatcher
+     saved), and still +5.9 % (+4.5 % with the code in the main function): in V8 a call from one generated module into
+     another costs about 85 ns, more than the dispatcher's round trips. As chaining (+6.7 %). Counters:
+     `set_jit_config(22, 1)`, `get_jit_config(32)` / `(33)`, shown by tools/profile for x86. Worth measuring in other
+     engines (Firefox).
+     (was: ⬜ b. Function boundaries instead of one big br_table; call/ret as wasm calls. jit64 has one function per page;)
      call/ret still return to Rust; the 32-bit JIT is as upstream.
    - ⬜ c. VGA memory writes through the memory fast path (copy/v86#301).
    - ⬜ d. The boot CPU in a Web Worker (copy/v86#534, #219); the cores after the first already run in workers.

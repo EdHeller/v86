@@ -269,6 +269,8 @@ pub struct BasicBlock {
     pub ty: BasicBlockType,
     pub has_sti: bool,
     pub number_of_instructions: u32,
+    /// ends with a call (its return address is the next instruction)
+    pub is_call: bool,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -356,6 +358,8 @@ pub struct JitContext<'a> {
     pub current_instruction: Instruction,
     pub previous_instruction: Instruction,
     pub instruction_counter: WasmLocal,
+    /// the part of instruction_counter that is in the global counter already (nested calls, gen_nested_call)
+    pub instruction_counter_flushed: WasmLocal,
     pub wasm_table_index: WasmTableIndex,
     /// the arithmetic flags the current instruction writes are overwritten before anything reads them (see
     /// flags_dead_after): its emitter may leave out storing them
@@ -578,6 +582,7 @@ fn jit_find_basic_blocks(
             end_addr: 0,
             ty: BasicBlockType::Exit,
             is_entry_block: false,
+            is_call: false,
             has_sti: false,
             number_of_instructions: 0,
         };
@@ -709,6 +714,7 @@ fn jit_find_basic_blocks(
                         // Execution will eventually come back to the next instruction (CALL)
                         marked_as_entry.insert(current_virt_addr);
                         to_visit_stack.push(current_virt_addr);
+                        current_block.is_call = true;
                     }
 
                     current_block.ty = BasicBlockType::Normal {
@@ -1262,6 +1268,8 @@ fn jit_generate_module(
 
     builder.const_i32(0);
     let instruction_counter = builder.set_new_local();
+    builder.const_i32(0);
+    let instruction_counter_flushed = builder.set_new_local();
 
     let exit_label = builder.block_void();
     let exit_with_fault_label = builder.block_void();
@@ -1300,6 +1308,7 @@ fn jit_generate_module(
         current_instruction: Instruction::Other,
         previous_instruction: Instruction::Other,
         instruction_counter,
+        instruction_counter_flushed,
         wasm_table_index,
         flags_dead: false,
         flags_live_out,
@@ -1494,6 +1503,11 @@ fn jit_generate_module(
                             codegen::gen_jmp_rel16(ctx.builder, jump_offset as u16);
                         }
 
+                        if block.is_call && unsafe { NESTED_CALLS } && !cfg!(feature = "profiler") {
+                            // a call out of the module: the callee's compiled code as a call, and after its return
+                            // (its ret leaves its page) on in this module at the return address
+                            codegen::gen_nested_call(ctx, main_loop_label, target_block, wasm_table_index, state_flags);
+                        }
                         codegen::gen_debug_track_jit_exit(ctx.builder, block.last_instruction_addr);
                         codegen::gen_profiler_stat_increment(ctx.builder, stat::DIRECT_EXIT);
                         ctx.builder.br(ctx.exit_label);
@@ -2104,6 +2118,8 @@ fn jit_generate_module(
     }
     ctx.builder
         .free_local(ctx.instruction_counter.unsafe_clone());
+    ctx.builder
+        .free_local(ctx.instruction_counter_flushed.unsafe_clone());
 
     if unsafe { DROP_REGISTER_MOVES } {
         ctx.builder.drop_unused_register_moves();
@@ -2242,6 +2258,19 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
 /// Flag elision (set_jit_config(18, ..)): instructions whose arithmetic flags are overwritten before they are read
 /// do not store them
 pub static mut FLAG_ELISION: bool = true;
+/// Calls out of a module as wasm calls of the callee's module (set_jit_config(21, ..), see codegen::gen_nested_call).
+/// Off: in V8 (Node 24) an Alpine boot is 5.9 % slower with them, though the caller goes on after 43 M of the 58 M
+/// nested calls (each saving two passes through the dispatcher): a wasm call from one generated module into another
+/// costs more than the dispatcher (as chaining with tail calls, JIT_CHAINING). Worth measuring in other engines.
+pub static mut NESTED_CALLS: bool = false;
+/// how deep they are nested now; at most NESTED_CALL_DEPTH
+pub static mut NESTED_CALL_LEVEL: i32 = 0;
+pub const NESTED_CALL_DEPTH: i32 = 16;
+/// nested calls made, and those after which the caller went on (get_jit_config(32), (33))
+pub static mut NESTED_CALLS_MADE: u64 = 0;
+/// (set_jit_config(22, 1): count them)
+pub static mut NESTED_CALL_STATS: bool = false;
+pub static mut NESTED_CALLS_CONTINUED: u64 = 0;
 /// and across memory accesses (set_jit_config(19, ..), see flag_effect)
 pub static mut FLAG_ELISION_ACROSS_ACCESSES: bool = true;
 /// and across the basic blocks of a module (set_jit_config(20, ..), see flags_live_out)
@@ -2859,6 +2888,8 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         18 => FLAG_ELISION = value != 0,
         19 => FLAG_ELISION_ACROSS_ACCESSES = value != 0,
         20 => FLAG_ELISION_ACROSS_BLOCKS = value != 0,
+        21 => NESTED_CALLS = value != 0,
+        22 => NESTED_CALL_STATS = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
         _ => dbg_assert!(false),
@@ -2886,6 +2917,8 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         16 => crate::cpu::jit64::STAT_BLOCKS,
         17 => crate::cpu::jit64::STAT_BYTES,
         30 => crate::cpu::cpu::STAT_TSC_READS,
+        32 => NESTED_CALLS_MADE as u32,
+        33 => NESTED_CALLS_CONTINUED as u32,
         31 => crate::cpu::cpu::STAT_LOOP_CLOCK_READS,
         20..=27 => crate::cpu::long_mem::SLOW_STATS[(index - 20) as usize],
         46000..=46063 => { let b = crate::cpu::jit64::visits_bucket(((index - 46000) / 2) as usize); if index & 1 == 0 { b.0 } else { b.1 } },

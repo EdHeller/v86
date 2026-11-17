@@ -10,7 +10,7 @@ use crate::modrm::ModrmByte;
 use crate::opstats;
 use crate::profiler;
 use crate::regs;
-use crate::wasmgen::wasm_builder::{WasmBuilder, WasmLocal, WasmLocalI64};
+use crate::wasmgen::wasm_builder::{Label, WasmBuilder, WasmLocal, WasmLocalI64};
 
 pub fn gen_add_cs_offset(ctx: &mut JitContext) {
     if !ctx.cpu.has_flat_segmentation() {
@@ -124,6 +124,11 @@ pub fn gen_update_instruction_counter(ctx: &mut JitContext) {
         .load_fixed_i32(global_pointers::instruction_counter as u32);
     ctx.builder.get_local(&ctx.instruction_counter);
     ctx.builder.add_i32();
+    if unsafe { crate::jit::NESTED_CALLS } {
+        // (the part a nested call put into the global counter already)
+        ctx.builder.get_local(&ctx.instruction_counter_flushed);
+        ctx.builder.sub_i32();
+    }
     ctx.builder.store_aligned_i32(0);
 }
 
@@ -2841,6 +2846,177 @@ fn gen_find_entry_in_page_body(
     builder.else_();
     builder.const_i32(-1);
     builder.block_end();
+}
+
+/// A call out of the module (eip is the callee, the return address pushed): when the callee's page has compiled code
+/// for it, that is called (a wasm call, not a return to the dispatcher), and once it returns, which it does when it
+/// leaves its page (the callee's ret, or anything else), this module goes on at eip when eip is one of its entries
+/// (the return address) and nothing needs the dispatcher (halt, interrupt shadow, single step, an interrupt to
+/// look at); otherwise the module exits as before. The callee's instructions count for this module's loop limit
+/// too (instruction_counter_flushed: they are in the global counter already). At most jit::NESTED_CALL_DEPTH of them
+/// are nested. The lookup, the call and the checks are a function of the module (gen_nested_call_body): in the main
+/// function they slowed its loops.
+pub fn gen_nested_call(
+    ctx: &mut JitContext,
+    main_loop: Label,
+    target_block: &WasmLocal,
+    wasm_table_index: crate::jit::WasmTableIndex,
+    state_flags: crate::state_flags::CachedStateFlags,
+) {
+    // the callee works on the registers in memory, and counts from the global counter
+    gen_move_registers_from_locals_to_memory(ctx);
+    gen_update_instruction_counter(ctx);
+    ctx.builder.get_local(&ctx.instruction_counter);
+    ctx.builder.set_local(&ctx.instruction_counter_flushed);
+    ctx.builder.load_fixed_i32(global_pointers::instruction_counter as u32);
+    let before = ctx.builder.set_new_local();
+
+    gen_get_eip(ctx.builder);
+    let (index, flags) = (wasm_table_index.to_u16(), state_flags.to_u32() as u8);
+    ctx.builder.call_internal_i32_to_i32(0x4C4C4143, 4, |b| gen_nested_call_body(b, index, flags));
+    let result = ctx.builder.set_new_local();
+
+    // the callee's instructions (0 when there was no call)
+    ctx.builder.load_fixed_i32(global_pointers::instruction_counter as u32);
+    ctx.builder.get_local(&before);
+    ctx.builder.sub_i32();
+    let callee = ctx.builder.tee_new_local();
+    ctx.builder.get_local(&ctx.instruction_counter);
+    ctx.builder.add_i32();
+    ctx.builder.set_local(&ctx.instruction_counter);
+    ctx.builder.get_local(&callee);
+    ctx.builder.get_local(&ctx.instruction_counter_flushed);
+    ctx.builder.add_i32();
+    ctx.builder.set_local(&ctx.instruction_counter_flushed);
+    ctx.builder.free_local(callee);
+    ctx.builder.free_local(before);
+
+    // what the callee left in the registers
+    gen_move_registers_from_memory_to_locals(ctx);
+
+    ctx.builder.get_local(&result);
+    ctx.builder.const_i32(0);
+    ctx.builder.ge_i32();
+    ctx.builder.if_void();
+    {
+        if unsafe { crate::jit::NESTED_CALL_STATS } {
+            ctx.builder.increment_fixed_i64((&raw const crate::jit::NESTED_CALLS_CONTINUED) as u32, 1);
+        }
+        ctx.builder.get_local(&result);
+        ctx.builder.set_local(target_block);
+        ctx.builder.br(main_loop);
+    }
+    ctx.builder.block_end();
+    ctx.builder.free_local(result);
+}
+
+/// The function of gen_nested_call: eip (the callee) -> the state of this module to go on at, or -1
+fn gen_nested_call_body(b: &mut WasmBuilder, wasm_table_index: u16, state_flags: u8) {
+    use crate::cpu::cpu::{interrupt_shadow, tlb_code, Code, FLAG_TRAP, IRQ_CHECK, WASM_TABLE_OFFSET};
+    use crate::jit::{NESTED_CALL_DEPTH, NESTED_CALL_LEVEL};
+    use std::mem::offset_of;
+
+    let level = (&raw const NESTED_CALL_LEVEL) as u32;
+    let shadow = (&raw const interrupt_shadow) as u32;
+    let irq_check = (&raw const IRQ_CHECK) as u32;
+    let tlb_code_base = (&raw const tlb_code) as u32;
+    let (eip, code, state, code2, state2) = (
+        WasmBuilder::raw_local(0),
+        WasmBuilder::raw_local(1),
+        WasmBuilder::raw_local(2),
+        WasmBuilder::raw_local(3),
+        WasmBuilder::raw_local(4),
+    );
+
+    b.load_fixed_i32(level);
+    b.const_i32(NESTED_CALL_DEPTH);
+    b.lt_i32();
+    b.if_void();
+    {
+        // the compiled code of the callee's page, if any
+        b.get_local(&eip);
+        b.const_i32(12);
+        b.shr_u_i32();
+        b.const_i32(2);
+        b.shl_i32();
+        b.load_aligned_i32(tlb_code_base);
+        b.set_local(&code);
+
+        b.get_local(&code);
+        b.if_void();
+        {
+            b.get_local(&code);
+            b.load_u8(offset_of!(Code, state_flags) as u32);
+            b.load_fixed_u8(global_pointers::state_flags as u32);
+            b.eq_i32();
+            b.if_void();
+            {
+                // the callee's entry
+                b.get_local(&eip);
+                b.const_i32(0xFFF);
+                b.and_i32();
+                b.const_i32(1);
+                b.shl_i32();
+                b.get_local(&code);
+                b.add_i32();
+                b.load_unaligned_u16(offset_of!(Code, state_table) as u32);
+                b.set_local(&state);
+
+                b.get_local(&state);
+                b.const_i32(0xFFFF);
+                b.ne_i32();
+                b.if_void();
+                {
+                    if unsafe { crate::jit::NESTED_CALL_STATS } {
+                        b.increment_fixed_i64((&raw const crate::jit::NESTED_CALLS_MADE) as u32, 1);
+                    }
+                    b.const_i32(level as i32);
+                    b.load_fixed_i32(level);
+                    b.const_i32(1);
+                    b.add_i32();
+                    b.store_aligned_i32(0);
+
+                    b.get_local(&state);
+                    b.get_local(&code);
+                    b.load_unaligned_u16(offset_of!(Code, wasm_table_index) as u32);
+                    b.const_i32(WASM_TABLE_OFFSET as i32);
+                    b.add_i32();
+                    b.call_indirect_fn1();
+
+                    b.const_i32(level as i32);
+                    b.load_fixed_i32(level);
+                    b.const_i32(1);
+                    b.sub_i32();
+                    b.store_aligned_i32(0);
+
+                    // on in this module when nothing needs the dispatcher and eip is one of its entries
+                    b.load_fixed_u8(global_pointers::in_hlt as u32);
+                    b.load_fixed_u8(shadow);
+                    b.or_i32();
+                    b.load_fixed_u8(irq_check);
+                    b.or_i32();
+                    b.load_fixed_i32(global_pointers::flags as u32);
+                    b.const_i32(FLAG_TRAP);
+                    b.and_i32();
+                    b.or_i32();
+                    b.eqz_i32();
+                    b.if_void();
+                    {
+                        gen_get_eip(b);
+                        b.set_local(&eip);
+                        gen_find_entry_in_page_body(b, &eip, &code2, &state2, wasm_table_index, state_flags);
+                        b.return_();
+                    }
+                    b.block_end();
+                }
+                b.block_end();
+            }
+            b.block_end();
+        }
+        b.block_end();
+    }
+    b.block_end();
+    b.const_i32(-1);
 }
 
 /// Called at the end of a compiled module after registers and the instruction counter have been

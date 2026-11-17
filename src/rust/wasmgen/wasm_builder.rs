@@ -600,6 +600,12 @@ impl WasmBuilder {
     }
 
     /// Tail call of the function (type FN1) at the table index on top of the stack
+    pub fn call_indirect_fn1(&mut self) {
+        self.instruction_body.push(op::OP_CALL_INDIRECT);
+        self.instruction_body.push(FunctionType::FN1.to_u8());
+        self.instruction_body.push(0); // table 0
+    }
+
     pub fn return_call_indirect_fn1(&mut self) {
         self.instruction_body.push(op::OP_RETURN_CALL_INDIRECT);
         self.instruction_body.push(FunctionType::FN1.to_u8());
