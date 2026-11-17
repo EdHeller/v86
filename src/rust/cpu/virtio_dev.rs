@@ -15,6 +15,7 @@ pub const MODEL_JS: u8 = 0;
 pub const MODEL_RNG: u8 = 1;
 pub const MODEL_BLK: u8 = 2;
 pub const MODEL_NET: u8 = 3;
+pub const MODEL_CONSOLE: u8 = 4;
 
 /// the model of each device (MODEL_JS: virtio.js's)
 pub static mut MODEL: [u8; DEVICES] = [MODEL_JS; DEVICES];
@@ -177,6 +178,10 @@ pub unsafe fn notify(d: usize, value: i32) -> bool {
         },
         MODEL_NET => {
             super::virtio_net::notify(d, (value & 0xFFFF) as usize);
+            true
+        },
+        MODEL_CONSOLE => {
+            super::virtio_console::notify(d, (value & 0xFFFF) as usize);
             true
         },
         _ => false,

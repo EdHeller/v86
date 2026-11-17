@@ -39,6 +39,7 @@ pub mod xhci;
 pub mod vga;
 pub mod virtio;
 pub mod virtio_blk;
+pub mod virtio_console;
 pub mod virtio_dev;
 pub mod virtio_net;
 pub mod virtio_pci;

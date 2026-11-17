@@ -203,9 +203,24 @@ export function VirtioConsole(cpu, bus)
         },
     });
 
+    // the core's model (src/rust/cpu/virtio_console.rs): this sends a port's output (core_event)
+    const core = this.virtio.core >= 0 ? cpu.wm.exports : null;
+    if(core)
+    {
+        core["virtio_console_attach"](this.virtio.core, this.ports);
+        core["virtio_console_set_size"](this.virtio.core, this.cols, this.rows);
+        this.virtio.model = this;
+    }
     for(let port = 0; port < this.ports; ++port) {
         const queue_id = port === 0 ? 0 : port * 2 + 2;
         this.bus.register("virtio-console" + port + "-input-bytes", function(data) {
+            if(core)
+            {
+                const bytes = new Uint8Array(data);
+                new Uint8Array(cpu.wasm_memory.buffer, core["virtio_scratch"](bytes.length), bytes.length).set(bytes);
+                core["virtio_console_input"](this.virtio.core, port, bytes.length);
+                return;
+            }
             const queue = this.virtio.queues[queue_id];
             if(queue.has_request()) {
                 const bufchain = queue.pop_request();
@@ -216,6 +231,16 @@ export function VirtioConsole(cpu, bus)
         }, this);
 
         this.bus.register("virtio-console" + port + "-resize", function(size) {
+            if(core)
+            {
+                if(port === 0)
+                {
+                    this.cols = size[0];
+                    this.rows = size[1];
+                }
+                core["virtio_console_resize"](this.virtio.core, port, size[0] || 0, size[1] || 0);
+                return;
+            }
             if(port === 0) {
                 this.cols = size[0];
                 this.rows = size[1];
@@ -252,6 +277,16 @@ VirtioConsole.prototype.SendName = function(port, name)
 };
 
 
+/**
+ * From the core's model: what the driver wrote to port `port`
+ * @param {number} port
+ * @param {!Uint8Array} data
+ */
+VirtioConsole.prototype.core_event = function(port, data)
+{
+    this.bus.send("virtio-console" + port + "-output-bytes", data.slice());
+};
+
 VirtioConsole.prototype.get_state = function()
 {
     const state = [];
@@ -270,6 +305,7 @@ VirtioConsole.prototype.set_state = function(state)
     this.rows = state[1];
     this.cols = state[2];
     this.ports = state[3];
+    if(this.virtio.core >= 0) this.virtio.cpu.wm.exports["virtio_console_set_size"](this.virtio.core, this.cols, this.rows);
 };
 
 VirtioConsole.prototype.reset = function() {
