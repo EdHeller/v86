@@ -2005,41 +2005,82 @@ fn gen_xor32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
     codegen::gen_clear_flags_bits(ctx.builder, FLAG_CARRY | FLAG_OVERFLOW | FLAG_ADJUST);
 }
 
-fn gen_rol32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
-    let builder = &mut ctx.builder;
-    builder.get_local(dest_operand);
-    match source_operand {
-        LocalOrImmediate::WasmLocal(l) => {
-            builder.get_local(l);
-            builder.const_i32(31);
-            builder.and_i32();
-        },
+/// rol and ror inline (they were calls of arith.rs's rol32/ror32): the rotation, then CF and OF as those set them,
+/// left out when the flags are dead. A count of 0 (after the mask) changes nothing, flags included
+fn gen_rotate32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate, left: bool) {
+    let count = match source_operand {
         LocalOrImmediate::Immediate(i) => {
-            builder.const_i32(*i & 31);
+            if *i & 31 == 0 {
+                return;
+            }
+            None
         },
+        LocalOrImmediate::WasmLocal(l) => {
+            ctx.builder.get_local(l);
+            ctx.builder.const_i32(31);
+            ctx.builder.and_i32();
+            Some(ctx.builder.set_new_local())
+        },
+    };
+    ctx.builder.get_local(dest_operand);
+    match (&count, source_operand) {
+        (Some(c), _) => ctx.builder.get_local(c),
+        (None, LocalOrImmediate::Immediate(i)) => ctx.builder.const_i32(*i & 31),
+        _ => unreachable!(),
     }
-    builder.const_i32(31);
-    builder.and_i32();
-    builder.call_fn2_ret("rol32");
-    builder.set_local(dest_operand);
+    if left { ctx.builder.rotl_i32() } else { ctx.builder.rotr_i32() }
+    ctx.builder.set_local(dest_operand);
+
+    if flags_skip(ctx) {
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+    }
+    else {
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
+        if let Some(c) = &count {
+            ctx.builder.get_local(c);
+            ctx.builder.if_void();
+        }
+        codegen::gen_clear_flags_changed_bits(ctx.builder, 1 | FLAG_OVERFLOW);
+        let builder = &mut ctx.builder;
+        builder.const_i32(global_pointers::flags as i32);
+        codegen::gen_get_flags(builder);
+        builder.const_i32(!1 & !FLAG_OVERFLOW);
+        builder.and_i32();
+        // CF: the bit rotated last (rol: bit 0, ror: bit 31)
+        builder.get_local(dest_operand);
+        if !left {
+            builder.const_i32(31);
+            builder.shr_u_i32();
+        }
+        builder.const_i32(1);
+        builder.and_i32();
+        builder.or_i32();
+        // OF: rol: CF ^ bit 31, ror: bit 31 ^ bit 30 (moved to bit 11)
+        builder.get_local(dest_operand);
+        builder.const_i32(if left { 11 } else { 20 });
+        if left { builder.shl_i32() } else { builder.shr_s_i32() }
+        builder.get_local(dest_operand);
+        builder.const_i32(if left { 20 } else { 19 });
+        builder.shr_s_i32();
+        builder.xor_i32();
+        builder.const_i32(FLAG_OVERFLOW);
+        builder.and_i32();
+        builder.or_i32();
+        builder.store_aligned_i32(0);
+        if count.is_some() {
+            ctx.builder.block_end();
+        }
+    }
+    if let Some(c) = count {
+        ctx.builder.free_local(c);
+    }
+}
+
+fn gen_rol32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    gen_rotate32(ctx, dest_operand, source_operand, true)
 }
 fn gen_ror32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
-    let builder = &mut ctx.builder;
-    builder.get_local(dest_operand);
-    match source_operand {
-        LocalOrImmediate::WasmLocal(l) => {
-            builder.get_local(l);
-            builder.const_i32(31);
-            builder.and_i32();
-        },
-        LocalOrImmediate::Immediate(i) => {
-            builder.const_i32(*i & 31);
-        },
-    }
-    builder.const_i32(31);
-    builder.and_i32();
-    builder.call_fn2_ret("ror32");
-    builder.set_local(dest_operand);
+    gen_rotate32(ctx, dest_operand, source_operand, false)
 }
 
 fn gen_rcl32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
