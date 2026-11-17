@@ -398,8 +398,13 @@ emulator.add_listener("emulator-ready", async () => {
         for(const n of ["port_read8", "port_read16", "port_read32", "port_write8", "port_write16", "port_write32"]) count(io, n, "port " + n.slice(5));
         for(const n of ["mmap_read8", "mmap_read32", "mmap_write8", "mmap_write16", "mmap_write32", "mmap_write64", "mmap_write128"]) count(cpu, n, "mmio " + n.slice(5));
         count(cpu, "run_hardware_timers", "timer pass");
-        // (per port, the ten most frequent, to see what is left)
+        // (per port, the ten most frequent, to see what is left; MMIO by 4 KiB page)
         result.ports = {};
+        for(const n of ["mmap_read8", "mmap_read32", "mmap_write8", "mmap_write16", "mmap_write32"])
+        {
+            const f = cpu[n];
+            cpu[n] = function(addr, ...a) { const k = n.slice(5) + " 0x" + (addr >>> 12 << 12 >>> 0).toString(16); result.ports[k] = (result.ports[k] || 0) + 1; return f.call(this, addr, ...a); };
+        }
         for(const n of ["port_read8", "port_read16", "port_read32", "port_write8", "port_write16", "port_write32"])
         {
             const f = io[n];
