@@ -360,6 +360,9 @@ pub struct JitContext<'a> {
     /// the arithmetic flags the current instruction writes are overwritten before anything reads them (see
     /// flags_dead_after): its emitter may leave out storing them
     pub flags_dead: bool,
+    /// per basic block of the module: whether the flags may be read after its end, and what its instructions do to
+    /// them (see flags_live_out)
+    pub flags_live_out: HashMap<u32, (bool, Vec<(bool, bool)>)>,
 }
 impl<'a> JitContext<'a> {
     pub fn reg(&self, i: u32) -> WasmLocal {
@@ -1281,6 +1284,12 @@ fn jit_generate_module(
     }
     let brtable_default = builder.block_void();
 
+    let flags_live_out = if unsafe { FLAG_ELISION && FLAG_ELISION_ACROSS_BLOCKS } {
+        flags_live_out(&cpu, basic_blocks)
+    }
+    else {
+        HashMap::new()
+    };
     let ctx = &mut JitContext {
         cpu: &mut cpu,
         builder,
@@ -1293,6 +1302,7 @@ fn jit_generate_module(
         instruction_counter,
         wasm_table_index,
         flags_dead: false,
+        flags_live_out,
     };
 
     let entry_blocks = {
@@ -2151,8 +2161,16 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
     ctx.current_instruction = Instruction::Other;
     ctx.previous_instruction = Instruction::Other;
 
-    let flags_dead =
-        if unsafe { FLAG_ELISION } { flags_dead_after(ctx.cpu, start_addr, stop_addr) } else { Vec::new() };
+    let flags_dead = if unsafe { FLAG_ELISION } {
+        // (at the block's end the flags are read, unless the module's analysis knows better)
+        match ctx.flags_live_out.get(&start_addr) {
+            Some((live_out, effects)) => flags_dead_after(effects, *live_out),
+            None => flags_dead_after(&block_flag_effects(ctx.cpu, start_addr, stop_addr), true),
+        }
+    }
+    else {
+        Vec::new()
+    };
     let mut instruction_index = 0;
 
     loop {
@@ -2226,6 +2244,8 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
 pub static mut FLAG_ELISION: bool = true;
 /// and across memory accesses (set_jit_config(19, ..), see flag_effect)
 pub static mut FLAG_ELISION_ACROSS_ACCESSES: bool = true;
+/// and across the basic blocks of a module (set_jit_config(20, ..), see flags_live_out)
+pub static mut FLAG_ELISION_ACROSS_BLOCKS: bool = true;
 
 /// What an instruction does to the arithmetic flags, from its bytes, for flags_dead_after: (reads them or may need
 /// them, writes them all). Conservative: what is not recognised reads them, and so does anything that may fault
@@ -2267,9 +2287,8 @@ fn flag_effect(bytes: [u8; 4]) -> (bool, bool) {
     }
 }
 
-/// For each instruction of the basic block from `start` to `stop`: whether the arithmetic flags it writes are
-/// overwritten before anything reads them (the block's end counts as a read)
-fn flags_dead_after(cpu: &CpuContext, start: u32, stop: u32) -> Vec<bool> {
+/// What each instruction of the basic block from `start` to `stop` does to the flags (flag_effect)
+fn block_flag_effects(cpu: &CpuContext, start: u32, stop: u32) -> Vec<(bool, bool)> {
     let mut effects = Vec::new();
     let mut c = cpu.clone();
     c.eip = start;
@@ -2282,14 +2301,70 @@ fn flags_dead_after(cpu: &CpuContext, start: u32, stop: u32) -> Vec<bool> {
             break;
         }
     }
+    effects
+}
+
+/// For each instruction of a basic block (its effects): whether the flags it writes are overwritten before anything
+/// reads them, `live_out` telling whether they may be read after the block's end
+fn flags_dead_after(effects: &[(bool, bool)], live_out: bool) -> Vec<bool> {
     let mut dead = vec![false; effects.len()];
-    let mut live = true;
+    let mut live = live_out;
     for i in (0..effects.len()).rev() {
         dead[i] = !live;
         let (reads, writes_all) = effects[i];
         live = reads || live && !writes_all;
     }
     dead
+}
+
+/// Whether the flags may be read at the start of a block (its effects), `live_out` at its end
+fn flags_live_in(effects: &[(bool, bool)], live_out: bool) -> bool {
+    let mut live = live_out;
+    for &(reads, writes_all) in effects.iter().rev() {
+        live = reads || live && !writes_all;
+    }
+    live
+}
+
+/// Per basic block of a module: whether the flags may be read after it, from the blocks of the module it goes to
+/// (to anything else: yes). A successor runs the same instructions whichever way it is reached (this module, the
+/// dispatcher after an exit, the interpreter), so the flags it overwrites before reading need not be stored; in
+/// between, only the frame of an interrupt taken on the way would see older flags (as flag_effect's memory accesses)
+fn flags_live_out(
+    cpu: &CpuContext,
+    basic_blocks: &HashMap<u32, BasicBlock>,
+) -> HashMap<u32, (bool, Vec<(bool, bool)>)> {
+    let mut effects: HashMap<u32, Vec<(bool, bool)>> =
+        basic_blocks.values().map(|b| (b.addr, block_flag_effects(cpu, b.addr, b.end_addr))).collect();
+    let mut live_in: HashMap<u32, bool> = basic_blocks.keys().map(|&a| (a, false)).collect();
+    let mut live_out: HashMap<u32, bool> = HashMap::new();
+    let successor = |live_in: &HashMap<u32, bool>, addr: Option<u32>| match addr {
+        Some(a) => live_in.get(&a).copied().unwrap_or(true),
+        None => true,
+    };
+    loop {
+        let mut changed = false;
+        for b in basic_blocks.values() {
+            let out = b.has_sti
+                || match b.ty {
+                    BasicBlockType::Normal { next_block_addr, .. } => successor(&live_in, next_block_addr),
+                    BasicBlockType::ConditionalJump { next_block_addr, next_block_branch_taken_addr, .. } => {
+                        successor(&live_in, next_block_addr) || successor(&live_in, next_block_branch_taken_addr)
+                    },
+                    BasicBlockType::AbsoluteEip | BasicBlockType::Exit => true,
+                };
+            let inn = flags_live_in(&effects[&b.addr], out);
+            if live_out.insert(b.addr, out) != Some(out) {
+                changed = true;
+            }
+            if live_in.insert(b.addr, inn) != Some(inn) {
+                changed = true;
+            }
+        }
+        if !changed {
+            return live_out.into_iter().map(|(a, out)| (a, (out, effects.remove(&a).unwrap_or_default()))).collect();
+        }
+    }
 }
 
 pub fn jit_increase_hotness_and_maybe_compile(
@@ -2783,6 +2858,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         17 => crate::cpu::cpu::JIT_CHAINING = value != 0,
         18 => FLAG_ELISION = value != 0,
         19 => FLAG_ELISION_ACROSS_ACCESSES = value != 0,
+        20 => FLAG_ELISION_ACROSS_BLOCKS = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
         _ => dbg_assert!(false),

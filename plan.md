@@ -141,6 +141,9 @@ libv86.js fails with "Missing import").
      to -0.8 %);
      registers only (19 = 0): 245 M left out, no measurable change. `set_jit_config(18, 0)` turns it off.
      Tests: `tests/x64/jit/19_flag_elision_32.asm`, `run.mjs 32 jit` 0 forms differ. cmp+jcc fusing was there.
+     Across the basic blocks of a module (`flags_live_out`, a fixpoint over the blocks; `set_jit_config(20, 0)` turns
+     it off): flags at a block's end are dead when every successor in the module overwrites them first; 395 M of
+     1,305 M left out. Test: `tests/x64/jit/20_flag_elision_blocks.asm`. Timing: (measuring).
    - ⬜ b. Function boundaries instead of one big br_table; call/ret as wasm calls. jit64 has one function per page;
      call/ret still return to Rust; the 32-bit JIT is as upstream.
    - ⬜ c. VGA memory writes through the memory fast path (copy/v86#301).
