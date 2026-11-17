@@ -327,6 +327,9 @@ export function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_transl
     // The first card's registers, MAC address and buffer memory are in the core (struct Ne2k in src/rust/cpu/ne2k.rs),
     // which answers its ports; here they are accessors and views (made again when the module's memory grows).
     // Transmitting and receiving stay here. Further cards are JavaScript's alone.
+    /** The core transmits and receives (the first card on i440FX; on Q35 the interrupt routing is JavaScript's) */
+    this.core = this.id === 0 && !(this.pci && this.pci.q35);
+
     if(this.id === 0)
     {
         cpu.ne2k_init(this.port, (this.id === 0 ? 0x05 : (0x07 + this.id)) << 3);
@@ -1273,6 +1276,25 @@ Ne2k.prototype.data_port_read32 = function()
             this.data_port_read() << 16 | this.data_port_read() << 24;
 };
 
+/**
+ * A frame the core's card transmits (its bytes in the core's memory: copied)
+ * @param {Uint8Array} data
+ */
+Ne2k.prototype.core_send = function(data)
+{
+    data = new Uint8Array(data);
+    if(NE2K_LOG_PACKETS)
+    {
+        dump_packet(data, "send");
+    }
+    if(this.mac_address_in_state)
+    {
+        translate_mac_address(data, this.mac_address_in_state, this.mac);
+    }
+    this.bus.send("net" + this.id + "-send", data);
+    this.bus.send("eth-transmit-end", [data.length]);
+};
+
 Ne2k.prototype.receive = function(data)
 {
     // called from the adapter when data is received over the network
@@ -1280,6 +1302,23 @@ Ne2k.prototype.receive = function(data)
     if(this.cr & 1)
     {
         // stop bit set
+        return;
+    }
+
+    if(this.core)
+    {
+        // the address filter, the ring and the interrupt are the core's
+        const exports = this.cpu.wm.exports;
+        this.bus.send("eth-receive-end", [data.length]);
+        new Uint8Array(this.cpu.wasm_memory.buffer, exports["ne2k_scratch"](data.length), data.length).set(data);
+        if(!exports["ne2k_filter"](data.length)) return;
+        if(this.mac_address_in_state)
+        {
+            data = new Uint8Array(data);
+            translate_mac_address(data, this.mac, this.mac_address_in_state);
+            new Uint8Array(this.cpu.wasm_memory.buffer, exports["ne2k_scratch"](data.length), data.length).set(data);
+        }
+        exports["ne2k_store"](data.length);
         return;
     }
 

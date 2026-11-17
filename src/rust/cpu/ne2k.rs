@@ -1,13 +1,18 @@
 // NE2000 (RTL8029 on PCI) network card: the register pages, the 32 KiB buffer memory and its remote DMA (the data
-// port). Was src/ne2k.js, which keeps transmitting (a bus message with the frame) and receiving (frames from the
-// host's network into the ring), the MAC address translation of snapshots and the snapshot format, on the state
-// here. Machines with the Q35 chipset (its interrupt routing is JavaScript's) run the device in JavaScript.
+// port), transmitting (the frame to JavaScript: js::ne2k_send) and receiving (the address filter, the ring, the
+// packet header). Was src/ne2k.js, which keeps the bus (frames to and from the host's network), the MAC address
+// translation of snapshots and the snapshot format, on the state here. Machines with the Q35 chipset (its interrupt routing is JavaScript's) run the device in JavaScript.
+
+use crate::cpu::cpu::js;
 
 const E8390_CMD: i32 = 0x00;
 const NE_DATAPORT: i32 = 0x10;
 const NE_RESET: i32 = 0x1f;
 
+const ENISR_RX: i32 = 0x01;
+const ENISR_TX: i32 = 0x02;
 const ENISR_RDC: i32 = 0x40;
+const ENRSR_RXOK: u8 = 0x01;
 const ENISR_RESET: i32 = 0x80;
 
 const START_PAGE: i32 = 0x40;
@@ -153,13 +158,20 @@ impl Ne2k {
         let data = data & 0xFF;
         match reg {
             E8390_CMD => {
-                // (a command with transmit is JavaScript's: see serves)
                 self.cr = data;
                 if self.cr & 1 != 0 {
                     return;
                 }
                 if data & 0x18 != 0 && self.rcnt == 0 {
                     self.do_interrupt(ENISR_RDC);
+                }
+                if data & 4 != 0 {
+                    // transmit: the frame at TPSR, TCNT bytes (as far as the memory goes)
+                    let start = ((self.tpsr << 8) as usize).min(MEMORY_SIZE);
+                    let end = (start + self.tcnt.max(0) as usize).min(MEMORY_SIZE);
+                    js::ne2k_send(self.memory.as_ptr().add(start) as u32, (end - start) as i32);
+                    self.cr &= !4;
+                    self.do_interrupt(ENISR_TX);
                 }
             },
             0x01 => match pg { 0 => self.pstart = data, 1 => self.mac[0] = data as u8, _ => {} },
@@ -210,15 +222,94 @@ unsafe fn register(port: i32) -> Option<i32> {
     if reg <= 0x0F || reg == NE_DATAPORT || reg == NE_RESET { Some(reg) } else { None }
 }
 
-/// Whether the core answers this access itself. A command that transmits is JavaScript's (a bus message)
+/// Whether the core answers this access itself
 #[inline]
-pub unsafe fn serves(port: i32, size: i32, value: i32, write: bool) -> bool {
+pub unsafe fn serves(port: i32, size: i32, _value: i32, _write: bool) -> bool {
     match register(port) {
         Some(NE_DATAPORT) => true,
-        Some(E8390_CMD) if write => size == 8 && (value & 1 != 0 || value & 4 == 0),
         Some(_) => size == 8,
         None => false,
     }
+}
+
+/// A frame from the host's network, put at ne2k_scratch: whether the card takes it (not stopped, and promiscuous,
+/// broadcast, or to its address; multicast frames are dropped, as before)
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn ne2k_filter(length: i32) -> bool {
+    let n = ne2k();
+    let data = &SCRATCH[..(length.max(0) as usize).min(SCRATCH.len())];
+    if n.cr & 1 != 0 || data.len() < 6 {
+        return false;
+    }
+    if n.rxcr & 0x10 != 0 {
+        return true;
+    }
+    if n.rxcr & 4 != 0 && data[..6] == [0xFF; 6] {
+        return true;
+    }
+    if n.rxcr & 8 != 0 && data[0] & 1 == 1 {
+        return false;
+    }
+    data[..6] == n.mac
+}
+
+/// A frame the card takes (ne2k_filter), at ne2k_scratch: into the ring with its header, the receive interrupt;
+/// dropped when the ring is full
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn ne2k_store(length: i32) {
+    let n = ne2k();
+    let data = &SCRATCH[..(length.max(0) as usize).min(SCRATCH.len())];
+    let packet_length = data.len().max(60) as i32;
+    let offset = n.curpg << 8;
+    let total_length = packet_length + 4;
+    let data_start = offset + 4;
+    let mut next = n.curpg + 1 + (total_length >> 8);
+    let end = offset + total_length;
+    let needed = 1 + (total_length >> 8);
+    // (boundary == curpg: the ring is empty)
+    let available = if n.boundary > n.curpg { n.boundary - n.curpg } else { n.pstop - n.curpg + n.boundary - n.pstart };
+    // (ReactOS sets the boundary to 0 at first and never updates it unless it receives a packet)
+    if available < needed && n.boundary != 0 {
+        return;
+    }
+    let mem = &mut n.memory;
+    let put = |mem: &mut [u8; MEMORY_SIZE], at: i32, bytes: &[u8]| {
+        for (i, &b) in bytes.iter().enumerate() {
+            if let Some(m) = mem.get_mut(at as usize + i) {
+                *m = b;
+            }
+        }
+    };
+    if end > n.pstop << 8 {
+        let cut = ((n.pstop << 8) - data_start).max(0) as usize;
+        let cut = cut.min(data.len());
+        put(mem, data_start, &data[..cut]);
+        put(mem, n.pstart << 8, &data[cut..]);
+    }
+    else {
+        put(mem, data_start, data);
+        if data.len() < 60 {
+            put(mem, data_start + data.len() as i32, &[0u8; 60][..60 - data.len()]);
+        }
+    }
+    if next >= n.pstop {
+        next += n.pstart - n.pstop;
+    }
+    put(mem, offset, &[ENRSR_RXOK, next as u8, total_length as u8, (total_length >> 8) as u8]);
+    n.curpg = next;
+    n.do_interrupt(ENISR_RX);
+}
+
+static mut SCRATCH: Vec<u8> = Vec::new();
+
+/// Room for a frame of `length` bytes from JavaScript
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn ne2k_scratch(length: i32) -> u32 {
+    SCRATCH.resize(length.max(0) as usize, 0);
+    SCRATCH.as_ptr() as u32
 }
 
 #[no_mangle]

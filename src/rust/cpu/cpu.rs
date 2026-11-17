@@ -62,6 +62,8 @@ pub mod js {
         pub fn sb16_event(kind: i32, a: f64, b: i32, c: i32);
         /// HD Audio (src/rust/cpu/hda.rs) tells its plugin something: samples played (hda_output_*), a rate, output on or off
         pub fn hda_event(kind: i32, a: f64);
+        /// The NE2000 (src/rust/cpu/ne2k.rs) transmits a frame: its bytes in this module's memory
+        pub fn ne2k_send(data: u32, length: i32);
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();
