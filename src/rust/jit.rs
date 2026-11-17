@@ -124,6 +124,33 @@ pub fn rust_init() {
     }));
 }
 
+/// The entry points noted for a page (offsets 0 to 4095): a bitmap, as every interpreted run notes one (a hash set's
+/// hashing showed in profiles)
+#[derive(Clone)]
+pub struct EntrySet {
+    bits: [u64; 64],
+}
+impl Default for EntrySet {
+    fn default() -> Self { EntrySet { bits: [0; 64] } }
+}
+impl EntrySet {
+    #[inline]
+    pub fn insert(&mut self, offset: u16) { self.bits[(offset >> 6 & 63) as usize] |= 1 << (offset & 63); }
+    pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
+        self.bits.iter().enumerate().flat_map(|(i, &w)| {
+            let mut w = w;
+            std::iter::from_fn(move || {
+                if w == 0 {
+                    return None;
+                }
+                let b = w.trailing_zeros();
+                w &= w - 1;
+                Some((i as u32 * 64 + b) as u16)
+            })
+        })
+    }
+}
+
 struct PageInfo {
     wasm_table_index: WasmTableIndex,
     hidden_wasm_table_indices: Vec<WasmTableIndex>,
@@ -143,7 +170,7 @@ pub struct JitState {
     // (faster, but uses much more memory)
     // or a compressed bitmap (likely faster)
     // or HashSet<u32> rather than nested
-    entry_points: HashMap<Page, (u32, HashSet<u16>), PageBuildHasher>,
+    entry_points: HashMap<Page, (u32, EntrySet), PageBuildHasher>,
     pages: HashMap<Page, PageInfo, PageBuildHasher>,
     wasm_table_index_free_list: Vec<WasmTableIndex>,
     compiling: Option<(WasmTableIndex, CompilingPageState)>,
@@ -492,7 +519,7 @@ fn jit_find_basic_blocks(
 
                 if entry_points
                     .iter()
-                    .all(|entry_point| existing_entry_points.contains(entry_point))
+                    .all(|entry_point| existing_entry_points.contains(&entry_point))
                 {
                     page_blacklist.insert(phys_page);
                     return None;
@@ -507,7 +534,7 @@ fn jit_find_basic_blocks(
 
                 *hotness = 0;
 
-                for &addr_low in entry_points.iter() {
+                for addr_low in entry_points.iter() {
                     let addr = virt_target & !0xFFF | addr_low as i32;
                     to_visit_stack.push(addr);
                     marked_as_entry.insert(addr);
@@ -891,7 +918,7 @@ fn jit_analyze_and_generate(
 
     if entry_points
         .iter()
-        .all(|entry_point| existing_entry_points.contains(entry_point))
+        .all(|entry_point| existing_entry_points.contains(&entry_point))
     {
         profiler::stat_increment(stat::COMPILE_SKIPPED_NO_NEW_ENTRY_POINTS);
         return;
@@ -923,7 +950,7 @@ fn jit_analyze_and_generate(
     let virt_page = Page::page_of(virt_entry_point as u32);
     let entry_points: HashSet<i32> = entry_points
         .iter()
-        .map(|e| virt_page.to_address() as i32 | *e as i32)
+        .map(|e| virt_page.to_address() as i32 | e as i32)
         .collect();
     let basic_blocks = jit_find_basic_blocks(ctx, entry_points, cpu.clone());
 
@@ -1067,7 +1094,7 @@ fn jit_analyze_and_generate(
         maybe_has_code_set(p);
         ctx.entry_points
             .entry(p)
-            .or_insert_with(|| (0, HashSet::new()));
+            .or_insert_with(|| (0, EntrySet::default()));
     }
     for &(addr, state) in &entries {
         let code = page_info.get_mut(&Page::page_of(addr)).unwrap();
@@ -2418,7 +2445,7 @@ pub fn jit_increase_hotness_and_maybe_compile(
     let (hotness, entry_points) = ctx.entry_points.entry(page).or_insert_with(|| {
         cpu::tlb_set_has_code(page, true);
         profiler::stat_increment(stat::RUN_INTERPRETED_NEW_PAGE);
-        (0, HashSet::new())
+        (0, EntrySet::default())
     });
 
     if !is_near_end_of_page(phys_address) {
