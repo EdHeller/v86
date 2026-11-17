@@ -79,7 +79,33 @@ export function VirtioSnd(cpu, bus)
         device_specific: { initial_port: 0x7600, struct },
         on_reset: () => this.reset_streams(),
     });
+    /** the core's model (src/rust/cpu/virtio_snd.rs), or null: it sends the samples here (core_event) */
+    this.core = this.virtio.core >= 0 ? cpu.wm.exports : null;
+    if(this.core)
+    {
+        this.core["virtio_snd_attach"](this.virtio.core);
+        this.virtio.model = this;
+    }
 }
+
+/**
+ * From the core's model: odd kinds: the stream started (its rate in data); even ones: samples, with their format
+ * (kind >> 1: bit 0 s32, bits 1-3 channels, bits 4 on the rate)
+ * @param {number} kind
+ * @param {!Uint8Array} data
+ */
+VirtioSnd.prototype.core_event = function(kind, data)
+{
+    if(kind & 1)
+    {
+        const rate = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, true);
+        this.bus.send("dac-tell-sampling-rate", rate);
+        this.bus.send("dac-enable");
+        return;
+    }
+    const k = kind >>> 1;
+    this.output_samples(data.slice(), k >> 1 & 7, k & 1 ? FMT_S32 : FMT_S16, k >>> 4);
+};
 
 /** A stream's state: its parameters, whether it plays, the buffers queued */
 function new_stream()
@@ -101,6 +127,7 @@ function new_stream()
 
 VirtioSnd.prototype.reset_streams = function()
 {
+    if(this.core) this.core["virtio_snd_reset"]();
     this.stream = new_stream();
 };
 
@@ -312,6 +339,18 @@ VirtioSnd.prototype.complete = function(count)
 VirtioSnd.prototype.output = function(bytes)
 {
     const { channels, format, rate } = this.stream.params;
+    this.output_samples(bytes, channels, format, rate);
+};
+
+/**
+ * Samples to the speaker (and to whoever listens for the raw stream)
+ * @param {!Uint8Array} bytes
+ * @param {number} channels
+ * @param {number} format
+ * @param {number} rate
+ */
+VirtioSnd.prototype.output_samples = function(bytes, channels, format, rate)
+{
     this.bus.send("virtio-snd-pcm", { "stream": 0, "rate": rate, "channels": channels, "format": format === FMT_S16 ? "s16" : "s32",
         "bytes": bytes });
     // the speaker's two channels, as floats
@@ -354,6 +393,12 @@ VirtioSnd.prototype.reset = function()
 
 VirtioSnd.prototype.get_state = function()
 {
+    if(this.core)
+    {
+        const n = this.core["virtio_snd_save"]();
+        const v = new Float64Array(this.cpu.wasm_memory.buffer, this.core["virtio_scratch"](8 * n), n);
+        return [this.virtio, v[0] ? [v[1], v[2], v[3], v[4], v[5]] : null, !!v[6], !!v[7], v[8], v[9], Array.from(v.subarray(10))];
+    }
     const stream = this.stream;
     // (the buffers queued by their chains' heads: made again from the ring on a restore)
     return [this.virtio, stream.params ? [stream.params.channels, stream.params.format, stream.params.rate,
@@ -364,6 +409,14 @@ VirtioSnd.prototype.get_state = function()
 VirtioSnd.prototype.set_state = function(state)
 {
     this.virtio.set_state(state[0]);
+    if(this.core)
+    {
+        const heads = state[6] || [];
+        const v = [state[1] ? 1 : 0, ...(state[1] || [0, 0, 0, 0, 0]), +state[2], +state[3], state[4], state[5], ...heads];
+        new Float64Array(this.cpu.wasm_memory.buffer, this.core["virtio_scratch"](8 * v.length), v.length).set(v);
+        this.core["virtio_snd_load"](v.length);
+        return;
+    }
     const stream = this.stream = new_stream();
     if(state[1])
     {

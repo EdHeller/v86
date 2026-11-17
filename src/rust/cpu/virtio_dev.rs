@@ -18,6 +18,7 @@ pub const MODEL_NET: u8 = 3;
 pub const MODEL_CONSOLE: u8 = 4;
 pub const MODEL_BALLOON: u8 = 5;
 pub const MODEL_INPUT: u8 = 6;
+pub const MODEL_SND: u8 = 7;
 
 /// the model of each device (MODEL_JS: virtio.js's)
 pub static mut MODEL: [u8; DEVICES] = [MODEL_JS; DEVICES];
@@ -133,6 +134,12 @@ pub unsafe fn pop(d: usize, i: usize) -> Chain {
     let mask = q[Q_SIZE] - 1;
     let head = super::virtio::virtio_avail_entry(q[Q_AVAIL] as u32, q[Q_AVAIL_LAST], mask);
     q[Q_AVAIL_LAST] = (q[Q_AVAIL_LAST] + 1) & 0xFFFF;
+    chain_at(d, i, head)
+}
+
+/// The request with descriptor `head` of queue `i` (one taken before: a restored snapshot's)
+pub unsafe fn chain_at(d: usize, i: usize, head: i32) -> Chain {
+    let q = qf(d, i);
     let n = super::virtio::virtio_read_chain(q[Q_DESC] as u32, q[Q_SIZE], head, negotiated(d, VIRTIO_F_RING_INDIRECT_DESC));
     let descs = std::slice::from_raw_parts(super::virtio::virtio_chain_addr() as *const i32, 4 * n as usize);
     let mut c = Chain {
@@ -205,6 +212,10 @@ pub unsafe fn notify(d: usize, value: i32) -> bool {
         },
         MODEL_INPUT => {
             super::virtio_input::notify(d, (value & 0xFFFF) as usize);
+            true
+        },
+        MODEL_SND => {
+            super::virtio_snd::notify(d, (value & 0xFFFF) as usize);
             true
         },
         _ => false,
