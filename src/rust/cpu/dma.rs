@@ -183,3 +183,59 @@ pub unsafe fn serves_write(port: i32) -> bool {
         && !super::parallel::WORKER
         && matches!(decode(port), Some(Reg::Addr(_) | Reg::Count(_) | Reg::Page(_) | Reg::PageHi(_) | Reg::Mode(_) | Reg::FlipFlop))
 }
+
+
+/// A device reads `len` bytes from memory through `channel` (memory to device: dma.js's do_write) into `out` from
+/// `start`: as many as the channel's count (or `len`, when the count is larger), the channel's address and count
+/// stepped, reloaded on autoinit, and while the device wants more and the channel autoinitialises, again from its
+/// start. Returns false when the transfer would go past `out`.
+pub unsafe fn transfer_to_device(channel: usize, out: &mut [u8], start: usize, len: usize) -> bool {
+    let d = dma();
+    let bytes_per_count = if channel >= 5 { 2 } else { 1 };
+    let mut read_count = (d.channel_count[channel] as usize + 1) & 0xFFFF;
+    let mut read_bytes = read_count * bytes_per_count;
+    let addr = address_8bit(channel);
+    let mut unfinished = false;
+    let mut want_more = false;
+    let autoinit = d.channel_mode[channel] & 0x10 != 0;
+    if len < read_bytes {
+        read_count = len / bytes_per_count;
+        read_bytes = read_count * bytes_per_count;
+        unfinished = true;
+    }
+    else if len > read_bytes {
+        want_more = true;
+    }
+    if start + read_bytes > out.len() {
+        return false;
+    }
+    d.channel_addr[channel] = d.channel_addr[channel].wrapping_add(read_count as u16);
+    d.channel_count[channel] = d.channel_count[channel].wrapping_sub(read_count as u16);
+    if !unfinished && autoinit {
+        d.channel_addr[channel] = d.channel_addr_init[channel];
+        d.channel_count[channel] = d.channel_count_init[channel];
+    }
+    for i in 0..read_bytes {
+        let a = addr as u64 + i as u64;
+        out[start + i] = if a < *crate::cpu::global_pointers::memory_size as u64 { *crate::cpu::memory::mem8.add(a as usize) } else { 0 };
+    }
+    if want_more && autoinit {
+        return transfer_to_device(channel, out, start + read_bytes, len - read_bytes);
+    }
+    true
+}
+
+/// The address of a channel's next byte (dma.js's address_get_8bit)
+pub unsafe fn address_8bit(channel: usize) -> u32 {
+    let d = dma();
+    let mut addr = d.channel_addr[channel] as u32;
+    let mut page = d.channel_page[channel] as u32;
+    if channel >= 5 {
+        addr <<= 1;
+        page &= 0xFE;
+    }
+    addr | page << 16 | (d.channel_pagehi[channel] as u32) << 24
+}
+
+/// Whether a channel is masked
+pub unsafe fn masked(channel: usize) -> bool { dma().channel_mask[channel] != 0 }

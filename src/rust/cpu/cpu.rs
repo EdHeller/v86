@@ -58,6 +58,8 @@ pub mod js {
         /// A virtio device model in the core has something for JavaScript: what (per model), and bytes of this module's
         /// memory (a frame to send, a MAC address, text, ...)
         pub fn virtio_model_event(device: i32, kind: i32, data: u32, length: i32);
+        /// The SB16 (src/rust/cpu/sb16.rs) tells the bus something: a sampling rate, the DAC on or off, a mixer setting
+        pub fn sb16_event(kind: i32, a: f64, b: i32, c: i32);
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();
@@ -5072,6 +5074,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             _ if super::vga_legacy::ports_serve(port, 8, 0, false) => super::vga_legacy::vga_port_read(port, 8),
             _ if super::uhci::serves(port) => super::uhci::uhci_port_read(port, 8),
             _ if super::virtio_pci::serves(port) => super::virtio_pci::port_read(port, 8),
+            _ if super::sb16::serves(port) => super::sb16::port_read(port),
             _ if super::ide::serves(port, false) => super::ide::ide_port_read(port),
             _ if super::ide::bus_master_serves(port, 8, 0, false) => super::ide::ide_bus_master_read(port, 8),
             _ if super::floppy::serves(port, false) => super::floppy::fdc_port_read(port),
@@ -5182,6 +5185,7 @@ pub fn io_port_write8(port: i32, value: i32) {
             _ if super::vga_legacy::ports_serve(port, 8, value, true) => super::vga_legacy::vga_port_write(port, 8, value),
             _ if super::uhci::serves(port) => super::uhci::uhci_port_write(port, 8, value),
             _ if super::virtio_pci::serves(port) => super::virtio_pci::port_write(port, 8, value),
+            _ if super::sb16::serves(port) => super::sb16::port_write(port, value),
             _ if super::ide::serves(port, true) => super::ide::ide_port_write(port, value),
             _ if super::ide::bus_master_serves(port, 8, value, true) => super::ide::ide_bus_master_write(port, 8, value),
             _ if super::floppy::serves(port, true) => super::floppy::fdc_port_write(port, value),

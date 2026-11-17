@@ -94,6 +94,7 @@ export function V86(options)
         "virtio_event": function(device, kind, value) { cpu.virtio_core_devices[device].core_event(kind, value); },
         "virtio_config": function(device, offset, size, write, value) { return cpu.virtio_core_devices[device].core_config(offset, size, !!write, value); },
         "virtio_blk_io": function(device, id, write, offset, length) { cpu.virtio_core_devices[device].model.core_io(id, !!write, offset, length); },
+        "sb16_event": function(kind, a, b, c) { cpu.devices.sb16.core_event(kind, a, b, c); },
         "virtio_model_event": function(device, kind, data, length) { cpu.virtio_core_devices[device].model.core_event(kind, new Uint8Array(cpu.wasm_memory.buffer, data >>> 0, length)); },
         "io_port_read16": function(addr) { return cpu.io.port_read16(addr); },
         "io_port_read32": function(addr) { return cpu.io.port_read32(addr); },
@@ -954,7 +955,7 @@ V86.prototype.zstd_decompress_worker = async function(decompressed_size, src)
                     const env = Object.fromEntries([
                         "cpu_exception_hook", "run_hardware_timers",
                         "cpu_event_halt", "microtick", "get_rand_int", "stop_idling",
-                        "io_port_read8", "io_port_read16", "io_port_read32", "io_port_read_block", "io_port_write_block", "usb_transaction", "virtio_event", "virtio_config", "virtio_blk_io", "virtio_model_event",
+                        "io_port_read8", "io_port_read16", "io_port_read32", "io_port_read_block", "io_port_write_block", "usb_transaction", "virtio_event", "virtio_config", "virtio_blk_io", "virtio_model_event", "sb16_event",
                         "io_port_write8", "io_port_write16", "io_port_write32",
                         "mmap_read8", "mmap_read32",
                         "mmap_write8", "mmap_write16", "mmap_write32", "mmap_write64", "mmap_write128",
