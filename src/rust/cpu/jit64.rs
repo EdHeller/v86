@@ -242,7 +242,7 @@ pub static mut PAGE_HIST: [(u64, u32); 4096] = [(0, 0); 4096];
 pub static mut INTERP_WHY: [u32; 24] = [0; 24];
 pub static mut ALU_OPS: [u32; 64] = [0; 64];
 /// try_run_block: [ready slots run, of them revalidated (epoch or module changed), calls, slot misses (another rip)]
-pub static mut DISPATCH_STATS: [u32; 4] = [0; 4];
+pub static mut DISPATCH_STATS: [u32; 8] = [0; 8];
 /// debugging: interpreter batches by the kind of their first rip (counts, instructions):
 /// 0 page without module, 1 served entry, 2 covered (inside a block), 3 not covered, 4 unmapped,
 /// 5 continuation (no dispatcher check before it)
@@ -4416,6 +4416,7 @@ unsafe fn interp_one() {
 /// Runs one step of 64-bit code: a compiled block if there is one at rip, otherwise one
 /// interpreted instruction
 pub unsafe fn run() {
+    DISPATCH_STATS[7] = DISPATCH_STATS[7].wrapping_add(1);
     let checked = CHECK;
     if CHECK {
         CHECK = false;
@@ -4864,6 +4865,7 @@ unsafe fn page_heat_compile(r: u64) {
 }
 
 unsafe fn call_block(index: u16, phys_page: u32) {
+    DISPATCH_STATS[6] = DISPATCH_STATS[6].wrapping_add(1);
     AFTER_EXIT = true;
     CHAIN_START = *instruction_counter;
     CHAIN_LIMIT = if VERIFY { 0 } else { CHAIN_LIMIT_SET };
@@ -4991,14 +4993,7 @@ unsafe fn try_run_block() -> bool {
         DISPATCH_STATS[3] = DISPATCH_STATS[3].wrapping_add(1);
         st.slots[si] = Slot { rip: r, ..SLOT_EMPTY };
         // first visit: the code may be compiled already (another mapping of the same page)
-        if !st.blocks.is_empty() {
-            if let Some(phys) = probe_fetch(r, user) {
-                let key = block_key(phys & !0xFFF, user);
-                if st.blocks.contains_key(&key) {
-                    refill_slot(r, key, (phys & 0xFFF) as usize);
-                }
-            }
-        }
+        slot_first_visit(r, user);
     }
     let slot = &mut st.slots[si];
     match slot.state {
@@ -5009,25 +5004,8 @@ unsafe fn try_run_block() -> bool {
             DISPATCH_STATS[0] = DISPATCH_STATS[0].wrapping_add(1);
             if slot.epoch != epoch(user) || INDEX_GEN[slot.index as usize] != slot.gen {
                 DISPATCH_STATS[1] = DISPATCH_STATS[1].wrapping_add(1);
-                // mappings may have changed or blocks were invalidated: check that rip still
-                // maps to the block of this slot
-                // (the module is still the one of the slot when its index has the same generation)
-                let ok = match probe_fetch(r, user) {
-                    Some(phys) => block_key(phys & !0xFFF, user) == slot.key && INDEX_GEN[slot.index as usize] == slot.gen
-                        && (!slot.straddle || probe_fetch((r & !0xFFF).wrapping_add(0x1000), user) == Some((phys & !0xFFF) + 0x1000)),
-                    _ => false,
-                };
-                if !ok {
-                    *slot = SLOT_EMPTY;
+                if !slot_revalidate(si, r, user) {
                     return false;
-                }
-                slot.epoch = epoch(user);
-                note_code_vpn(r >> 12, user);
-                if slot.straddle {
-                    note_code_vpn((r >> 12) + 1, user);
-                }
-                if !user && !crate::cpu::long_mem::fetch_is_global(r) {
-                    KERNEL_NONGLOBAL = true;
                 }
             }
             {
@@ -5049,7 +5027,52 @@ unsafe fn try_run_block() -> bool {
             }
             false
         },
-        SLOT_COUNTING => {
+        SLOT_COUNTING => slot_counting(r, user, si),
+        _ => false,
+    }
+}
+
+unsafe fn slot_first_visit(r: u64, user: bool) {
+    let st = state();
+    if !st.blocks.is_empty() {
+        if let Some(phys) = probe_fetch(r, user) {
+            let key = block_key(phys & !0xFFF, user);
+            if st.blocks.contains_key(&key) {
+                refill_slot(r, key, (phys & 0xFFF) as usize);
+            }
+        }
+    }
+}
+
+unsafe fn slot_revalidate(si: usize, r: u64, user: bool) -> bool {
+    let slot = &mut state().slots[si];
+                // mappings may have changed or blocks were invalidated: check that rip still
+                // maps to the block of this slot
+                // (the module is still the one of the slot when its index has the same generation)
+                let ok = match probe_fetch(r, user) {
+                    Some(phys) => block_key(phys & !0xFFF, user) == slot.key && INDEX_GEN[slot.index as usize] == slot.gen
+                        && (!slot.straddle || probe_fetch((r & !0xFFF).wrapping_add(0x1000), user) == Some((phys & !0xFFF) + 0x1000)),
+                    _ => false,
+                };
+                if !ok {
+                    *slot = SLOT_EMPTY;
+                    return false;
+                }
+                slot.epoch = epoch(user);
+                note_code_vpn(r >> 12, user);
+                if slot.straddle {
+                    note_code_vpn((r >> 12) + 1, user);
+                }
+                if !user && !crate::cpu::long_mem::fetch_is_global(r) {
+                    KERNEL_NONGLOBAL = true;
+                }
+    true
+}
+
+unsafe fn slot_counting(r: u64, user: bool, si: usize) -> bool {
+    DISPATCH_STATS[5] = DISPATCH_STATS[5].wrapping_add(1);
+    let st = state();
+    let slot = &mut st.slots[si];
             // the page's module (compiled after this slot started counting) may serve r
             if served_bits(r) && bit(&(*SERVED).bits, (r & 0xFFF) as usize) {
                 refill_slot(r, (*SERVED).key, (r & 0xFFF) as usize);
@@ -5162,13 +5185,11 @@ unsafe fn try_run_block() -> bool {
                 }
             }
             false
-        },
-        _ => false,
-    }
 }
 
 /// copies the state of the block with `key` (if any) to the slot of `r`
 unsafe fn refill_slot(r: u64, key: u64, off: usize) {
+    DISPATCH_STATS[4] = DISPATCH_STATS[4].wrapping_add(1);
     let st = state();
     let Some(b) = st.blocks.get(&key) else { return };
     let slot = &mut st.slots[slot_index(r)];

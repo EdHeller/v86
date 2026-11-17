@@ -2970,7 +2970,7 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         17 => crate::cpu::jit64::STAT_BYTES,
         30 => crate::cpu::cpu::STAT_TSC_READS,
         32 => NESTED_CALLS_MADE as u32,
-        34..=37 => crate::cpu::jit64::DISPATCH_STATS[(index - 34) as usize],
+        34..=41 => crate::cpu::jit64::DISPATCH_STATS[(index - 34) as usize],
         33 => NESTED_CALLS_CONTINUED as u32,
         31 => crate::cpu::cpu::STAT_LOOP_CLOCK_READS,
         20..=27 => crate::cpu::long_mem::SLOW_STATS[(index - 20) as usize],

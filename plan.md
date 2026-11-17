@@ -153,7 +153,13 @@ libv86.js fails with "Missing import").
      the slot checks its page again (a page walk: probe_fetch does not fill the tlb). A per-epoch cache of those
      probes did not change the boot (+1.0 %, within the noise); reverted. The hot path is cheap: 10 M calls and
      returns across pages take 0.35 s (`tests/x64/manual/bench_dispatch.asm`). Counters: tools/profile for x86_64
-     ("dispatch: ..."). Where try_run_block's 1.4 s and call_block's 1.7 s of self time go is still open.
+     ("dispatch: ..."). Then (option 2): per call run about 22 ns, try_run_block 74 ns, call_block 126 ns (18 M, 18 M
+     and 12.6 M calls), against 17 ns per entry in the micro benchmark: the boot's slots (65536 x 48 bytes, hashed
+     apart) and 3,126 modules miss the caches. The rest is small: revalidations 0.19 s, first visits 0.9 s (refill_slot
+     0.5 s), counting slots 1.6 s with the interpreter they run. jit64's chaining (tail calls between modules,
+     `set_jit_config(56, 0)` off) is what keeps the entries few: off, 197 M entries instead of 12.6 M and login
+     +5.3 % (every round), unlike the 32-bit JIT's chaining (+6.7 %). Possible later: a smaller slot table (less
+     than 1 %).
    - ⬜ For later (2026-11-17): a faster interpreter for cold code. An Alpine x86 boot interprets 255 M instructions
      (about 15 % of its time, about 28 ns each against 6 ns compiled): code that runs too rarely to be compiled
      (compiling earlier was slower: +3.8 % at a 50 K threshold). Idea: cache decoded instructions per page (the

@@ -319,6 +319,10 @@ async function finish(ok, error)
             "dispatch: slot misses (another rip in the slot)": g(37),
             "dispatch: ready slots run": g(34),
             "dispatch: of them checked again (address space or module changed)": g(35),
+            "dispatch: refill_slot": g(38),
+            "dispatch: counting slots": g(39),
+            "dispatch: call_block": g(40),
+            "dispatch: run (calls from the main loop)": g(41),
             "clock reads: rdtsc": g(30),
             "clock reads: main loop": g(31),
         };
