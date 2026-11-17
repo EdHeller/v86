@@ -154,6 +154,15 @@ libv86.js fails with "Missing import").
      probes did not change the boot (+1.0 %, within the noise); reverted. The hot path is cheap: 10 M calls and
      returns across pages take 0.35 s (`tests/x64/manual/bench_dispatch.asm`). Counters: tools/profile for x86_64
      ("dispatch: ..."). Where try_run_block's 1.4 s and call_block's 1.7 s of self time go is still open.
+   - ⬜ For later (2026-11-17): a faster interpreter for cold code. An Alpine x86 boot interprets 255 M instructions
+     (about 15 % of its time, about 28 ns each against 6 ns compiled): code that runs too rarely to be compiled
+     (compiling earlier was slower: +3.8 % at a 50 K threshold). Idea: cache decoded instructions per page (the
+     opcode handler, the modrm form, the immediates) so a second run skips decoding; or a cheaper first-tier
+     compile. Expect a few percent; a large change.
+   - ⬜ For later (2026-11-17): measure the experiments that lost in V8 in Firefox (SpiderMonkey): chaining with tail
+     calls (`set_jit_config(17, 1)`, +6.7 % in V8), nested calls (`(21, 1)`, +5.9 %), bigger modules
+     (`(1, 4)`, `(1, 8)`). Their cost in V8 was the call between generated modules; another engine may make it
+     cheaper. tools/profile runs in Node only: needs a page-based harness (or the browser tests) for Firefox.
    - ✅ The JIT's per-page entry points in a bitmap instead of a hash set (2026-11-17): every interpreted run notes
      one, and SipHash cost 0.5 s of a boot (hotness bookkeeping 2.0 s -> 1.5 s inclusive in the profile).
    - ✅ b. call/ret as wasm calls, measured (2026-11-17), off by default: a call out of a module (32-bit JIT) calls
