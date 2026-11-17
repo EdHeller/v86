@@ -12,11 +12,9 @@ pub struct CpuContext {
 
 impl CpuContext {
     pub fn advance16(&mut self) {
-        dbg_assert!(self.eip & 0xFFF < 0xFFE);
         self.eip += 2;
     }
     pub fn advance32(&mut self) {
-        dbg_assert!(self.eip & 0xFFF < 0xFFC);
         self.eip += 4;
     }
     #[allow(unused)]
@@ -29,21 +27,20 @@ impl CpuContext {
         }
     }
 
+    // (no check that the bytes are in eip's page: jit::instruction_fits_in_page decodes instructions near a page's
+    // end to see whether they cross it, from RAM only)
     pub fn read_imm8(&mut self) -> u8 {
-        dbg_assert!(self.eip & 0xFFF < 0xFFF);
         let v = memory::read8(self.eip) as u8;
         self.eip += 1;
         v
     }
     pub fn read_imm8s(&mut self) -> i8 { self.read_imm8() as i8 }
     pub fn read_imm16(&mut self) -> u16 {
-        dbg_assert!(self.eip & 0xFFF < 0xFFE);
         let v = memory::read16(self.eip) as u16;
         self.eip += 2;
         v
     }
     pub fn read_imm32(&mut self) -> u32 {
-        dbg_assert!(self.eip & 0xFFF < 0xFFC);
         let v = memory::read32s(self.eip) as u32;
         self.eip += 4;
         v

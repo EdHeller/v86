@@ -421,6 +421,31 @@ pub fn is_near_end_of_page(address: u32) -> bool {
     address & 0xFFF >= 0x1000 - MAX_INSTRUCTION_LENGTH
 }
 
+/// Whether the instruction at physical address `phys` ends before its page's last byte, so that it can be compiled (an
+/// instruction that crosses into the next page is the interpreter's: the next page may map elsewhere). Near the
+/// page's end the instruction is decoded; conservatively no when the next physical page is device memory or past
+/// RAM (decoding a crossing instruction reads its bytes)
+pub fn instruction_fits_in_page(phys: u32, cpu: &CpuContext) -> bool {
+    if !is_near_end_of_page(phys) {
+        return true;
+    }
+    if !unsafe { COMPILE_NEAR_END_OF_PAGE } {
+        return false;
+    }
+    let next_page = (phys | 0xFFF) + 1;
+    if next_page >= unsafe { *crate::cpu::global_pointers::memory_size } || memory::in_mapped_range(next_page) {
+        return false;
+    }
+    let mut c = CpuContext { eip: phys, ..cpu.clone() };
+    analysis::analyze_step(&mut c);
+    // (strictly before the page's end: compiled code sets eip as the page's base and the low 12 bits of the next
+    // instruction, which would wrap around to the page's start)
+    c.eip > phys && c.eip < next_page
+}
+
+/// Compile instructions in the last 15 bytes of a page when they end within it (set_jit_config(69, ..))
+pub static mut COMPILE_NEAR_END_OF_PAGE: bool = true;
+
 pub fn jit_find_cache_entry(phys_address: u32, state_flags: CachedStateFlags) -> CachedCode {
     // TODO: dedup with jit_find_cache_entry_in_page?
     // NOTE: This is currently only used for invariant/missed-entry-point checking
@@ -495,10 +520,8 @@ fn jit_find_basic_blocks(
         max_pages: u32,
         marked_as_entry: &mut HashSet<i32>,
         to_visit_stack: &mut Vec<i32>,
+        cpu_ctx: &CpuContext,
     ) -> Option<u32> {
-        if is_near_end_of_page(virt_target as u32) {
-            return None;
-        }
         let phys_target = match cpu::translate_address_read_no_side_effects(virt_target) {
             Err(()) => {
                 dbg_log!("Not analysing {:x} (page not mapped)", virt_target);
@@ -506,6 +529,10 @@ fn jit_find_basic_blocks(
             },
             Ok(t) => t,
         };
+
+        if !instruction_fits_in_page(phys_target, cpu_ctx) {
+            return None;
+        }
 
         let phys_page = Page::page_of(phys_target);
 
@@ -580,6 +607,7 @@ fn jit_find_basic_blocks(
             max_pages,
             &mut marked_as_entry,
             &mut to_visit_stack,
+            &cpu,
         );
         dbg_assert!(ok.is_some());
         dbg_assert!(marked_as_entry.contains(&virt_addr));
@@ -598,7 +626,7 @@ fn jit_find_basic_blocks(
             continue;
         }
 
-        if is_near_end_of_page(phys_addr) {
+        if !instruction_fits_in_page(phys_addr, &cpu) {
             // Empty basic block, don't insert
             profiler::stat_increment(stat::COMPILE_CUT_OFF_AT_END_OF_PAGE);
             continue;
@@ -635,10 +663,13 @@ fn jit_find_basic_blocks(
             let has_next_instruction = !analysis.no_next_instruction;
             current_address = cpu.eip;
 
-            dbg_assert!(Page::page_of(current_address) == Page::page_of(addr_before_instruction));
+            dbg_assert!(Page::page_of(current_address - 1) == Page::page_of(addr_before_instruction));
+            // (the next instruction is in this page and ends within it; not after an instruction that ended at the
+            // page's end: its next address belongs to another page)
+            let next_fits = current_address & 0xFFF != 0 && instruction_fits_in_page(current_address, cpu);
             let current_virt_addr = to_visit & !0xFFF | current_address as i32 & 0xFFF;
 
-            if analysis.ty == AnalysisType::STI && is_near_end_of_page(current_address) {
+            if analysis.ty == AnalysisType::STI && !next_fits {
                 // cut off before the STI so that it is handled by interpreted mode
                 profiler::stat_increment(stat::COMPILE_CUT_OFF_AT_END_OF_PAGE);
                 break;
@@ -663,10 +694,7 @@ fn jit_find_basic_blocks(
                     }
 
                     if analysis.ty == AnalysisType::STI {
-                        dbg_assert!(
-                            !is_near_end_of_page(current_address),
-                            "should be handled above"
-                        );
+                        dbg_assert!(next_fits, "should be handled above");
 
                         current_block.has_sti = true;
                     }
@@ -675,7 +703,7 @@ fn jit_find_basic_blocks(
                         // handle_irqs may be called)
 
                         if basic_blocks.contains_key(&current_address) {
-                            dbg_assert!(!is_near_end_of_page(current_address));
+                            dbg_assert!(next_fits);
                             current_block.ty = BasicBlockType::Normal {
                                 next_block_addr: Some(current_address),
                                 jump_offset: 0,
@@ -704,7 +732,7 @@ fn jit_find_basic_blocks(
                     dbg_assert!(has_next_instruction);
                     to_visit_stack.push(current_virt_addr);
 
-                    let next_block_addr = if is_near_end_of_page(current_address) {
+                    let next_block_addr = if !next_fits {
                         None
                     }
                     else {
@@ -721,6 +749,7 @@ fn jit_find_basic_blocks(
                             max_pages,
                             &mut marked_as_entry,
                             &mut to_visit_stack,
+                            &*cpu,
                         ),
                         condition,
                         jump_offset: offset,
@@ -761,6 +790,7 @@ fn jit_find_basic_blocks(
                             max_pages,
                             &mut marked_as_entry,
                             &mut to_visit_stack,
+                            &*cpu,
                         ),
                         jump_offset: offset,
                         jump_offset_is_32: is_32,
@@ -788,7 +818,7 @@ fn jit_find_basic_blocks(
                 },
             }
 
-            if is_near_end_of_page(current_address) {
+            if !next_fits {
                 profiler::stat_increment(stat::COMPILE_CUT_OFF_AT_END_OF_PAGE);
                 break;
             }
@@ -966,7 +996,7 @@ fn jit_analyze_and_generate(
 
     for b in basic_blocks.iter() {
         // Remove this assertion once page-crossing jit is enabled
-        dbg_assert!(Page::page_of(b.addr) == Page::page_of(b.end_addr));
+        dbg_assert!(Page::page_of(b.addr) == Page::page_of(b.end_addr - 1));
         pages.insert(Page::page_of(b.addr));
     }
 
@@ -2197,7 +2227,7 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
     let stop_addr = block.end_addr;
 
     // First iteration of do-while assumes the caller confirms this condition
-    dbg_assert!(!is_near_end_of_page(start_addr));
+    dbg_assert!(instruction_fits_in_page(start_addr, &ctx.cpu));
 
     if cfg!(feature = "profiler") {
         ctx.builder.const_i32(start_addr as i32);
@@ -2286,11 +2316,11 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
 
         if end_addr == stop_addr {
             // no page was crossed
-            dbg_assert!(Page::page_of(end_addr) == Page::page_of(start_addr));
+            dbg_assert!(Page::page_of(end_addr - 1) == Page::page_of(start_addr));
             break;
         }
 
-        if was_block_boundary || is_near_end_of_page(end_addr) || end_addr > stop_addr {
+        if was_block_boundary || end_addr > stop_addr {
             dbg_log!(
                 "Overlapping basic blocks start={:x} expected_end={:x} end={:x} was_block_boundary={} near_end_of_page={}",
                 start_addr,
@@ -2489,7 +2519,7 @@ pub fn jit_increase_hotness_and_maybe_compile(
         (0, EntrySet::default())
     });
 
-    if !is_near_end_of_page(phys_address) {
+    if instruction_fits_in_page(phys_address, &CpuContext { eip: phys_address, prefixes: 0, cs_offset, state_flags }) {
         entry_points.insert(phys_address as u16 & 0xFFF);
     }
 
@@ -2927,6 +2957,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         4 => crate::cpu::jit64::set_threshold(value),
         59 => JIT_THRESHOLD_NOW = value.max(1),
         68 => JIT_RECOMPILE_THRESHOLD = value.max(1),
+        69 => COMPILE_NEAR_END_OF_PAGE = value != 0,
         62 => crate::cpu::instructions_0f::CPUID_HIDE = value,
         65 => INLINE_LOOKUP = value != 0,
         66 => LOOKUP_IN_FUNCTION = value != 0,
@@ -2976,6 +3007,7 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         4 => crate::cpu::jit64::threshold(),
         59 => JIT_THRESHOLD_NOW,
         68 => JIT_RECOMPILE_THRESHOLD,
+        69 => COMPILE_NEAR_END_OF_PAGE as u32,
         5 => crate::cpu::jit64::STAT_COMPILED,
         6 => crate::cpu::jit64::STAT_FAILED,
         7 => crate::cpu::jit64::STAT_RUN,
