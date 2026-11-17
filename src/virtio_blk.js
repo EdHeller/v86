@@ -86,7 +86,41 @@ export function VirtioBlk(cpu, buffer, options)
             ],
         },
     });
+    // the core's model (src/rust/cpu/virtio_blk.rs): this is asked for the image's bytes (core_io)
+    if(this.virtio.core >= 0)
+    {
+        const exports = cpu.wm.exports;
+        exports["virtio_blk_attach"](this.virtio.core, this.sectors, this.readonly);
+        new Uint8Array(cpu.wasm_memory.buffer, exports["virtio_blk_id"](this.virtio.core), ID_BYTES).set(this.id);
+        this.virtio.model = this;
+    }
 }
+
+/**
+ * From the core: read or write `length` bytes of the image at `offset` for its request `id`, then tell it
+ * @param {number} id
+ * @param {boolean} write
+ * @param {number} offset
+ * @param {number} length
+ */
+VirtioBlk.prototype.core_io = function(id, write, offset, length)
+{
+    const exports = this.cpu.wm.exports;
+    const bytes = () => new Uint8Array(this.cpu.wasm_memory.buffer, exports["virtio_blk_buffer"](id), length);
+    if(write)
+    {
+        this.buffer.set(offset, bytes().slice(), () => exports["virtio_blk_done"](id, 0));
+    }
+    else
+    {
+        this.buffer.get(offset, length, data =>
+        {
+            bytes().set(data.subarray(0, length));
+            exports["virtio_blk_done"](id, 0);
+        });
+    }
+};
+
 
 /**
  * The requests the driver queued

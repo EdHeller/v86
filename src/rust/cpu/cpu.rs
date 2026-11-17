@@ -52,6 +52,9 @@ pub mod js {
         pub fn virtio_event(device: i32, kind: i32, value: i32);
         /// An access to a virtio device's device-specific configuration (offset, size in bits); returns the value read
         pub fn virtio_config(device: i32, offset: i32, size: i32, write: bool, value: i32) -> i32;
+        /// virtio-blk (src/rust/cpu/virtio_blk.rs): read or write `length` bytes of the image at `offset` for request
+        /// `id` (its bytes: virtio_blk_buffer), then virtio_blk_done
+        pub fn virtio_blk_io(device: i32, id: i32, write: bool, offset: f64, length: i32);
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();

@@ -346,6 +346,8 @@ export function VirtIO(cpu, options)
 
     /** the core's transport (src/rust/cpu/virtio_pci.rs): its index there, or -1 */
     this.core = -1;
+    /** @type {Object} the device whose model is the core's (it answers the core's requests for its backend) */
+    this.model = null;
     const exports = cpu.wm && cpu.wm.exports;
     if(exports && exports["virtio_pci_new"] && options.capability_bar === undefined && !(cpu.devices.pci && cpu.devices.pci.q35))
     {

@@ -46,6 +46,13 @@ export function VirtioRng(cpu)
             struct: [],
         },
     });
+    // the core's model (src/rust/cpu/virtio_rng.rs): its stream keyed from the host's random numbers
+    if(this.virtio.core >= 0)
+    {
+        const key = new Uint32Array(8);
+        globalThis.crypto.getRandomValues(key);
+        cpu.wm.exports["virtio_rng_attach"](this.virtio.core, ...key);
+    }
 }
 
 VirtioRng.prototype.fill = function(queue)

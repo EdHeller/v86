@@ -279,7 +279,10 @@ unsafe fn write(d: usize, cap: usize, offset: u32, size: i32, value: i32) {
         },
         1 => {
             if offset & 1 == 0 && size == 16 {
-                js::virtio_event(d as i32, EVENT_NOTIFY, value & 0xFFFF | (offset as i32 >> 1) << 16);
+                // (to the device's model here, or to virtio.js)
+                if !super::virtio_dev::notify(d, value & 0xFFFF) {
+                    js::virtio_event(d as i32, EVENT_NOTIFY, value & 0xFFFF | (offset as i32 >> 1) << 16);
+                }
             }
         },
         2 => {},
