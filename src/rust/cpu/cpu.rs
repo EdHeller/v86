@@ -3618,7 +3618,20 @@ pub unsafe fn cycle_internal() {
         *previous_ip = initial_eip;
         let phys_addr = return_on_pagefault!(get_phys_eip());
 
-        match tlb_code[(initial_eip as u32 >> 12) as usize] {
+        let virt_page = (initial_eip as u32 >> 12) as usize;
+        if tlb_code[virt_page].is_none() && tlb_data[virt_page] & TLB_HAS_CODE != 0 {
+            // tlb_code is filled at page walks: compiled code that came (or was replaced) while the page's TLB entry
+            // stayed valid has none until the next walk, and the page would run interpreted until then
+            jit::update_tlb_code(Page::page_of(initial_eip as u32), Page::page_of(phys_addr));
+            if let Some(c) = tlb_code[virt_page] {
+                let c = c.as_ref();
+                if initial_state_flags == c.state_flags && c.state_table[initial_eip as usize & 0xFFF] != u16::MAX {
+                    profiler::stat_increment(stat::RUN_INTERPRETED_TLB_CODE_REFILLED);
+                    return;
+                }
+            }
+        }
+        match tlb_code[virt_page] {
             None => {},
             Some(c) => {
                 let c = c.as_ref();
@@ -3640,7 +3653,11 @@ pub unsafe fn cycle_internal() {
         }
 
         let initial_instruction_counter = *instruction_counter;
+        #[cfg(feature = "profiler")]
+        interp_histogram_note(phys_addr, initial_eip as u32, *instruction_counter);
         jit_run_interpreted(phys_addr);
+        #[cfg(feature = "profiler")]
+        interp_histogram_steps(phys_addr, *instruction_counter - initial_instruction_counter);
 
         jit::jit_increase_hotness_and_maybe_compile(
             initial_eip,
@@ -5444,3 +5461,58 @@ pub unsafe fn set_long_mode_supported(supported: bool) { long_mode_supported = s
 /// Whether this core is the x86_64 one (build/v64.wasm)
 #[no_mangle]
 pub fn core_has_long_mode() -> bool { LONG_MODE }
+
+// (profiler builds) interpreted runs by physical page: runs, steps, runs that started near the page's end, a virtual
+// address, and whether the page had compiled code (tlb_code) for this state
+#[cfg(feature = "profiler")]
+static mut INTERP_HIST: Option<std::collections::HashMap<u32, [u64; 7]>> = None;
+
+#[cfg(feature = "profiler")]
+#[allow(static_mut_refs)]
+unsafe fn interp_histogram_note(phys: u32, virt: u32, _counter: u32) {
+    let h = INTERP_HIST.get_or_insert_with(Default::default);
+    let e = h.entry(phys >> 12).or_insert([0; 7]);
+    let t = tlb_data[(virt >> 12) as usize];
+    if crate::jit::jit_page_debug(phys >> 12, 2) != 0.0 {
+        e[5] += 1;
+    }
+    if t & TLB_NO_EXEC != 0 {
+        e[6] += 1;
+    }
+    e[0] += 1;
+    if crate::jit::is_near_end_of_page(phys) {
+        e[2] += 1;
+    }
+    e[3] = virt as u64;
+    if tlb_code[(virt >> 12) as usize].is_some() {
+        e[4] += 1;
+    }
+}
+
+#[cfg(feature = "profiler")]
+#[allow(static_mut_refs)]
+unsafe fn interp_histogram_steps(phys: u32, steps: u32) {
+    if let Some(e) = INTERP_HIST.get_or_insert_with(Default::default).get_mut(&(phys >> 12)) {
+        e[1] += steps as u64;
+    }
+}
+
+/// (profiler builds) the 40 pages with the most interpreted runs: 6 numbers each (page, runs, steps, near end, a
+/// virtual address, runs with compiled code on the page), at the returned address
+#[cfg(feature = "profiler")]
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn interp_histogram() -> u32 {
+    static mut OUT: [f64; 320] = [0.0; 320];
+    let h = INTERP_HIST.get_or_insert_with(Default::default);
+    let mut v: Vec<_> = h.iter().map(|(k, e)| (*k, *e)).collect();
+    v.sort_by(|a, b| b.1[0].cmp(&a.1[0]));
+    OUT = [0.0; 320];
+    for (i, (page, e)) in v.iter().take(40).enumerate() {
+        OUT[8 * i] = *page as f64;
+        for j in 0..7 {
+            OUT[8 * i + 1 + j] = e[j] as f64;
+        }
+    }
+    OUT.as_ptr() as u32
+}

@@ -84,6 +84,10 @@ pub static mut DROP_REGISTER_MOVES: bool = true;
 
 /// The heat at which a page is compiled: JIT_THRESHOLD, lowered by tests through set_jit_config(59, ..)
 static mut JIT_THRESHOLD_NOW: u32 = JIT_THRESHOLD;
+/// The heat at which a page that already has compiled code is compiled again with the entry points the interpreter
+/// found since (set_jit_config(68, ..)). Those pages are known to be hot: until then every entry into them through a
+/// new entry point is interpreted
+static mut JIT_RECOMPILE_THRESHOLD: u32 = 50 * 1000;
 
 // less branches will generate if-else, more will generate brtable
 pub const BRTABLE_CUTOFF: usize = 10;
@@ -2473,6 +2477,12 @@ pub fn jit_increase_hotness_and_maybe_compile(
     let is_compiling = ctx.compiling.is_some();
     let page = Page::page_of(phys_address);
     maybe_has_code_set(page);
+    let threshold = if ctx.pages.contains_key(&page) {
+        unsafe { JIT_RECOMPILE_THRESHOLD.min(JIT_THRESHOLD_NOW) }
+    }
+    else {
+        unsafe { JIT_THRESHOLD_NOW }
+    };
     let (hotness, entry_points) = ctx.entry_points.entry(page).or_insert_with(|| {
         cpu::tlb_set_has_code(page, true);
         profiler::stat_increment(stat::RUN_INTERPRETED_NEW_PAGE);
@@ -2484,7 +2494,7 @@ pub fn jit_increase_hotness_and_maybe_compile(
     }
 
     *hotness += heat;
-    if *hotness >= unsafe { JIT_THRESHOLD_NOW } {
+    if *hotness >= threshold {
         if is_compiling {
             return;
         }
@@ -2916,6 +2926,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         3 => MAX_EXTRA_BASIC_BLOCKS = value,
         4 => crate::cpu::jit64::set_threshold(value),
         59 => JIT_THRESHOLD_NOW = value.max(1),
+        68 => JIT_RECOMPILE_THRESHOLD = value.max(1),
         62 => crate::cpu::instructions_0f::CPUID_HIDE = value,
         65 => INLINE_LOOKUP = value != 0,
         66 => LOOKUP_IN_FUNCTION = value != 0,
@@ -2964,6 +2975,7 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         3 => MAX_EXTRA_BASIC_BLOCKS as u32,
         4 => crate::cpu::jit64::threshold(),
         59 => JIT_THRESHOLD_NOW,
+        68 => JIT_RECOMPILE_THRESHOLD,
         5 => crate::cpu::jit64::STAT_COMPILED,
         6 => crate::cpu::jit64::STAT_FAILED,
         7 => crate::cpu::jit64::STAT_RUN,
@@ -3017,5 +3029,21 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         2000..=2511 => crate::cpu::jit64::EXECUTED[(index - 2000) as usize],
         1000..=1511 => crate::cpu::jit64::UNSUPPORTED[(index - 1000) as usize],
         _ => 0,
+    }
+}
+
+/// (profiler builds) what the JIT knows of a physical page: hotness, entry points waiting, whether it has compiled
+/// code, its compiled entry points, whether a compile is under way
+#[cfg(feature = "profiler")]
+#[no_mangle]
+pub fn jit_page_debug(phys_page: u32, what: u32) -> f64 {
+    let ctx = get_jit_state();
+    let page = Page::page_of(phys_page << 12);
+    match what {
+        0 => ctx.entry_points.get(&page).map_or(-1.0, |e| e.0 as f64),
+        1 => ctx.entry_points.get(&page).map_or(-1.0, |e| e.1.iter().count() as f64),
+        2 => ctx.pages.contains_key(&page) as u32 as f64,
+        3 => ctx.pages.get(&page).map_or(0.0, |p| p.entry_points.len() as f64),
+        _ => ctx.compiling.is_some() as u32 as f64,
     }
 }
