@@ -17,6 +17,7 @@ pub const MODEL_BLK: u8 = 2;
 pub const MODEL_NET: u8 = 3;
 pub const MODEL_CONSOLE: u8 = 4;
 pub const MODEL_BALLOON: u8 = 5;
+pub const MODEL_INPUT: u8 = 6;
 
 /// the model of each device (MODEL_JS: virtio.js's)
 pub static mut MODEL: [u8; DEVICES] = [MODEL_JS; DEVICES];
@@ -200,6 +201,10 @@ pub unsafe fn notify(d: usize, value: i32) -> bool {
         },
         MODEL_BALLOON => {
             super::virtio_balloon::notify(d, (value & 0xFFFF) as usize);
+            true
+        },
+        MODEL_INPUT => {
+            super::virtio_input::notify(d, (value & 0xFFFF) as usize);
             true
         },
         _ => false,

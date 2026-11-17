@@ -42,6 +42,7 @@ pub mod virtio_balloon;
 pub mod virtio_blk;
 pub mod virtio_console;
 pub mod virtio_dev;
+pub mod virtio_input;
 pub mod virtio_net;
 pub mod virtio_pci;
 pub mod virtio_rng;

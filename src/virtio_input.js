@@ -184,11 +184,19 @@ export function VirtioInput(cpu, bus, kind, mouse_as_touch)
         device_specific: { initial_port: 0x6600, struct },
         on_reset: () =>
         {
+            if(this.core) this.core["virtio_input_reset"](this.virtio.core);
             this.pending = [];
             this.pointer_ready(false);
         },
     });
 
+    /** the core's model (src/rust/cpu/virtio_input.rs), or null */
+    this.core = this.virtio.core >= 0 ? cpu.wm.exports : null;
+    if(this.core)
+    {
+        this.core["virtio_input_attach"](this.virtio.core);
+        this.virtio.model = this;
+    }
     if(kind === "keyboard")
     {
         bus.register("keyboard-code", code => this.scancode(code), this);
@@ -283,6 +291,7 @@ VirtioInput.prototype.touch = function(data)
  */
 VirtioInput.prototype.scancode = function(code)
 {
+    if(this.core) return this.core["virtio_input_scancode"](this.virtio.core, code & 0xFF);
     code &= 0xFF;
     if(this.pause_bytes)
     {
@@ -313,6 +322,7 @@ VirtioInput.prototype.scancode = function(code)
 /** @param {!Array<number>} data [x, y, width, height] of the pointer on the screen */
 VirtioInput.prototype.absolute = function(data)
 {
+    if(this.core) return this.core["virtio_input_absolute"](this.virtio.core, data[0], data[1], data[2], data[3]);
     const x = Math.max(0, Math.min(ABS_MAX, Math.round(data[0] / data[2] * ABS_MAX)));
     const y = Math.max(0, Math.min(ABS_MAX, Math.round(data[1] / data[3] * ABS_MAX)));
     const events = [];
@@ -326,6 +336,7 @@ VirtioInput.prototype.absolute = function(data)
 /** @param {!Array<boolean>} data [left, middle, right] */
 VirtioInput.prototype.click = function(data)
 {
+    if(this.core) return this.core["virtio_input_click"](this.virtio.core, !!data[0], !!data[1], !!data[2]);
     const codes = [BTN_LEFT, BTN_MIDDLE, BTN_RIGHT];
     const events = [];
     for(let i = 0; i < 3; i++)
@@ -339,6 +350,7 @@ VirtioInput.prototype.click = function(data)
 /** @param {!Array<number>} data [vertical, horizontal]: positive is up */
 VirtioInput.prototype.wheel = function(data)
 {
+    if(this.core) return this.core["virtio_input_wheel"](this.virtio.core, data[0] | 0);
     if(data[0]) this.send([[EV_REL, REL_WHEEL, data[0] | 0]]);
 };
 
@@ -349,6 +361,13 @@ VirtioInput.prototype.wheel = function(data)
  */
 VirtioInput.prototype.send = function(events)
 {
+    if(this.core)
+    {
+        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * events.length), 3 * events.length);
+        events.forEach((e, i) => words.set(e, 3 * i));
+        this.core["virtio_input_send"](this.virtio.core, events.length);
+        return;
+    }
     this.pending.push(...events, [EV_SYN, SYN_REPORT, 0]);
     while(this.pending.length > PENDING_LIMIT)
     {
@@ -362,8 +381,9 @@ VirtioInput.prototype.send = function(events)
 /** The pending events into the event queue's buffers */
 VirtioInput.prototype.flush = function()
 {
+    if(this.core) return this.core["virtio_input_flush"](this.virtio.core);
     const queue = this.virtio.queues[0];
-    if(!this.pending.length || !queue.is_configured() || !this.virtio.present()) return;
+    if(!this.pending.length || !queue.is_configured() || !(this.virtio.device_status & VIRTIO_STATUS_DRIVER_OK)) return;
     let sent = 0;
     while(sent < this.pending.length && queue.has_request())
     {
@@ -384,6 +404,7 @@ VirtioInput.prototype.flush = function()
 /** The driver's events (LEDs) on the status queue: taken and dropped */
 VirtioInput.prototype.take_status = function()
 {
+    if(this.core) return;
     const queue = this.virtio.queues[1];
     let taken = 0;
     while(queue.has_request())
@@ -420,6 +441,13 @@ VirtioInput.prototype.pointer_ready = function(ready)
 
 VirtioInput.prototype.get_state = function()
 {
+    if(this.core)
+    {
+        const n = this.core["virtio_input_save"](this.virtio.core);
+        this.pending = [];
+        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * n), 3 * n);
+        for(let i = 0; i < n; i++) this.pending.push([words[3 * i], words[3 * i + 1], words[3 * i + 2]]);
+    }
     return [this.virtio, this.select, this.subsel, [].concat(...this.pending),
         this.slots.map(slot => slot && [slot.id, slot.x, slot.y])];
 };
@@ -433,6 +461,12 @@ VirtioInput.prototype.set_state = function(state)
     const flat = state[3] || [];
     for(let i = 0; i + 2 < flat.length; i += 3) this.pending.push([flat[i], flat[i + 1], flat[i + 2]]);
     this.slots = (state[4] || new Array(MT_SLOTS).fill(null)).map(slot => slot && { id: slot[0], x: slot[1], y: slot[2] });
+    if(this.core)
+    {
+        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * this.pending.length), 3 * this.pending.length);
+        this.pending.forEach((e, i) => words.set(e, 3 * i));
+        this.core["virtio_input_load"](this.virtio.core, this.pending.length);
+    }
     // (a state whose driver ran: the page takes the pointer again)
     if(this.virtio.device_status & VIRTIO_STATUS_DRIVER_OK) this.pointer_ready(true);
 };
