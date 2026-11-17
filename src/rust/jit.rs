@@ -177,7 +177,8 @@ pub struct JitState {
     entry_points: HashMap<Page, (u32, EntrySet), PageBuildHasher>,
     pages: HashMap<Page, PageInfo, PageBuildHasher>,
     wasm_table_index_free_list: Vec<WasmTableIndex>,
-    compiling: Option<(WasmTableIndex, CompilingPageState)>,
+    /// the modules being compiled (asynchronously, by the engine): at most MAX_COMPILING, no page in two of them
+    compiling: Vec<(WasmTableIndex, CompilingPageState)>,
     #[cfg(debug_assertions)]
     wasm_table_index_to_page: HashMap<WasmTableIndex, HashSet<Page>>,
 }
@@ -187,17 +188,16 @@ fn check_jit_state_invariants(ctx: &mut JitState) {
         return;
     }
 
-    match &ctx.compiling {
-        Some((_, CompilingPageState::Compiling { pages })) => {
+    for (_, state) in &ctx.compiling {
+        if let CompilingPageState::Compiling { pages } = state {
             dbg_assert!(pages.keys().all(|page| ctx.entry_points.contains_key(page)));
-        },
-        _ => {},
+        }
     }
 
     let free: HashSet<WasmTableIndex> =
         HashSet::from_iter(ctx.wasm_table_index_free_list.iter().copied());
     let used = HashSet::from_iter(ctx.pages.values().map(|info| info.wasm_table_index));
-    let compiling = HashSet::from_iter(ctx.compiling.as_ref().map(|&(index, _)| index));
+    let compiling: HashSet<WasmTableIndex> = HashSet::from_iter(ctx.compiling.iter().map(|&(index, _)| index));
     dbg_assert!(free.intersection(&used).next().is_none());
     dbg_assert!(used.intersection(&compiling).next().is_none());
     dbg_assert!(free.len() + used.len() + compiling.len() == (WASM_TABLE_SIZE - 1) as usize);
@@ -223,11 +223,10 @@ fn check_jit_state_invariants(ctx: &mut JitState) {
         }
     }
 
-    match &ctx.compiling {
-        Some((_, CompilingPageState::Compiling { pages })) => {
+    for (_, state) in &ctx.compiling {
+        if let CompilingPageState::Compiling { pages } = state {
             dbg_assert!(pages.keys().all(|page| ctx.entry_points.contains_key(page)));
-        },
-        _ => {},
+        }
     }
 
     for i in 0..unsafe { cpu::valid_tlb_entries_count } {
@@ -264,7 +263,7 @@ impl JitState {
             pages: HashMap::default(),
 
             wasm_table_index_free_list: Vec::from_iter(wasm_table_indices),
-            compiling: None,
+            compiling: Vec::new(),
 
             #[cfg(debug_assertions)]
             wasm_table_index_to_page: HashMap::new(),
@@ -443,6 +442,15 @@ pub fn instruction_fits_in_page(phys: u32, cpu: &CpuContext) -> bool {
     c.eip > phys && c.eip < next_page
 }
 
+/// Modules compiled at the same time (set_jit_config(70, ..)). The engine compiles them in the background; with one at
+/// a time, hot pages wait for it, interpreted, while a boot finds code faster than it is compiled
+pub static mut MAX_COMPILING: u32 = 4;
+
+/// Whether a page is part of a module that is still being compiled
+fn page_is_compiling(ctx: &JitState, page: Page) -> bool {
+    ctx.compiling.iter().any(|(_, state)| matches!(state, CompilingPageState::Compiling { pages } if pages.contains_key(&page)))
+}
+
 /// Compile instructions in the last 15 bytes of a page when they end within it (set_jit_config(69, ..))
 pub static mut COMPILE_NEAR_END_OF_PAGE: bool = true;
 
@@ -539,6 +547,12 @@ fn jit_find_basic_blocks(
         if !pages.contains(&phys_page) && pages.len() as u32 == max_pages
             || page_blacklist.contains(&phys_page)
         {
+            return None;
+        }
+
+        // (a page that is in a module still being compiled: not in two modules at once)
+        if !pages.contains(&phys_page) && page_is_compiling(ctx, phys_page) {
+            page_blacklist.insert(phys_page);
             return None;
         }
 
@@ -929,7 +943,7 @@ pub fn jit_force_generate_unsafe(virt_addr: i32) {
         cpu::get_state_flags(),
         unsafe { JIT_THRESHOLD_NOW },
     );
-    dbg_assert!(get_jit_state().compiling.is_some());
+    dbg_assert!(!get_jit_state().compiling.is_empty());
 }
 
 #[inline(never)]
@@ -942,7 +956,10 @@ fn jit_analyze_and_generate(
 ) {
     let page = Page::page_of(phys_entry_point);
 
-    dbg_assert!(ctx.compiling.is_none());
+    if page_is_compiling(ctx, page) {
+        // (its module is not finished yet: compiled again when it is, with the entry points found until then)
+        return;
+    }
 
     let (_, entry_points) = match ctx.entry_points.get(&page) {
         None => return,
@@ -1147,8 +1164,7 @@ fn jit_analyze_and_generate(
 
     cpu::tlb_set_has_code_multiple(&pages, true);
 
-    dbg_assert!(ctx.compiling.is_none());
-    ctx.compiling = Some((
+    ctx.compiling.push((
         wasm_table_index,
         CompilingPageState::Compiling { pages: page_info },
     ));
@@ -1187,7 +1203,12 @@ pub fn codegen_finalize_finished(
         Page::page_of(phys_addr).to_address()
     );
 
-    let pages = match mem::replace(&mut ctx.compiling, None) {
+    let position = ctx.compiling.iter().position(|(index, _)| *index == wasm_table_index);
+    let finished = match position {
+        Some(i) => Some(ctx.compiling.remove(i)),
+        None => None,
+    };
+    let pages = match finished {
         None => {
             dbg_assert!(false);
             return;
@@ -2504,7 +2525,7 @@ pub fn jit_increase_hotness_and_maybe_compile(
     }
 
     let mut ctx = get_jit_state();
-    let is_compiling = ctx.compiling.is_some();
+    let is_compiling = ctx.compiling.len() >= unsafe { MAX_COMPILING } as usize;
     let page = Page::page_of(phys_address);
     maybe_has_code_set(page);
     let threshold = if ctx.pages.contains_key(&page) {
@@ -2543,14 +2564,11 @@ fn free_wasm_table_index(ctx: &mut JitState, wasm_table_index: WasmTableIndex) {
     if CHECK_JIT_STATE_INVARIANTS {
         dbg_assert!(!ctx.wasm_table_index_free_list.contains(&wasm_table_index));
 
-        match &ctx.compiling {
-            Some((wasm_table_index_compiling, _)) => {
-                dbg_assert!(
-                    *wasm_table_index_compiling != wasm_table_index,
-                    "Attempt to free wasm table index that is currently being compiled"
-                );
-            },
-            _ => {},
+        for (wasm_table_index_compiling, _) in &ctx.compiling {
+            dbg_assert!(
+                *wasm_table_index_compiling != wasm_table_index,
+                "Attempt to free wasm table index that is currently being compiled"
+            );
         }
 
         dbg_assert!(!ctx
@@ -2752,22 +2770,19 @@ fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
             profiler::stat_increment(stat::INVALIDATE_PAGE_HAD_ENTRY_POINTS);
             did_have_code = true;
 
-            match &ctx.compiling {
-                Some((index, CompilingPageState::Compiling { pages })) => {
-                    if pages.contains_key(&page) {
-                        ctx.compiling = Some((*index, CompilingPageState::CompilingWritten));
-                    }
-                },
-                _ => {},
+            for (_, state) in ctx.compiling.iter_mut() {
+                let written = matches!(state, CompilingPageState::Compiling { pages } if pages.contains_key(&page));
+                if written {
+                    *state = CompilingPageState::CompilingWritten;
+                }
             }
         },
     }
 
-    match &ctx.compiling {
-        Some((_, CompilingPageState::Compiling { pages })) => {
+    for (_, state) in &ctx.compiling {
+        if let CompilingPageState::Compiling { pages } = state {
             dbg_assert!(!pages.contains_key(&page));
-        },
-        _ => {},
+        }
     }
 
     check_jit_state_invariants(ctx);
@@ -2958,6 +2973,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         59 => JIT_THRESHOLD_NOW = value.max(1),
         68 => JIT_RECOMPILE_THRESHOLD = value.max(1),
         69 => COMPILE_NEAR_END_OF_PAGE = value != 0,
+        70 => MAX_COMPILING = value.max(1),
         62 => crate::cpu::instructions_0f::CPUID_HIDE = value,
         65 => INLINE_LOOKUP = value != 0,
         66 => LOOKUP_IN_FUNCTION = value != 0,
@@ -3008,6 +3024,7 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         59 => JIT_THRESHOLD_NOW,
         68 => JIT_RECOMPILE_THRESHOLD,
         69 => COMPILE_NEAR_END_OF_PAGE as u32,
+        70 => MAX_COMPILING,
         5 => crate::cpu::jit64::STAT_COMPILED,
         6 => crate::cpu::jit64::STAT_FAILED,
         7 => crate::cpu::jit64::STAT_RUN,
@@ -3076,6 +3093,6 @@ pub fn jit_page_debug(phys_page: u32, what: u32) -> f64 {
         1 => ctx.entry_points.get(&page).map_or(-1.0, |e| e.1.iter().count() as f64),
         2 => ctx.pages.contains_key(&page) as u32 as f64,
         3 => ctx.pages.get(&page).map_or(0.0, |p| p.entry_points.len() as f64),
-        _ => ctx.compiling.is_some() as u32 as f64,
+        _ => ctx.compiling.len() as f64,
     }
 }
