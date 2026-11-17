@@ -74,6 +74,8 @@ pub mod js {
         /// The floppy (src/rust/cpu/floppy.rs): kind 0 read `length` bytes of the drive's image at `offset` (to
         /// fdc_io_buffer, then fdc_read_done); 1 write those at `data` there (then fdc_write_done)
         pub fn floppy_io(kind: i32, drive: i32, offset: f64, data: u32, length: i32);
+        /// The VMware backdoor's pointer (src/rust/cpu/vmware.rs) went absolute or relative
+        pub fn vmware_absolute(absolute: bool);
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();
@@ -5179,6 +5181,9 @@ pub fn io_port_read32(port: i32) -> i32 {
         }
         if super::ide::core_serves(port, 32) {
             return super::ide::ide_core_read(port, 32);
+        }
+        if super::vmware::serves(port) {
+            return super::vmware::vmware_read32();
         }
         if super::ide::bus_master_serves(port, 32, 0, false) {
             return super::ide::ide_bus_master_read(port, 32);

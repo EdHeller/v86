@@ -58,29 +58,18 @@ export function VMwareMouse(cpu, bus)
 {
     /** @const @type {CPU} */
     this.cpu = cpu;
-
     /** @const @type {BusConnector} */
     this.bus = bus;
 
-    /** @type {boolean} */
-    this.enabled = false;
-
-    /** @type {boolean} */
-    this.absolute = false;
-
-    /** @type {!Array<number>} */
-    this.queue = [];
-
-    this.buttons = 0;
-    this.last_x = -1;
-    this.last_y = -1;
-    this.tail_is_move = false;
+    // The pointer (its commands and packet queue) is the core's: src/rust/cpu/vmware.rs, which answers its port.
+    const core = cpu.wm.exports;
+    this.core = core;
+    core["vmware_init"]();
 
     /** @type {Uint8Array} host→guest text staged for the guest to read */
     this.clip_out = new Uint8Array(0);
     this.clip_out_cursor = 0;
     this.clip_out_fresh = false;
-
     /** @type {Uint8Array} guest→host text being received */
     this.clip_in = new Uint8Array(0);
     this.clip_in_cursor = 0;
@@ -99,8 +88,6 @@ export function VMwareMouse(cpu, bus)
      * @type {boolean}
      */
     this.host_pointer_locked = false;
-
-    // sub-pixel remainders of relative movement
     this.rel_dx = 0;
     this.rel_dy = 0;
 
@@ -108,13 +95,7 @@ export function VMwareMouse(cpu, bus)
     {
         const x = Math.max(0, Math.min(0xFFFF, Math.round(data[0] / data[2] * 0xFFFF)));
         const y = Math.max(0, Math.min(0xFFFF, Math.round(data[1] / data[3] * 0xFFFF)));
-        if(x === this.last_x && y === this.last_y)
-        {
-            return;
-        }
-        this.last_x = x;
-        this.last_y = y;
-        this.push_absolute(0, true);
+        core["vmware_move"](x, y);
     }, this);
 
     this.bus.register("mouse-delta", function(data)
@@ -133,7 +114,7 @@ export function VMwareMouse(cpu, bus)
         }
         this.rel_dx -= dx;
         this.rel_dy -= dy;
-        this.push_relative(dx, dy, 0, true);
+        core["vmware_push_relative"](dx, dy, 0, true);
     }, this);
 
     this.bus.register("mouse-pointer-lock", function(locked)
@@ -145,17 +126,17 @@ export function VMwareMouse(cpu, bus)
 
     this.bus.register("mouse-click", function(data)
     {
-        this.buttons =
+        core["vmware_buttons"](
             (data[0] ? BUTTON_LEFT : 0) |
             (data[1] ? BUTTON_MIDDLE : 0) |
-            (data[2] ? BUTTON_RIGHT : 0);
+            (data[2] ? BUTTON_RIGHT : 0));
         if(this.host_pointer_locked)
         {
-            this.push_relative(0, 0, 0, false);
+            core["vmware_push_relative"](0, 0, 0, false);
         }
         else
         {
-            this.push_absolute(0, false);
+            core["vmware_push_absolute"](0, false);
         }
     }, this);
 
@@ -163,76 +144,19 @@ export function VMwareMouse(cpu, bus)
     {
         if(this.host_pointer_locked)
         {
-            this.push_relative(0, 0, -data[0] | 0, false);
+            core["vmware_push_relative"](0, 0, -data[0] | 0, false);
         }
         else
         {
-            this.push_absolute(-data[0] | 0, false);
+            core["vmware_push_absolute"](-data[0] | 0, false);
         }
     }, this);
 
-    // The backdoor protocol is 32-bit only, but guests probe the port at
-    // narrower widths during detection — answer those as an empty port.
     const nop = function() {};
     cpu.io.register_read(VMWARE_PORT, this,
         function() { return 0xFF; }, function() { return 0xFFFF; }, this.port_read32);
     cpu.io.register_write(VMWARE_PORT, this, nop, nop, nop);
 }
-
-VMwareMouse.prototype.push_absolute = function(wheel, move_only)
-{
-    if(!this.enabled || !this.absolute || this.last_x < 0)
-    {
-        return;
-    }
-    // Absolute pointing has no use for move history — if the guest hasn't
-    // drained the previous move yet, overwrite it in place. Clicks and wheel
-    // are never coalesced. This keeps the guest cursor at most one frame
-    // behind regardless of how slowly it drains, and makes overflow
-    // unreachable in practice.
-    if(move_only && this.tail_is_move && this.queue.length >= 4 &&
-        !(this.queue[this.queue.length - 4] & RELATIVE_PACKET))
-    {
-        this.queue[this.queue.length - 3] = this.last_x;
-        this.queue[this.queue.length - 2] = this.last_y;
-        return;
-    }
-    this.push_packet(this.buttons, this.last_x, this.last_y, wheel, move_only);
-};
-
-// Relative fallback, used while the host pointer is locked (e.g. for games).
-// The sign convention follows the Linux vmmouse driver: positive x is right,
-// positive y is up, like PS/2.
-VMwareMouse.prototype.push_relative = function(dx, dy, wheel, move_only)
-{
-    if(!this.enabled)
-    {
-        return;
-    }
-    // Same idea as in push_absolute, but pending deltas accumulate instead of
-    // being overwritten.
-    if(move_only && this.tail_is_move && this.queue.length >= 4 &&
-        (this.queue[this.queue.length - 4] & RELATIVE_PACKET))
-    {
-        this.queue[this.queue.length - 3] += dx;
-        this.queue[this.queue.length - 2] += dy;
-        return;
-    }
-    this.push_packet(this.buttons | RELATIVE_PACKET, dx, dy, wheel, move_only);
-};
-
-VMwareMouse.prototype.push_packet = function(status, x, y, wheel, move_only)
-{
-    if(this.queue.length + 4 > QUEUE_MAX)
-    {
-        this.enabled = false;
-        this.queue.length = 0;
-        dbg_log("vmware mouse: queue overflow, disabling", LOG_OTHER);
-        return;
-    }
-    this.queue.push(status, x, y, wheel);
-    this.tail_is_move = move_only;
-};
 
 VMwareMouse.prototype.port_read32 = function()
 {
@@ -245,8 +169,11 @@ VMwareMouse.prototype.port_read32 = function()
     switch(reg32[REG_ECX] & 0xFFFF)
     {
         case CMD_GETVERSION:
-            reg32[REG_EBX] = VMWARE_MAGIC;
-            return 6;
+        case CMD_ABSPOINTER_STATUS:
+        case CMD_ABSPOINTER_DATA:
+        case CMD_ABSPOINTER_COMMAND:
+            // (the pointer's: the core answers these, also when they come through JavaScript)
+            return this.core["vmware_read32"]();
 
         case CMD_GETSELLENGTH:
             if(!this.clip_out_fresh)
@@ -314,61 +241,17 @@ VMwareMouse.prototype.port_read32 = function()
             return now / 1000 >>> 0;
         }
 
-        case CMD_ABSPOINTER_STATUS:
-            return this.enabled ? this.queue.length : 0xFFFF0000 | 0;
-
-        case CMD_ABSPOINTER_DATA:
-        {
-            const n = Math.min(reg32[REG_EBX] >>> 0, 4, this.queue.length);
-            const v = [0, 0, 0, 0];
-            for(let i = 0; i < n; i++)
-            {
-                v[i] = this.queue.shift();
-            }
-            reg32[REG_EBX] = v[1];
-            reg32[REG_ECX] = v[2];
-            reg32[REG_EDX] = v[3];
-            return v[0];
-        }
-
-        case CMD_ABSPOINTER_COMMAND:
-            switch(reg32[REG_EBX])
-            {
-                case ABSPOINTER_ENABLE:
-                    this.enabled = true;
-                    this.queue.length = 0;
-                    this.tail_is_move = false;
-                    this.queue.push(READ_ID);
-                    break;
-                case ABSPOINTER_DISABLE:
-                    this.enabled = false;
-                    this.absolute = false;
-                    this.queue.length = 0;
-                    this.bus.send("vmware-absolute-mouse", false);
-                    break;
-                case ABSPOINTER_ABSOLUTE:
-                    this.absolute = true;
-                    this.bus.send("vmware-absolute-mouse", true);
-                    break;
-                case ABSPOINTER_RELATIVE:
-                    this.absolute = false;
-                    this.bus.send("vmware-absolute-mouse", false);
-                    break;
-            }
-            return 0;
     }
-
     return 0xFFFFFFFF | 0;
 };
 
 VMwareMouse.prototype.get_state = function()
 {
-    return [this.enabled, this.absolute];
+    return [this.core["vmware_state"](0), this.core["vmware_state"](1)];
 };
 
 VMwareMouse.prototype.set_state = function(state)
 {
-    this.enabled = state[0];
-    this.absolute = state[1];
-    this.bus.send("vmware-absolute-mouse", this.absolute);
+    this.core["vmware_set_state"](!!state[0], !!state[1]);
+    this.bus.send("vmware-absolute-mouse", !!state[1]);
 };

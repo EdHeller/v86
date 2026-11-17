@@ -51,3 +51,4 @@ pub mod virtio_pci;
 pub mod virtio_rng;
 pub mod virtio_snd;
 pub mod vga_legacy;
+pub mod vmware;
