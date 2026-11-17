@@ -273,12 +273,13 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | PS/2 controller, keyboard, mouse | `ps2.js` 901 -> 205 | `ps2.rs` | ✅ 2026-11-14 |
 | DMA registers | `dma.js` 430 -> 235 | `dma.rs` | ✅ 2026-11-14 (transfers stay with JavaScript's buffers) |
 | PCI configuration spaces, 0xCF8/0xCFC | `pci.js` 724 (kept: BARs, ROM, PAM, hooks, IRQ routing, Q35) | `pci.rs` | ✅ 2026-11-15; the guest's device list matches `Vibe-Claude` on i440FX and Q35 |
-| IDE task file (status, error, count, LBA, device, features, drive selection), device control, bus master registers | `ide.js` (accessors) | `ide.rs` | ✅ 2026-11-15; data reads and writes in blocks (`io_port_read_block`, `io_port_write_block`); commands, the start of a DMA transfer, soft resets and ATAPI stay in `ide.js` (async disk buffers) |
+| IDE task file (status, error, count, LBA, device, features, drive selection), device control, bus master registers | `ide.js` (accessors) | `ide.rs` | ✅ 2026-11-15; data reads and writes in blocks (`io_port_read_block`, `io_port_write_block`) |
+| IDE drives: every ATA command, ATAPI packet commands, the data port, bus master DMA, identify data | `ide.js` 3044 -> 920 (images through `ide_read`/`ide_write`, CMOS geometry, insert/eject, snapshots) | `ide.rs` | ✅ 2026-11-17; cdrom-insert-eject, iso9660, state, reset; Alpine x86 from CD; buildroot DMA write/read 3 MB |
 | VGA planar memory and host interface (0xA0000-0xBFFFF: read modes, latches, write modes, chain 4, odd/even, plane masks) | `vga.js` (views, accessors, `sync_from_core`) | `vga_legacy.rs` | ✅ 2026-11-15; text cells and graphics ranges marked in the core, drawn after each slice. The register ports (0x3C0-0x3DF, VBE) and drawing stay in `vga.js` |
 | VGA drawing (planes to palette indices, indices to RGBA, the 256 colour VBE fill) | `vga.js` (`screen_fill_buffer` calls it) | `vga_legacy.rs` | ✅ 2026-11-15; 0.52 ms a frame against 2.03 ms (TempleOS 640x480x16); TempleOS with 60 frames a second -16.3 % against Vibe-Claude, faster in every round. Every pixel as the JavaScript reference (`tools/profile/vga_reference.mjs`, `--check-draw`) in modes 13h, 04h, 06h, 0Dh, 12h, VBE 0x101 (`tests/devices/vga_modes.asm`) and TempleOS |
 | VGA register ports (attribute controller, sequencer, graphics controller, DAC and palette, CRT controller, status) | `vga.js` (accessors; it keeps the writes that change size, layout, mode or font) | `vga_legacy.rs` | ✅ 2026-11-15; redraws and cursor moves are events for `sync_from_core`. Planes, palettes and registers as Vibe-Claude in every mode of `tests/devices/vga_modes.asm`; Alpine's text screen at ten points; TempleOS pixel check; calls into JavaScript per boot 31,569 -> 20,453 |
-| NE2000 (first card: registers, buffer memory, remote DMA) | `ne2k.js` (accessors; transmit and receive stay) | `ne2k.rs` | ✅ 2026-11-15; i440FX interrupt routing in `pci.rs`; on Q35 the card runs in JavaScript |
-| Floppy controller (registers, all commands, drive geometry and heads) | `floppy.js` 1515 -> 670 (images, DMA transfers, snapshots) | `floppy.rs` | ✅ 2026-11-15 |
+| NE2000 (first card: registers, buffer memory, remote DMA) | `ne2k.js` (accessors) | `ne2k.rs` | ✅ 2026-11-15; i440FX interrupt routing in `pci.rs`; on Q35 the card runs in JavaScript. 2026-11-17: transmit and receive (filter, ring, header) too; fetch_network passes |
+| Floppy controller (registers, all commands, drive geometry and heads) | `floppy.js` 1515 -> 670 (images, snapshots) | `floppy.rs` | ✅ 2026-11-15; 2026-11-17 the DMA transfers too (`floppy_io`); FreeDOS boots, lists and writes the floppy as the original build. ⚠️ FreeDOS reaches its prompt after 24 M guest instructions against 10 M on `Vibe-Claude` (not where the DMA starts: the same either way; the cause is not found yet): look at SeaBIOS's floppy waits |
 | Virtio split virtqueues (descriptor chains with indirect tables, available and used rings, interrupt decision) | `virtio.js` (queue state, transport capabilities, devices) | `virtio.rs` | ✅ 2026-11-15; one call per queue operation instead of five per descriptor. The PCI transport's capability registers and the device models (net, blk, rng, console, balloon, 9p, input, snd, gpu) stay JavaScript |
 | USB UHCI controller (registers, root ports, the frame schedule of queue heads and TDs) | `usb/uhci.js` (devices, attach, snapshots; Q35 and EHCI's companions run it in JavaScript) | `uhci.rs` | ✅ 2026-11-15; one call per transaction to the JavaScript device (`usb_transaction`). tests/usb.mjs: tablet and stick enumerate, 4 MiB through the stick written and read back |
 | USB xHCI controller (registers, ports, command and event rings, slots and contexts, transfer rings, the 1 ms retry timer) | `usb/xhci.js` (devices, attach, PCI function, snapshots in the old array format; Q35 runs it in JavaScript) | `xhci.rs` | ✅ 2026-11-15; the same `usb_transaction` call (port bit, data at a pointer into the module's memory). tests/usb.mjs xhci: tablet and stick, 4 MiB written and read back, snapshot save and restore mid-session |
@@ -287,10 +288,29 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | Graphics adapter bochs_vga on i440FX | `graphics_adapters/vga_core.js` stays for Q35 and inside vmware_svga / virtio-vga | the built-in VGA (`vga_legacy.rs`) | ✅ 2026-11-15; `graphics_adapter: "bochs_vga"` (vram_size kept) is v86's own VGA, the same device: Alpine boot 110,500 → 16,859 calls into JavaScript; bochs-drm binds, 1024x768x32. Snapshots of the plugin's VGA do not restore into it |
 | virtio PCI transport (common configuration, notifications, ISR, queue state) | `virtio.js` (accessors; capability-BAR adapters and Q35 keep its own) | `virtio_pci.rs` | ✅ 2026-11-17; buildroot 9p, virtio_9p/console/balloon tests, snapshots |
 | virtio device models: rng, blk, net, console, balloon, input, snd | their .js files keep the backends (image, network adapter, bus, speaker), the configuration and the API | `virtio_dev.rs`, `virtio_{rng,blk,net,console,balloon,input,snd}.rs` | ✅ 2026-11-17; fixes on the way: virtio-input's events never reached the driver (a missing `present()`), virtio-snd's timer was never registered. 9p's server and filesystem (`lib/9p.js`, `lib/filesystem.js`) are the host's storage and stay JavaScript, as virtio-gpu (a renderer bridge) |
-| SB16, HDA, vmware_svga, virtio-gpu (shared with ARM) | about 11,200 (and the GPU protocols) | | ⬜ |
+| SB16 (DSP, mixer, DMA playback, MPU reset, FM ports) | `sb16.js` 1895 -> 196 (bus, unmask listener, snapshots) | `sb16.rs` | ✅ 2026-11-17; `tests/devices/sb16.js` same on old and new |
+| HD Audio controller and codec (i440FX) | `hd_audio/controller.js` (PCI function, snapshots; Q35 runs its own) | `hda.rs` | ✅ 2026-11-17; `tests/devices/hd_audio.js` same on old and new; snapshot mid-stream |
+| fw_cfg data port (0x511) | `cpu.js` makes the selected item | `fw_cfg.rs` | ✅ 2026-11-17 |
+| VMware backdoor pointer (GETVERSION, absolute pointer, packet queue) | `vmware.js` (mouse events, clipboard, GETTIME) | `vmware.rs` | ✅ 2026-11-17; `tests/devices/vmware.js` same on old and new |
+| vmware_svga, virtio-gpu (shared with ARM) | the GPU protocols | | ⬜ renderer bridges: stay JavaScript |
 | Port table: which accesses a JavaScript device answers (`ports.rs`); port 0x92 | `io.js` keeps it in step | `ports.rs` | ✅ 2026-11-15: accesses nobody answers return the empty port's value in the core |
 | Port and MMIO handler tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | ⬜ last |
 | `src/browser/` (DOM, canvas, audio, network, files) | 13,000 | | stays JavaScript |
+
+**Still JavaScript (2026-11-17)**, and why. Boot crossings into JavaScript on i686 buildroot to a shell: about 10,000,
+all at firmware time (SeaBIOS reading the VGA option ROM through MMIO 9,089, PCI configuration writes 195, the rest
+VGA and PS/2 setup): about 1 ms a boot, so none of this is on a hot path.
+- PCI (`pci.js`): BAR moves, the option ROM, PAM, IRQ routing on Q35 and hooks call into JavaScript device objects
+  (io.js port remapping, mmap ranges). Movable once those tables are the core's (next item).
+- Port and MMIO handler tables (`io.js`) and machine setup (`cpu.js`, `state.js`): the tables hold JavaScript
+  closures of the devices still in JavaScript; setup builds the JavaScript device objects.
+- VGA: the register writes that change size, layout, mode or font (they resize the page's screen).
+- The disk, CD, floppy and USB images (`buffer.js`): asynchronous (network, files): the devices ask through imports.
+- USB: EHCI (refused by Linux on both branches: fix first), the mass storage SCSI commands (once per command, the
+  async block backend), UHCI/xHCI/storage on Q35 (JavaScript's interrupt routing).
+- NE2000 cards after the first and on Q35; HD Audio on Q35; virtio PCI capability adapters on Q35.
+- 9p server and filesystem, virtio-gpu, vmware_svga, the graphics adapters' renderers, TPM (libtpms), ACPI tables
+  (generated once), the network adapters, the speaker: the host's side.
 
 **Tests per step** (2026-11-15): `images/` from https://i.copy.sh/ (linux4.iso, linux.iso, buildroot-bzimage68.bin,
 buildroot-bzimage.bin, msdos622.img, freedos722.img; TinyCore-11.0.iso for tests/api/floppy.js is missing); `/root/jitwork`
