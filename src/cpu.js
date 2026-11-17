@@ -898,6 +898,12 @@ CPU.prototype.set_state = function(state)
     this.devices.parallel1 && state[91] && this.devices.parallel1.set_state(state[91]);
 
     this.fw_value = state[62];
+    if(this.fw_value && this.fw_value.length !== undefined)
+    {
+        // (selected again, read from its start: the read position was never part of a snapshot)
+        const item = this.fw_value;
+        new Uint8Array(this.wasm_memory.buffer, this.wm.exports["fw_cfg_select"](item.length) >>> 0, item.length).set(item);
+    }
 
     state[63] && this.set_state_ioapic(state[63]);
 
@@ -1317,16 +1323,9 @@ CPU.prototype.init = function(settings, device_bus)
 
     io.register_read(0x511, this, function()
     {
-        // bios config port (used by seabios and kvm-unit-test)
-        if(this.fw_pointer < this.fw_value.length)
-        {
-            return this.fw_value[this.fw_pointer++];
-        }
-        else
-        {
-            dbg_assert(false, "config port: Read past value");
-            return 0;
-        }
+        // bios config port (used by seabios and kvm-unit-test): the selected item's bytes are in the core
+        // (src/rust/cpu/fw_cfg.rs), which answers this port; here for reads through JavaScript
+        return this.wm.exports["fw_cfg_read"]();
     });
     io.register_write(0x510, this, undefined, function(value)
     {
@@ -1433,6 +1432,10 @@ CPU.prototype.init = function(settings, device_bus)
             dbg_log("Warning: Unimplemented fw index: " + h(value));
             this.fw_value = i32(0);
         }
+
+        // the item's bytes to the core, which reads them out
+        const item = this.fw_value;
+        new Uint8Array(this.wasm_memory.buffer, this.wm.exports["fw_cfg_select"](item.length) >>> 0, item.length).set(item);
     });
 
     if(DEBUG)

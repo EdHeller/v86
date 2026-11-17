@@ -91,7 +91,7 @@ export function VirtioBlk(cpu, buffer, options)
     {
         const exports = cpu.wm.exports;
         exports["virtio_blk_attach"](this.virtio.core, this.sectors, this.readonly);
-        new Uint8Array(cpu.wasm_memory.buffer, exports["virtio_blk_id"](this.virtio.core), ID_BYTES).set(this.id);
+        new Uint8Array(cpu.wasm_memory.buffer, exports["virtio_blk_id"](this.virtio.core) >>> 0, ID_BYTES).set(this.id);
         this.virtio.model = this;
     }
 }
@@ -106,7 +106,7 @@ export function VirtioBlk(cpu, buffer, options)
 VirtioBlk.prototype.core_io = function(id, write, offset, length)
 {
     const exports = this.cpu.wm.exports;
-    const bytes = () => new Uint8Array(this.cpu.wasm_memory.buffer, exports["virtio_blk_buffer"](id), length);
+    const bytes = () => new Uint8Array(this.cpu.wasm_memory.buffer, exports["virtio_blk_buffer"](id) >>> 0, length);
     if(write)
     {
         this.buffer.set(offset, bytes().slice(), () => exports["virtio_blk_done"](id, 0));

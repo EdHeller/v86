@@ -5079,6 +5079,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             _ if super::uhci::serves(port) => super::uhci::uhci_port_read(port, 8),
             _ if super::virtio_pci::serves(port) => super::virtio_pci::port_read(port, 8),
             _ if super::sb16::serves(port) => super::sb16::port_read(port),
+            _ if super::fw_cfg::serves(port) => super::fw_cfg::fw_cfg_read(),
             _ if super::ide::serves(port, false) => super::ide::ide_port_read(port),
             _ if super::ide::bus_master_serves(port, 8, 0, false) => super::ide::ide_bus_master_read(port, 8),
             _ if super::floppy::serves(port, false) => super::floppy::fdc_port_read(port),

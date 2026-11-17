@@ -217,7 +217,7 @@ export function VirtioConsole(cpu, bus)
             if(core)
             {
                 const bytes = new Uint8Array(data);
-                new Uint8Array(cpu.wasm_memory.buffer, core["virtio_scratch"](bytes.length), bytes.length).set(bytes);
+                new Uint8Array(cpu.wasm_memory.buffer, core["virtio_scratch"](bytes.length) >>> 0, bytes.length).set(bytes);
                 core["virtio_console_input"](this.virtio.core, port, bytes.length);
                 return;
             }

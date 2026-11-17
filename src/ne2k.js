@@ -1310,13 +1310,13 @@ Ne2k.prototype.receive = function(data)
         // the address filter, the ring and the interrupt are the core's
         const exports = this.cpu.wm.exports;
         this.bus.send("eth-receive-end", [data.length]);
-        new Uint8Array(this.cpu.wasm_memory.buffer, exports["ne2k_scratch"](data.length), data.length).set(data);
+        new Uint8Array(this.cpu.wasm_memory.buffer, exports["ne2k_scratch"](data.length) >>> 0, data.length).set(data);
         if(!exports["ne2k_filter"](data.length)) return;
         if(this.mac_address_in_state)
         {
             data = new Uint8Array(data);
             translate_mac_address(data, this.mac, this.mac_address_in_state);
-            new Uint8Array(this.cpu.wasm_memory.buffer, exports["ne2k_scratch"](data.length), data.length).set(data);
+            new Uint8Array(this.cpu.wasm_memory.buffer, exports["ne2k_scratch"](data.length) >>> 0, data.length).set(data);
         }
         exports["ne2k_store"](data.length);
         return;

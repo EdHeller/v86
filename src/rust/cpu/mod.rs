@@ -43,6 +43,7 @@ pub mod virtio_blk;
 pub mod virtio_console;
 pub mod virtio_dev;
 pub mod virtio_input;
+pub mod fw_cfg;
 pub mod hda;
 pub mod sb16;
 pub mod virtio_net;

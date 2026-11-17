@@ -122,9 +122,9 @@ export function device_handle(cpu, owner)
             "attach": (port, attached, low_speed) => cpu.wm.exports["uhci_attach"](port, attached, low_speed),
             "reset": () => cpu.wm.exports["uhci_reset"](),
             "update_irq": () => cpu.wm.exports["uhci_update_irq"](),
-            "fields": () => new Int32Array(cpu.wasm_memory.buffer, cpu.wm.exports["get_uhci_addr"]() + 8, 19),
+            "fields": () => new Int32Array(cpu.wasm_memory.buffer, (cpu.wm.exports["get_uhci_addr"]() >>> 0) + 8, 19),
             "next_frame": value => {
-                const f = new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["get_uhci_addr"](), 1);
+                const f = new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["get_uhci_addr"]() >>> 0, 1);
                 if(value !== undefined) f[0] = value;
                 return f[0];
             },
@@ -139,14 +139,14 @@ export function device_handle(cpu, owner)
             "set_port": port => cpu.wm.exports["tablet_set_port"](port),
             "address": () => cpu.wm.exports["tablet_address"](),
             "in_use": () => !!cpu.wm.exports["tablet_in_use"](),
-            "scratch": length => new Uint8Array(cpu.wasm_memory.buffer, cpu.wm.exports["tablet_scratch"](), Math.min(length, 1024)),
+            "scratch": length => new Uint8Array(cpu.wasm_memory.buffer, cpu.wm.exports["tablet_scratch"]() >>> 0, Math.min(length, 1024)),
             "transaction": (pid, endpoint, length) => cpu.wm.exports["tablet_transaction"](pid, endpoint, length),
             "move": (x, y) => cpu.wm.exports["tablet_move"](x, y),
             "press": buttons => cpu.wm.exports["tablet_press"](buttons),
             "scroll": delta => cpu.wm.exports["tablet_scroll"](delta),
             "save": () => {
                 cpu.wm.exports["tablet_save"]();
-                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["tablet_state_addr"](), cpu.wm.exports["tablet_state_len"]()).slice();
+                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["tablet_state_addr"]() >>> 0, cpu.wm.exports["tablet_state_len"]()).slice();
             },
             "load": values => {
                 const at = cpu.wm.exports["tablet_state_resize"](values.length);
@@ -158,7 +158,7 @@ export function device_handle(cpu, owner)
         // the USB disks' data stages in the core (src/rust/cpu/usb_storage.rs)
         "core_storage": cpu.devices.pci && cpu.devices.pci.q35 ? null : {
             "new": () => cpu.wm.exports["storage_new"](),
-            "fields": slot => new Int32Array(cpu.wasm_memory.buffer, cpu.wm.exports["storage_fields"](slot), 11),
+            "fields": slot => new Int32Array(cpu.wasm_memory.buffer, cpu.wm.exports["storage_fields"](slot) >>> 0, 11),
             "queued": slot => cpu.wm.exports["storage_queued"](slot),
             "push": (slot, bytes) => {
                 const at = cpu.wm.exports["storage_push"](slot, bytes.length);
@@ -191,7 +191,7 @@ export function device_handle(cpu, owner)
             "bytes": (pointer, length) => new Uint8Array(cpu.wasm_memory.buffer, pointer, length),
             "save": () => {
                 cpu.wm.exports["xhci_save"]();
-                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["xhci_state_addr"](), cpu.wm.exports["xhci_state_len"]()).slice();
+                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["xhci_state_addr"]() >>> 0, cpu.wm.exports["xhci_state_len"]()).slice();
             },
             "load": values => {
                 const at = cpu.wm.exports["xhci_state_resize"](values.length);
@@ -221,7 +221,7 @@ export function device_handle(cpu, owner)
             "on_event": handler => { cpu.hda_event = handler; },
             "save": () => {
                 cpu.wm.exports["hda_save"]();
-                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["hda_state_addr"](), cpu.wm.exports["hda_state_len"]()).slice();
+                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["hda_state_addr"]() >>> 0, cpu.wm.exports["hda_state_len"]()).slice();
             },
             "load": values => {
                 const at = cpu.wm.exports["hda_state_resize"](values.length);

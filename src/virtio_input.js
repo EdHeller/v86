@@ -363,7 +363,7 @@ VirtioInput.prototype.send = function(events)
 {
     if(this.core)
     {
-        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * events.length), 3 * events.length);
+        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * events.length) >>> 0, 3 * events.length);
         events.forEach((e, i) => words.set(e, 3 * i));
         this.core["virtio_input_send"](this.virtio.core, events.length);
         return;
@@ -445,7 +445,7 @@ VirtioInput.prototype.get_state = function()
     {
         const n = this.core["virtio_input_save"](this.virtio.core);
         this.pending = [];
-        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * n), 3 * n);
+        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * n) >>> 0, 3 * n);
         for(let i = 0; i < n; i++) this.pending.push([words[3 * i], words[3 * i + 1], words[3 * i + 2]]);
     }
     return [this.virtio, this.select, this.subsel, [].concat(...this.pending),
@@ -463,7 +463,7 @@ VirtioInput.prototype.set_state = function(state)
     this.slots = (state[4] || new Array(MT_SLOTS).fill(null)).map(slot => slot && { id: slot[0], x: slot[1], y: slot[2] });
     if(this.core)
     {
-        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * this.pending.length), 3 * this.pending.length);
+        const words = new Int32Array(this.virtio.cpu.wasm_memory.buffer, this.core["virtio_scratch"](12 * this.pending.length) >>> 0, 3 * this.pending.length);
         this.pending.forEach((e, i) => words.set(e, 3 * i));
         this.core["virtio_input_load"](this.virtio.core, this.pending.length);
     }

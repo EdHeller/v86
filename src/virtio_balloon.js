@@ -179,7 +179,7 @@ export function VirtioBalloon(cpu, bus)
         const exports = cpu.wm.exports;
         const core = this.virtio.core;
         exports["virtio_balloon_attach"](core);
-        const state = () => new Int32Array(cpu.wasm_memory.buffer, exports["virtio_balloon_state"](core), 4);
+        const state = () => new Int32Array(cpu.wasm_memory.buffer, exports["virtio_balloon_state"](core) >>> 0, 4);
         ["num_pages", "actual", "fp_cmd", "zeroed"].forEach((name, i) => Object.defineProperty(this, name, {
             get: () => state()[i],
             set: value => { state()[i] = value; },

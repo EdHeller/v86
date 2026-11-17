@@ -375,7 +375,7 @@ VirtIO.prototype.use_core = function(index, options)
 {
     const cpu = this.cpu;
     this.core = index;
-    const fields = () => new Int32Array(cpu.wasm_memory.buffer, cpu.wm.exports["virtio_pci_fields"](index), CORE_FIELDS);
+    const fields = () => new Int32Array(cpu.wasm_memory.buffer, cpu.wm.exports["virtio_pci_fields"](index) >>> 0, CORE_FIELDS);
     this.core_notify = options.notification.handlers;
     this.core_on_driver_ok = options.common.on_driver_ok;
     /** the device-specific configuration's fields with their offsets */
@@ -409,8 +409,8 @@ VirtIO.prototype.use_core = function(index, options)
     scalar("queue_select", CORE_QSEL, false);
     scalar("isr_status", CORE_ISR, false);
     const words = (name, i) => Object.defineProperty(this, name, {
-        get: () => new Uint32Array(cpu.wasm_memory.buffer, cpu.wm.exports["virtio_pci_fields"](index) + 4 * i, 4),
-        set: value => { new Uint32Array(cpu.wasm_memory.buffer, cpu.wm.exports["virtio_pci_fields"](index) + 4 * i, 4).set(value); },
+        get: () => new Uint32Array(cpu.wasm_memory.buffer, (cpu.wm.exports["virtio_pci_fields"](index) >>> 0) + 4 * i, 4),
+        set: value => { new Uint32Array(cpu.wasm_memory.buffer, (cpu.wm.exports["virtio_pci_fields"](index) >>> 0) + 4 * i, 4).set(value); },
     });
     words("device_feature", CORE_DEV_FEAT);
     words("driver_feature", CORE_DRV_FEAT);
