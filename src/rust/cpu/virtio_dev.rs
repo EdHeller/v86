@@ -14,6 +14,7 @@ pub const ISR_QUEUE: i32 = 1;
 pub const MODEL_JS: u8 = 0;
 pub const MODEL_RNG: u8 = 1;
 pub const MODEL_BLK: u8 = 2;
+pub const MODEL_NET: u8 = 3;
 
 /// the model of each device (MODEL_JS: virtio.js's)
 pub static mut MODEL: [u8; DEVICES] = [MODEL_JS; DEVICES];
@@ -174,6 +175,25 @@ pub unsafe fn notify(d: usize, value: i32) -> bool {
             super::virtio_blk::process(d, (value & 0xFFFF) as usize);
             true
         },
+        MODEL_NET => {
+            super::virtio_net::notify(d, (value & 0xFFFF) as usize);
+            true
+        },
         _ => false,
     }
 }
+
+/// Bytes JavaScript hands a model (a received frame, typed text, ...): virtio_scratch(length) says where to put them
+static mut SCRATCH: Vec<u8> = Vec::new();
+
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn virtio_scratch(length: u32) -> u32 {
+    if SCRATCH.len() < length as usize {
+        SCRATCH.resize(length as usize, 0);
+    }
+    SCRATCH.as_mut_ptr() as u32
+}
+
+#[allow(static_mut_refs)]
+pub unsafe fn scratch() -> *const u8 { SCRATCH.as_ptr() }

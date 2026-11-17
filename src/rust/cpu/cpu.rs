@@ -55,6 +55,9 @@ pub mod js {
         /// virtio-blk (src/rust/cpu/virtio_blk.rs): read or write `length` bytes of the image at `offset` for request
         /// `id` (its bytes: virtio_blk_buffer), then virtio_blk_done
         pub fn virtio_blk_io(device: i32, id: i32, write: bool, offset: f64, length: i32);
+        /// A virtio device model in the core has something for JavaScript: what (per model), and bytes of this module's
+        /// memory (a frame to send, a MAC address, text, ...)
+        pub fn virtio_model_event(device: i32, kind: i32, data: u32, length: i32);
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();

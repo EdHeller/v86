@@ -188,8 +188,21 @@ export function VirtioNet(cpu, bus, preserve_mac_from_state_image, mtu = MTU_DEF
         },
     });
 
+    // the core's model (src/rust/cpu/virtio_net.rs): this sends its frames and takes its MAC address (core_event)
+    if(this.virtio.core >= 0)
+    {
+        cpu.wm.exports["virtio_net_attach"](this.virtio.core);
+        this.virtio.model = this;
+    }
     this.bus.register("net" + this.id + "-receive", data => {
         this.bus.send("eth-receive-end", [data.length]);
+        if(this.virtio.core >= 0)
+        {
+            const exports = cpu.wm.exports;
+            new Uint8Array(cpu.wasm_memory.buffer, exports["virtio_scratch"](data.length), data.length).set(data);
+            if(!exports["virtio_net_receive"](this.virtio.core, data.length)) console.log("No buffer to write into!");
+            return;
+        }
         const with_header = new Uint8Array(12 + data.byteLength);
         const view = new DataView(with_header.buffer, with_header.byteOffset, with_header.byteLength);
         view.setInt16(10, 1);
@@ -208,6 +221,26 @@ export function VirtioNet(cpu, bus, preserve_mac_from_state_image, mtu = MTU_DEF
 
 }
 
+
+/**
+ * From the core's model: 0 a frame to send, 1 the driver's MAC address
+ * @param {number} kind
+ * @param {!Uint8Array} data
+ */
+VirtioNet.prototype.core_event = function(kind, data)
+{
+    if(kind === 0)
+    {
+        const frame = data.slice();
+        this.bus.send("net" + this.id + "-send", frame);
+        this.bus.send("eth-transmit-end", [frame.length]);
+    }
+    else if(kind === 1)
+    {
+        this.mac = data.slice(0, 6);
+        this.bus.send("net" + this.id + "-mac", format_mac(this.mac));
+    }
+};
 
 VirtioNet.prototype.get_state = function()
 {
