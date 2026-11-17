@@ -2160,6 +2160,22 @@ fn gen_shl32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
             opsize: OPSIZE_32,
         };
     }
+    if flags_skip(ctx) {
+        // (the flags are dead: the shift alone)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        ctx.builder.get_local(dest_operand);
+        match source_operand {
+            LocalOrImmediate::WasmLocal(l) => {
+                ctx.builder.get_local(l);
+                ctx.builder.const_i32(31);
+                ctx.builder.and_i32();
+            },
+            LocalOrImmediate::Immediate(i) => ctx.builder.const_i32(*i & 31),
+        }
+        ctx.builder.shl_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     let builder = &mut ctx.builder;
     let count = match source_operand {
         LocalOrImmediate::WasmLocal(l) => {
@@ -2233,6 +2249,22 @@ fn gen_shr32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
             opsize: OPSIZE_32,
         };
     }
+    if flags_skip(ctx) {
+        // (the flags are dead: the shift alone)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        ctx.builder.get_local(dest_operand);
+        match source_operand {
+            LocalOrImmediate::WasmLocal(l) => {
+                ctx.builder.get_local(l);
+                ctx.builder.const_i32(31);
+                ctx.builder.and_i32();
+            },
+            LocalOrImmediate::Immediate(i) => ctx.builder.const_i32(*i & 31),
+        }
+        ctx.builder.shr_u_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     let builder = &mut ctx.builder;
     let count = match source_operand {
         LocalOrImmediate::WasmLocal(l) => {
@@ -2298,6 +2330,22 @@ fn gen_sar32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
             dest: local_to_instruction_operand(ctx, dest_operand),
             opsize: OPSIZE_32,
         };
+    }
+    if flags_skip(ctx) {
+        // (the flags are dead: the shift alone)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        ctx.builder.get_local(dest_operand);
+        match source_operand {
+            LocalOrImmediate::WasmLocal(l) => {
+                ctx.builder.get_local(l);
+                ctx.builder.const_i32(31);
+                ctx.builder.and_i32();
+            },
+            LocalOrImmediate::Immediate(i) => ctx.builder.const_i32(*i & 31),
+        }
+        ctx.builder.shr_s_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
     }
     let builder = &mut ctx.builder;
     let count = match source_operand {
@@ -2916,6 +2964,26 @@ pub fn instr32_3D_jit(ctx: &mut JitContext, imm32: u32) {
 }
 
 fn gen_inc(ctx: &mut JitContext, dest_operand: &WasmLocal, size: i32) {
+    ctx.current_instruction = Instruction::Add {
+        opsize: size,
+        dest: local_to_instruction_operand(ctx, dest_operand),
+        source: InstructionOperand::Immediate(1),
+        is_inc: true,
+    };
+    if flags_skip(ctx) {
+        // (the flags are dead: the result alone; CF is kept by inc and dec anyway)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        ctx.builder.get_local(dest_operand);
+        ctx.builder.const_i32(1);
+        ctx.builder.add_i32();
+        if size == OPSIZE_16 {
+            codegen::gen_set_reg16_local(ctx.builder, dest_operand);
+        }
+        else {
+            ctx.builder.set_local(dest_operand);
+        }
+        return;
+    }
     ctx.builder.const_i32(global_pointers::flags as i32);
     codegen::gen_get_flags(ctx.builder);
     ctx.builder.const_i32(!1);
@@ -2966,6 +3034,26 @@ fn gen_inc32(ctx: &mut JitContext, dest_operand: &WasmLocal) {
 }
 
 fn gen_dec(ctx: &mut JitContext, dest_operand: &WasmLocal, size: i32) {
+    ctx.current_instruction = Instruction::Sub {
+        opsize: size,
+        dest: local_to_instruction_operand(ctx, dest_operand),
+        source: InstructionOperand::Immediate(1),
+        is_dec: true,
+    };
+    if flags_skip(ctx) {
+        // (the flags are dead: the result alone; CF is kept by inc and dec anyway)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        ctx.builder.get_local(dest_operand);
+        ctx.builder.const_i32(1);
+        ctx.builder.sub_i32();
+        if size == OPSIZE_16 {
+            codegen::gen_set_reg16_local(ctx.builder, dest_operand);
+        }
+        else {
+            ctx.builder.set_local(dest_operand);
+        }
+        return;
+    }
     ctx.builder.const_i32(global_pointers::flags as i32);
     codegen::gen_get_flags(ctx.builder);
     ctx.builder.const_i32(!1);

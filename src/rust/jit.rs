@@ -2341,11 +2341,18 @@ fn flag_effect(bytes: [u8; 4]) -> (bool, bool) {
     // add, or, and, sub, xor, cmp (not adc, sbb): every one of them sets all of the arithmetic flags
     let group_writes_all = |g: u8| matches!(g, 0 | 1 | 4 | 5 | 6 | 7);
     match op {
-        0x00..=0x3F if op & 7 <= 3 && group_writes_all(op >> 3) => if reg_form { WRITES_ALL } else { READS },
+        // (with a memory operand they may fault before writing the flags: as plain loads and stores, see below)
+        0x00..=0x3F if op & 7 <= 3 && group_writes_all(op >> 3) => if reg_form || across { WRITES_ALL } else { READS },
         0x00..=0x3F if (op & 7 == 4 || op & 7 == 5) && group_writes_all(op >> 3) => WRITES_ALL,
-        0x80 | 0x81 | 0x83 => if reg_form && group_writes_all(modrm >> 3 & 7) { WRITES_ALL } else { READS },
+        0x80 | 0x81 | 0x83 => {
+            if (reg_form || across) && group_writes_all(modrm >> 3 & 7) { WRITES_ALL } else { READS }
+        },
         // test
-        0x84 | 0x85 => if reg_form { WRITES_ALL } else { READS },
+        0x84 | 0x85 => if reg_form || across { WRITES_ALL } else { READS },
+        // shl, shr, sar of a register by 1 or by a non-zero immediate: every arithmetic flag set (as the JIT computes
+        // them; AF and, for counts above 1, OF are undefined on x86). rol, ror, rcl, rcr: only CF and OF
+        0xD1 if reg_form && matches!(modrm >> 3 & 7, 4 | 5 | 7) => WRITES_ALL,
+        0xC1 if reg_form && matches!(modrm >> 3 & 7, 4 | 5 | 7) && bytes[skip + 2] & 31 != 0 => WRITES_ALL,
         0xA8 | 0xA9 => WRITES_ALL,
         // mov between registers, mov of an immediate to a register, lea (computes an address: does not fault), nop
         0x88..=0x8B if reg_form => NONE,
