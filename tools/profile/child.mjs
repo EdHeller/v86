@@ -62,12 +62,25 @@ const wasm = { modules: 0, bytes: 0, sync_ms: 0 };
     const instantiate = WebAssembly.instantiate, Module = WebAssembly.Module;
     WebAssembly.instantiate = function(code, imports)
     {
-        if(!(code instanceof Module)) { wasm.modules++; wasm.bytes += size(code); }
+        if(!(code instanceof Module))
+        {
+            wasm.modules++; wasm.bytes += size(code);
+            // (V86_DUMP_WASM=dir: every generated module to dir/<n>.wasm, to read with wasm2wat)
+            if(process.env.V86_DUMP_WASM && wasm.modules > 1)
+            {
+                fs.writeFileSync(path.join(process.env.V86_DUMP_WASM, wasm.modules + ".wasm"), new Uint8Array(code.buffer || code, code.byteOffset || 0, size(code)));
+            }
+        }
         return instantiate.call(WebAssembly, code, imports);
     };
     WebAssembly.Module = new Proxy(Module, {
         construct(target, args)
         {
+            // (V86_DUMP_WASM=dir: every generated module to dir/<n>.wasm, to read with wasm2wat)
+            if(process.env.V86_DUMP_WASM && wasm.modules > 0)
+            {
+                fs.writeFileSync(path.join(process.env.V86_DUMP_WASM, wasm.modules + ".wasm"), new Uint8Array(args[0]));
+            }
             const t = real_now();
             const m = new target(...args);
             wasm.sync_ms += real_now() - t; wasm.modules++; wasm.bytes += size(args[0]);

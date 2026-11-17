@@ -1446,6 +1446,12 @@ fn gen_add8(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
     ctx.builder
         .load_fixed_u8(global_pointers::last_result as u32);
 }
+/// The current instruction (ctx.current_instruction set) need not store its flags: they are dead, or read only by
+/// the conditional jump after it, which computes them from locals
+fn flags_skip(ctx: &JitContext) -> bool {
+    ctx.flags_dead || ctx.flags_jcc_only.map_or(false, |cc| codegen::condition_from_locals(&ctx.current_instruction, cc))
+}
+
 fn gen_add32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
     ctx.current_instruction = Instruction::Add {
         opsize: OPSIZE_32,
@@ -1459,7 +1465,7 @@ fn gen_add32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         is_inc: false,
     };
 
-    if ctx.flags_dead {
+    if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         ctx.builder.get_local(&dest_operand);
         source_operand.gen_get(ctx.builder);
@@ -1525,7 +1531,7 @@ fn gen_sub32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         is_dec: false,
     };
 
-    if ctx.flags_dead {
+    if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         ctx.builder.get_local(&dest_operand);
         source_operand.gen_get(ctx.builder);
@@ -1552,17 +1558,17 @@ fn gen_cmp(
     source_operand: &LocalOrImmediate,
     size: i32,
 ) {
-    if ctx.flags_dead {
-        // (cmp only sets the flags)
-        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
-        return;
-    }
-    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
     ctx.current_instruction = Instruction::Cmp {
         dest: local_to_instruction_operand(ctx, dest_operand),
         source: source_operand.to_instruction_operand(ctx),
         opsize: size,
     };
+    if flags_skip(ctx) {
+        // (cmp only sets the flags)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
 
     ctx.builder.const_i32(global_pointers::last_result as i32);
     if source_operand.is_zero() {
@@ -1831,7 +1837,7 @@ fn gen_and32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
     ctx.builder.and_i32();
     ctx.builder.set_local(dest_operand);
 
-    if ctx.flags_dead {
+    if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         return;
     }
@@ -1851,12 +1857,6 @@ fn gen_test(
     source_operand: &LocalOrImmediate,
     size: i32,
 ) {
-    if ctx.flags_dead {
-        // (test only sets the flags)
-        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
-        return;
-    }
-    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
     let is_self_test = source_operand.eq_local(dest_operand);
     ctx.current_instruction = Instruction::Bitwise {
         opsize: size,
@@ -1867,6 +1867,12 @@ fn gen_test(
             InstructionOperandDest::Other
         },
     };
+    if flags_skip(ctx) {
+        // (test only sets the flags)
+        codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+        return;
+    }
+    codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_STORED);
 
     ctx.builder.const_i32(global_pointers::last_result as i32);
     if is_self_test {
@@ -1929,7 +1935,7 @@ fn gen_or32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
     ctx.builder.or_i32();
     ctx.builder.set_local(dest_operand);
 
-    if ctx.flags_dead {
+    if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         return;
     }
@@ -1985,7 +1991,7 @@ fn gen_xor32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         ctx.builder.set_local(dest_operand);
     }
 
-    if ctx.flags_dead {
+    if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         return;
     }

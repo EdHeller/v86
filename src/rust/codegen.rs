@@ -2636,6 +2636,40 @@ pub fn gen_trigger_gp(ctx: &mut JitContext, error_code: u32) {
     ctx.builder.br(ctx.exit_with_fault_label);
 }
 
+/// Whether the condition (of a jcc) right after `previous` is computed from locals only (gen_condition_fn reads no
+/// flag state from memory): then `previous` need not store its flags when nothing else reads them
+pub fn condition_from_locals(previous: &Instruction, condition: u8) -> bool {
+    let cc = condition & 0xF;
+    match previous {
+        Instruction::Cmp {
+            dest: InstructionOperandDest::WasmLocal(_),
+            source: source @ (InstructionOperand::WasmLocal(_) | InstructionOperand::Immediate(_)),
+            opsize: OPSIZE_32,
+        } => match cc {
+            // b, ae, z, nz, be, a, l, ge, le, g
+            0x2..=0x7 | 0xC..=0xF => true,
+            // s, ns: from the local only when comparing with 0
+            0x8 | 0x9 => source.is_zero(),
+            _ => false,
+        },
+        Instruction::Bitwise {
+            dest: InstructionOperandDest::WasmLocal(_),
+            opsize: OPSIZE_32,
+        }
+        | Instruction::Add {
+            dest: InstructionOperandDest::WasmLocal(_),
+            opsize: OPSIZE_32,
+            ..
+        }
+        | Instruction::Sub {
+            dest: InstructionOperandDest::WasmLocal(_),
+            opsize: OPSIZE_32,
+            ..
+        } => matches!(cc, 0x4 | 0x5 | 0x8 | 0x9),
+        _ => false,
+    }
+}
+
 pub fn gen_condition_fn_negated(ctx: &mut JitContext, condition: u8) {
     gen_condition_fn(ctx, condition ^ 1)
 }

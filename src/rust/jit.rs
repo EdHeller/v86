@@ -391,6 +391,10 @@ pub struct JitContext<'a> {
     /// the arithmetic flags the current instruction writes are overwritten before anything reads them (see
     /// flags_dead_after): its emitter may leave out storing them
     pub flags_dead: bool,
+    /// the current instruction's flags are read only by the conditional jump right after it (the block's last
+    /// instruction, with this condition), and are dead after that: when the jump computes its condition from locals
+    /// (codegen::condition_from_locals), the emitter may leave out storing them
+    pub flags_jcc_only: Option<u8>,
     /// per basic block of the module: whether the flags may be read after its end, and what its instructions do to
     /// them (see flags_live_out)
     pub flags_live_out: HashMap<u32, (bool, Vec<(bool, bool)>)>,
@@ -1338,6 +1342,7 @@ fn jit_generate_module(
         instruction_counter_flushed,
         wasm_table_index,
         flags_dead: false,
+        flags_jcc_only: None,
         flags_live_out,
     };
 
@@ -2204,10 +2209,21 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
     ctx.current_instruction = Instruction::Other;
     ctx.previous_instruction = Instruction::Other;
 
+    let mut jcc_only = None;
     let flags_dead = if unsafe { FLAG_ELISION } {
         // (at the block's end the flags are read, unless the module's analysis knows better)
         match ctx.flags_live_out.get(&start_addr) {
-            Some((live_out, effects)) => flags_dead_after(effects, *live_out),
+            Some((live_out, effects)) => {
+                // a flag writer right before the block's conditional jump, its flags dead after the jump
+                if let BasicBlockType::ConditionalJump { condition, .. } = block.ty {
+                    let n = effects.len();
+                    if !*live_out && n >= 2 && effects[n - 2] == (false, true) && (condition & 0xF0 == 0x70 || condition & 0xF0 == 0x80)
+                    {
+                        jcc_only = Some((n - 2, condition));
+                    }
+                }
+                flags_dead_after(effects, *live_out)
+            },
             None => flags_dead_after(&block_flag_effects(ctx.cpu, start_addr, stop_addr), true),
         }
     }
@@ -2243,9 +2259,14 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
         let start_eip = ctx.cpu.eip;
         let mut instruction_flags = 0;
         ctx.flags_dead = flags_dead.get(instruction_index).copied().unwrap_or(false);
+        ctx.flags_jcc_only = match jcc_only {
+            Some((i, condition)) if i == instruction_index && unsafe { FLAG_ELISION_JCC } => Some(condition),
+            _ => None,
+        };
         instruction_index += 1;
         jit_instructions::jit_instruction(ctx, &mut instruction_flags);
         ctx.flags_dead = false;
+        ctx.flags_jcc_only = None;
         let end_eip = ctx.cpu.eip;
 
         let instruction_length = end_eip - start_eip;
@@ -2302,6 +2323,9 @@ pub static mut NESTED_CALLS_CONTINUED: u64 = 0;
 pub static mut FLAG_ELISION_ACROSS_ACCESSES: bool = true;
 /// and across the basic blocks of a module (set_jit_config(20, ..), see flags_live_out)
 pub static mut FLAG_ELISION_ACROSS_BLOCKS: bool = true;
+/// and the flags of a cmp/test/... read only by the conditional jump after it (set_jit_config(23, ..), see
+/// JitContext::flags_jcc_only)
+pub static mut FLAG_ELISION_JCC: bool = true;
 
 /// What an instruction does to the arithmetic flags, from its bytes, for flags_dead_after: (reads them or may need
 /// them, writes them all). Conservative: what is not recognised reads them, and so does anything that may fault
@@ -2917,6 +2941,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         20 => FLAG_ELISION_ACROSS_BLOCKS = value != 0,
         21 => NESTED_CALLS = value != 0,
         22 => NESTED_CALL_STATS = value != 0,
+        23 => FLAG_ELISION_JCC = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
         _ => dbg_assert!(false),
