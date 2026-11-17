@@ -107,20 +107,52 @@ export function HDAController(handle)
     /** The rate the speaker was last told */
     this.speaker_rate = 0;
 
-    this.reset_controller();
+    /** The core's controller (src/rust/cpu/hda.rs) on i440FX, or null: then this one runs (Q35) */
+    this.core = machine.core_hda();
+
+    if(!this.core)
+    {
+        this.reset_controller();
+    }
     this.gctl = 0;
 
     const [device, revision] = IDENTITY[machine.machine_type] || IDENTITY["i440fx"];
     machine.register_pci({
         pci_space: create_pci_space(device, revision),
         pci_bars: [{ size: MMIO_SIZE, on_move: base => { this.bar0 = base; this.update_decode(); } }],
-        on_command_change: () => { this.update_decode(); this.update_irq(); },
+        on_command_change: () => { this.update_decode(); this.core ? this.core["update_irq"]() : this.update_irq(); },
         on_config_restore: () => this.update_decode(),
         on_upstream_change: () => this.update_decode(),
         on_config_write: (offset, size) => this.config_written(offset, size),
     });
-    machine.add_timer(now => this.timer(now));
+    if(this.core)
+    {
+        // the core plays the streams on its timer pass; what it plays comes here
+        this.core["on_event"]((kind, a) => this.core_event(kind, a));
+        this.core["init"](machine.pci_id());
+    }
+    else
+    {
+        machine.add_timer(now => this.timer(now));
+    }
 }
+
+/** What the core's controller tells (EV_* in src/rust/cpu/hda.rs) */
+HDAController.prototype.core_event = function(kind, a)
+{
+    switch(kind)
+    {
+        case 0:
+        {
+            const out = this.core["output"](a);
+            this.machine.output(out.left, out.right, { "stream": out.stream, "format": out.format, "tag": out.tag, "chunks": [out.pcm] });
+            break;
+        }
+        case 1: this.machine.set_sampling_rate(a); break;
+        case 2: this.machine.enable_output(); break;
+        case 3: this.machine.disable_output(); break;
+    }
+};
 
 /**
  * @param {number} index
@@ -180,6 +212,22 @@ HDAController.prototype.update_decode = function()
     if(base === this.mmio) return;
     if(this.mmio !== -1) this.machine.mmap_unregister_range(this.mmio, MMIO_SIZE);
     this.mmio = base;
+    if(this.core)
+    {
+        // (the core answers the accesses; these for those that come through JavaScript)
+        this.core["set_mmio"](base);
+        const core = this.core;
+        if(base !== -1)
+        {
+            this.machine.mmap_register_range(base, MMIO_SIZE,
+                address => core["read"](address - this.mmio, 1),
+                (address, value) => core["write"](address - this.mmio, 1, value),
+                address => core["read"](address - this.mmio, 4),
+                (address, value) => core["write"](address - this.mmio, 4, value),
+                (address, value) => core["write"](address - this.mmio, 2, value));
+        }
+        return;
+    }
     if(base !== -1)
     {
         this.machine.mmap_register_range(base, MMIO_SIZE,
@@ -227,6 +275,12 @@ HDAController.prototype.reset_controller = function()
 /** A machine reset (PCIRST#) */
 HDAController.prototype.reset = function()
 {
+    if(this.core)
+    {
+        this.core["reset"]();
+        this.update_decode();
+        return;
+    }
     this.reset_controller();
     this.gctl = 0;
     this.update_decode();
@@ -951,6 +1005,22 @@ HDAController.prototype.wallclock = function()
 
 HDAController.prototype.get_state = function()
 {
+    if(this.core)
+    {
+        // the core's numbers (hda_save) in this format
+        const v = this.core["save"]();
+        const registers = new Int32Array(28);
+        for(let i = 0; i < 25; i++) registers[i] = v[i];
+        registers[25] = this.bar0;
+        registers[26] = v[26];
+        registers[27] = v[27];
+        const streams = [];
+        let at = 29;
+        for(let i = 0; i < STREAMS; i++, at += 14) streams.push(Array.from(v.subarray(at, at + 14)));
+        const c = Array.from(v.subarray(at, at + 17));
+        const codec = [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c.slice(11, 15), c[15], c[16]];
+        return [registers, v[28], streams, codec];
+    }
     const now = this.machine.now();
     return [
         new Int32Array([this.gctl, this.wakeen, this.statests, this.gsts, this.intctl, this.ssync,
@@ -967,6 +1037,17 @@ HDAController.prototype.get_state = function()
 
 HDAController.prototype.set_state = function(state)
 {
+    if(this.core)
+    {
+        const r = state[0], c = state[3];
+        const v = [...Array.from(r).slice(0, 25), -1, r[26], r[27], state[1]];
+        for(const s of state[2]) v.push(...s.map(Number));
+        v.push(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], ...c[11], c[12], c[13]);
+        this.bar0 = r[25] >>> 0;
+        this.core["load"](new Float64Array(v));
+        this.update_decode();
+        return;
+    }
     const r = state[0];
     [this.gctl, this.wakeen, this.statests, this.gsts, this.intctl, this.ssync] = r;
     this.corb_base = [r[6], r[7]];

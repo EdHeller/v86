@@ -200,6 +200,35 @@ export function device_handle(cpu, owner)
             },
             "on_transaction": handler => { cpu.usb_transaction = handler; },
         },
+        // the core's HD Audio controller (src/rust/cpu/hda.rs), on i440FX machines as xHCI's
+        "core_hda": cpu.devices.pci && cpu.devices.pci.q35 ? null : {
+            "init": pci_id => cpu.wm.exports["hda_init"](pci_id),
+            "reset": () => cpu.wm.exports["hda_reset"](),
+            "set_mmio": base => cpu.wm.exports["hda_set_mmio"](base),
+            "update_irq": () => cpu.wm.exports["hda_update_irq"](),
+            "read": (offset, size) => cpu.wm.exports["hda_mmio_read"](offset, size) >>> 0,
+            "write": (offset, size, value) => cpu.wm.exports["hda_mmio_write"](offset, size, value),
+            // what it plays: the samples (copies) and the stream's bytes
+            "output": frames => {
+                const e = cpu.wm.exports, buffer = cpu.wasm_memory.buffer;
+                return {
+                    left: new Float32Array(buffer, e["hda_output_left"](), frames).slice(),
+                    right: new Float32Array(buffer, e["hda_output_right"](), frames).slice(),
+                    pcm: new Uint8Array(buffer, e["hda_output_pcm"](), e["hda_output_pcm_length"]()).slice(),
+                    stream: e["hda_output_info"](0), format: e["hda_output_info"](1), tag: e["hda_output_info"](2),
+                };
+            },
+            "on_event": handler => { cpu.hda_event = handler; },
+            "save": () => {
+                cpu.wm.exports["hda_save"]();
+                return new Float64Array(cpu.wasm_memory.buffer, cpu.wm.exports["hda_state_addr"](), cpu.wm.exports["hda_state_len"]()).slice();
+            },
+            "load": values => {
+                const at = cpu.wm.exports["hda_state_resize"](values.length);
+                new Float64Array(cpu.wasm_memory.buffer, at, values.length).set(values);
+                cpu.wm.exports["hda_load"]();
+            },
+        },
         "now": () => v86.microtick(),
         "add_timer": timer => cpu.add_device_timer(timer),
         "wake": () => cpu.stop_idling(),

@@ -172,6 +172,8 @@ export function CPU(bus, wm, stop_idling)
     this.uarts = [];
     /** the core's UHCI asks a USB device for a transaction (src/usb/uhci.js sets it): no device by default */
     this.usb_transaction = (port_mask, address, pid, endpoint, buffer, max_length) => -1;
+    /** HD Audio in the core tells its plugin what it plays (src/rust/cpu/hda.rs, hda_event) */
+    this.hda_event = (kind, a) => {};
     /** the virtio devices whose transport is the core's (src/rust/cpu/virtio_pci.rs), by their index there */
     this.virtio_core_devices = [];
     /** what devices in the core collected for JavaScript, taken after each slice (see after_slice) @type {!Array<function()>} */

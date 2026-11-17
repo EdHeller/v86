@@ -60,6 +60,8 @@ pub mod js {
         pub fn virtio_model_event(device: i32, kind: i32, data: u32, length: i32);
         /// The SB16 (src/rust/cpu/sb16.rs) tells the bus something: a sampling rate, the DAC on or off, a mixer setting
         pub fn sb16_event(kind: i32, a: f64, b: i32, c: i32);
+        /// HD Audio (src/rust/cpu/hda.rs) tells its plugin something: samples played (hda_output_*), a rate, output on or off
+        pub fn hda_event(kind: i32, a: f64);
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();

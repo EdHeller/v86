@@ -18,6 +18,7 @@ mod ext {
     use super::ext_raw;
     use crate::cpu::pit::JS_TIMERS_DUE;
     use crate::cpu::vga_legacy as vga;
+    use crate::cpu::hda;
     use crate::cpu::xhci;
     #[inline(always)]
     pub unsafe fn mmap_read8(addr: u32) -> i32 {
@@ -26,6 +27,9 @@ mod ext {
         }
         if xhci::serves(addr) {
             return xhci::read8(addr);
+        }
+        if hda::serves(addr) {
+            return hda::read(addr, 1);
         }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_read8(addr)
@@ -38,6 +42,9 @@ mod ext {
         if xhci::serves(addr) {
             return xhci::read32(addr);
         }
+        if hda::serves(addr) {
+            return hda::read(addr, 4);
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_read32(addr)
     }
@@ -48,6 +55,9 @@ mod ext {
         }
         if xhci::serves(addr) {
             return xhci::write(addr, 1, value as u32);
+        }
+        if hda::serves(addr) {
+            return hda::write(addr, 1, value as u32);
         }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_write8(addr, value)
@@ -63,6 +73,9 @@ mod ext {
             xhci::write(addr, 1, value as u32 & 0xFF);
             return xhci::write(addr + 1, 1, value as u32 >> 8 & 0xFF);
         }
+        if hda::serves(addr) {
+            return hda::write(addr, 2, value as u32 & 0xFFFF);
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_write16(addr, value)
     }
@@ -77,12 +90,15 @@ mod ext {
         if xhci::serves(addr) {
             return xhci::write(addr, 4, value as u32);
         }
+        if hda::serves(addr) {
+            return hda::write(addr, 4, value as u32);
+        }
         JS_TIMERS_DUE = 0.0;
         ext_raw::mmap_write32(addr, value)
     }
     #[inline(always)]
     pub unsafe fn mmap_write64(addr: u32, v0: i32, v1: i32) {
-        if vga::serves(addr) || xhci::serves(addr) {
+        if vga::serves(addr) || xhci::serves(addr) || hda::serves(addr) {
             mmap_write32(addr, v0);
             return mmap_write32(addr + 4, v1);
         }
@@ -91,7 +107,7 @@ mod ext {
     }
     #[inline(always)]
     pub unsafe fn mmap_write128(addr: u32, v0: i32, v1: i32, v2: i32, v3: i32) {
-        if vga::serves(addr) || xhci::serves(addr) {
+        if vga::serves(addr) || xhci::serves(addr) || hda::serves(addr) {
             mmap_write32(addr, v0);
             mmap_write32(addr + 4, v1);
             mmap_write32(addr + 8, v2);
