@@ -16,6 +16,7 @@ pub const MODEL_RNG: u8 = 1;
 pub const MODEL_BLK: u8 = 2;
 pub const MODEL_NET: u8 = 3;
 pub const MODEL_CONSOLE: u8 = 4;
+pub const MODEL_BALLOON: u8 = 5;
 
 /// the model of each device (MODEL_JS: virtio.js's)
 pub static mut MODEL: [u8; DEVICES] = [MODEL_JS; DEVICES];
@@ -85,6 +86,19 @@ impl Chain {
         }
         self.length_written += done as u32;
         done
+    }
+
+    /// The writable buffers zeroed in place (free page hinting); their length
+    pub unsafe fn zero_writable(&mut self) -> u32 {
+        let mut total = 0;
+        for &(addr, len) in &self.write {
+            if addr as u64 + len as u64 <= *memory_size as u64 {
+                std::ptr::write_bytes(mem8.add(addr as usize), 0, len as usize);
+                crate::jit::jit_dirty_cache(addr, addr + len);
+            }
+            total += len;
+        }
+        total
     }
 
     /// `n` bytes of zeros to the writable buffers
@@ -182,6 +196,10 @@ pub unsafe fn notify(d: usize, value: i32) -> bool {
         },
         MODEL_CONSOLE => {
             super::virtio_console::notify(d, (value & 0xFFFF) as usize);
+            true
+        },
+        MODEL_BALLOON => {
+            super::virtio_balloon::notify(d, (value & 0xFFFF) as usize);
             true
         },
         _ => false,

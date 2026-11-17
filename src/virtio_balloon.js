@@ -172,7 +172,47 @@ export function VirtioBalloon(cpu, bus)
            ]
         },
     });
+    // the core's model (src/rust/cpu/virtio_balloon.rs): the counts are its (these fields its accessors), the
+    // statistics and the end of free page hinting come here (core_event)
+    if(this.virtio.core >= 0)
+    {
+        const exports = cpu.wm.exports;
+        const core = this.virtio.core;
+        exports["virtio_balloon_attach"](core);
+        const state = () => new Int32Array(cpu.wasm_memory.buffer, exports["virtio_balloon_state"](core), 4);
+        ["num_pages", "actual", "fp_cmd", "zeroed"].forEach((name, i) => Object.defineProperty(this, name, {
+            get: () => state()[i],
+            set: value => { state()[i] = value; },
+        }));
+        this.virtio.model = this;
+    }
 }
+
+/**
+ * From the core's model: 0 statistics (tag and value pairs), 1 free page hinting done (the bytes zeroed)
+ * @param {number} kind
+ * @param {!Uint8Array} data
+ */
+VirtioBalloon.prototype.core_event = function(kind, data)
+{
+    if(kind === 0)
+    {
+        const buffer = data.slice();
+        const result = {};
+        for(let i = 0; i < buffer.length; i += 10)
+        {
+            const [cat, value] = marshall.Unmarshall(["h", "d"], buffer, { offset: i });
+            result[STAT_NAMES[cat]] = value;
+        }
+        if(this.stats_cb) this.stats_cb(result);
+    }
+    else if(kind === 1)
+    {
+        const zeroed = new DataView(data.buffer, data.byteOffset, 4).getInt32(0, true);
+        if(this.free_cb) this.free_cb(zeroed);
+    }
+};
+
 
 VirtioBalloon.prototype.Inflate = function(amount) {
     this.num_pages += amount;
@@ -185,6 +225,12 @@ VirtioBalloon.prototype.Deflate = function(amount) {
 };
 
 VirtioBalloon.prototype.Cleanup = function(cb) {
+    if(this.virtio.core >= 0)
+    {
+        this.free_cb = cb;
+        this.virtio.cpu.wm.exports["virtio_balloon_cleanup"](this.virtio.core);
+        return;
+    }
     this.fp_cmd = 2;
     this.free_cb = cb;
     this.zeroed = 0;
@@ -211,6 +257,11 @@ VirtioBalloon.prototype.set_state = function(state)
 VirtioBalloon.prototype.GetStats = function(data)
 {
     this.stats_cb = data;
+    if(this.virtio.core >= 0)
+    {
+        this.virtio.cpu.wm.exports["virtio_balloon_get_stats"](this.virtio.core);
+        return;
+    }
     const queue = this.virtio.queues[2];
     while(queue.has_request())
     {
