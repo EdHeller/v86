@@ -902,7 +902,8 @@ CPU.prototype.set_state = function(state)
     {
         // (selected again, read from its start: the read position was never part of a snapshot)
         const item = this.fw_value;
-        new Uint8Array(this.wasm_memory.buffer, this.wm.exports["fw_cfg_select"](item.length) >>> 0, item.length).set(item);
+        const at = this.wm.exports["fw_cfg_select"](item.length) >>> 0; // (first: it can grow the memory)
+        new Uint8Array(this.wasm_memory.buffer, at, item.length).set(item);
     }
 
     state[63] && this.set_state_ioapic(state[63]);
@@ -1435,7 +1436,8 @@ CPU.prototype.init = function(settings, device_bus)
 
         // the item's bytes to the core, which reads them out
         const item = this.fw_value;
-        new Uint8Array(this.wasm_memory.buffer, this.wm.exports["fw_cfg_select"](item.length) >>> 0, item.length).set(item);
+        const at = this.wm.exports["fw_cfg_select"](item.length) >>> 0; // (first: it can grow the memory)
+        new Uint8Array(this.wasm_memory.buffer, at, item.length).set(item);
     });
 
     if(DEBUG)

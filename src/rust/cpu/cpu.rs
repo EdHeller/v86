@@ -64,6 +64,13 @@ pub mod js {
         pub fn hda_event(kind: i32, a: f64);
         /// The NE2000 (src/rust/cpu/ne2k.rs) transmits a frame: its bytes in this module's memory
         pub fn ne2k_send(data: u32, length: i32);
+        /// IDE (src/rust/cpu/ide.rs): read `length` bytes of the drive's image at `start` for request `id` (the bytes to
+        /// ide_io_buffer, then ide_read_done)
+        pub fn ide_read(channel: i32, drive: i32, id: i32, start: f64, length: f64);
+        /// IDE: write `length` bytes at `data` to the drive's image at `start`; notify: ide_write_done(id) when written
+        pub fn ide_write(channel: i32, drive: i32, id: i32, start: f64, data: u32, length: i32, notify: bool);
+        /// IDE: something about a drive for ide.js (0: the guest ejected the CD-ROM's medium)
+        pub fn ide_event(channel: i32, drive: i32, kind: i32);
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();
@@ -5080,6 +5087,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             _ if super::virtio_pci::serves(port) => super::virtio_pci::port_read(port, 8),
             _ if super::sb16::serves(port) => super::sb16::port_read(port),
             _ if super::fw_cfg::serves(port) => super::fw_cfg::fw_cfg_read(),
+            _ if super::ide::core_serves(port, 8) => super::ide::ide_core_read(port, 8),
             _ if super::ide::serves(port, false) => super::ide::ide_port_read(port),
             _ if super::ide::bus_master_serves(port, 8, 0, false) => super::ide::ide_bus_master_read(port, 8),
             _ if super::floppy::serves(port, false) => super::floppy::fdc_port_read(port),
@@ -5101,6 +5109,9 @@ pub fn io_port_read8(port: i32) -> i32 {
 }
 /// rep ins in bulk (see js::io_port_read_block); 0 when the port reads item by item
 pub unsafe fn io_port_read_block(port: i32, phys: u32, count: u32, size: u32) -> u32 {
+    if !super::parallel::WORKER && phys as u64 + count as u64 * size as u64 <= *memory_size as u64 && super::ide::core_serves(port, 16) {
+        return super::ide::core_read_block(port, phys, count, size).min(count);
+    }
     if super::parallel::WORKER || phys as u64 + count as u64 * size as u64 > *memory_size as u64 || !super::ports::handled(port, super::ports::READ_BLOCK) {
         return 0;
     }
@@ -5110,6 +5121,9 @@ pub unsafe fn io_port_read_block(port: i32, phys: u32, count: u32, size: u32) ->
 
 /// rep outs in bulk (see js::io_port_write_block); 0 when the port writes item by item
 pub unsafe fn io_port_write_block(port: i32, phys: u32, count: u32, size: u32) -> u32 {
+    if !super::parallel::WORKER && phys as u64 + count as u64 * size as u64 <= *memory_size as u64 && super::ide::core_serves(port, 16) {
+        return super::ide::core_write_block(port, phys, count, size).min(count);
+    }
     if super::parallel::WORKER || phys as u64 + count as u64 * size as u64 > *memory_size as u64 || !super::ports::handled(port, super::ports::WRITE_BLOCK) {
         return 0;
     }
@@ -5136,6 +5150,9 @@ pub fn io_port_read16(port: i32) -> i32 {
         if super::ne2k::serves(port, 16, 0, false) {
             return super::ne2k::ne2k_port_read(port, 16);
         }
+        if super::ide::core_serves(port, 16) {
+            return super::ide::ide_core_read(port, 16);
+        }
         if !super::ports::handled(port, super::ports::READ16) {
             return 0xFFFF;
         }
@@ -5156,6 +5173,9 @@ pub fn io_port_read32(port: i32) -> i32 {
         }
         if super::virtio_pci::serves(port) {
             return super::virtio_pci::port_read(port, 32);
+        }
+        if super::ide::core_serves(port, 32) {
+            return super::ide::ide_core_read(port, 32);
         }
         if super::ide::bus_master_serves(port, 32, 0, false) {
             return super::ide::ide_bus_master_read(port, 32);
@@ -5191,6 +5211,7 @@ pub fn io_port_write8(port: i32, value: i32) {
             _ if super::uhci::serves(port) => super::uhci::uhci_port_write(port, 8, value),
             _ if super::virtio_pci::serves(port) => super::virtio_pci::port_write(port, 8, value),
             _ if super::sb16::serves(port) => super::sb16::port_write(port, value),
+            _ if super::ide::core_serves(port, 8) => super::ide::ide_core_write(port, 8, value),
             _ if super::ide::serves(port, true) => super::ide::ide_port_write(port, value),
             _ if super::ide::bus_master_serves(port, 8, value, true) => super::ide::ide_bus_master_write(port, 8, value),
             _ if super::floppy::serves(port, true) => super::floppy::fdc_port_write(port, value),
@@ -5217,6 +5238,9 @@ pub fn io_port_write16(port: i32, value: i32) {
         }
         if super::pci::serves(port, 16, value, true) {
             return super::pci::pci_port_write(port, 16, value);
+        }
+        if super::ide::core_serves(port, 16) {
+            return super::ide::ide_core_write(port, 16, value);
         }
         if super::uhci::serves(port) {
             return super::uhci::uhci_port_write(port, 16, value);
@@ -5250,6 +5274,9 @@ pub fn io_port_write32(port: i32, value: i32) {
         }
         if super::virtio_pci::serves(port) {
             return super::virtio_pci::port_write(port, 32, value);
+        }
+        if super::ide::core_serves(port, 32) {
+            return super::ide::ide_core_write(port, 32, value);
         }
         if super::ide::bus_master_serves(port, 32, value, true) {
             return super::ide::ide_bus_master_write(port, 32, value);

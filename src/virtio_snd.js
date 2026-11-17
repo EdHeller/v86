@@ -396,7 +396,8 @@ VirtioSnd.prototype.get_state = function()
     if(this.core)
     {
         const n = this.core["virtio_snd_save"]();
-        const v = new Float64Array(this.cpu.wasm_memory.buffer, this.core["virtio_scratch"](8 * n) >>> 0, n);
+        const at_ = this.core["virtio_scratch"](8 * n) >>> 0; // (first: it can grow the memory)
+        const v = new Float64Array(this.cpu.wasm_memory.buffer, at_, n);
         return [this.virtio, v[0] ? [v[1], v[2], v[3], v[4], v[5]] : null, !!v[6], !!v[7], v[8], v[9], Array.from(v.subarray(10))];
     }
     const stream = this.stream;
@@ -413,7 +414,8 @@ VirtioSnd.prototype.set_state = function(state)
     {
         const heads = state[6] || [];
         const v = [state[1] ? 1 : 0, ...(state[1] || [0, 0, 0, 0, 0]), +state[2], +state[3], state[4], state[5], ...heads];
-        new Float64Array(this.cpu.wasm_memory.buffer, this.core["virtio_scratch"](8 * v.length) >>> 0, v.length).set(v);
+        const at = this.core["virtio_scratch"](8 * v.length) >>> 0; // (first: it can grow the memory)
+        new Float64Array(this.cpu.wasm_memory.buffer, at, v.length).set(v);
         this.core["virtio_snd_load"](v.length);
         return;
     }

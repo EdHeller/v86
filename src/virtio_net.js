@@ -199,7 +199,8 @@ export function VirtioNet(cpu, bus, preserve_mac_from_state_image, mtu = MTU_DEF
         if(this.virtio.core >= 0)
         {
             const exports = cpu.wm.exports;
-            new Uint8Array(cpu.wasm_memory.buffer, exports["virtio_scratch"](data.length) >>> 0, data.length).set(data);
+            const at = exports["virtio_scratch"](data.length) >>> 0; // (first: it can grow the memory)
+            new Uint8Array(cpu.wasm_memory.buffer, at, data.length).set(data);
             if(!exports["virtio_net_receive"](this.virtio.core, data.length)) console.log("No buffer to write into!");
             return;
         }
