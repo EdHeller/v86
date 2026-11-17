@@ -145,6 +145,11 @@ libv86.js fails with "Missing import").
      it off): flags at a block's end are dead when every successor in the module overwrites them first; 395 M of
      1,305 M left out. Test: `tests/x64/jit/20_flag_elision_blocks.asm`. Login -1.1 % against block-local elision
      (median of 6 rounds, -4.8 % to +4.7 %: within the noise).
+     A cmp/test/bitwise/add/sub right before a block's jcc, its flags dead after the jump, stores nothing when the
+     jump computes its condition from registers (`codegen::condition_from_locals`; `set_jit_config(23, 0)` turns it
+     off): 456 M of 1,305 M left out; login -0.9 % (5 rounds, -2.7 % to +1.2 %). Test: `21_flag_elision_jcc.asm`.
+   - ✅ The JIT's per-page entry points in a bitmap instead of a hash set (2026-11-17): every interpreted run notes
+     one, and SipHash cost 0.5 s of a boot (hotness bookkeeping 2.0 s -> 1.5 s inclusive in the profile).
    - ✅ b. call/ret as wasm calls, measured (2026-11-17), off by default: a call out of a module (32-bit JIT) calls
      the callee's module (`codegen::gen_nested_call`, `set_jit_config(21, 1)`; depth at most 16; the callee's
      instructions count for the caller's loop limit) and goes on at the return address when the callee returns.
