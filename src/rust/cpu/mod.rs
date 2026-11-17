@@ -38,4 +38,5 @@ pub mod usb_tablet;
 pub mod xhci;
 pub mod vga;
 pub mod virtio;
+pub mod virtio_pci;
 pub mod vga_legacy;

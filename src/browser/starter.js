@@ -91,6 +91,8 @@ export function V86(options)
         "io_port_read_block": function(port, addr, count, size) { return cpu.io.port_read_block(port, addr >>> 0, count >>> 0, size); },
         "io_port_write_block": function(port, addr, count, size) { return cpu.io.port_write_block(port, addr >>> 0, count >>> 0, size); },
         "usb_transaction": function(port_mask, address, pid, endpoint, buffer, max_length) { return cpu.usb_transaction(port_mask, address, pid, endpoint, buffer >>> 0, max_length); },
+        "virtio_event": function(device, kind, value) { cpu.virtio_core_devices[device].core_event(kind, value); },
+        "virtio_config": function(device, offset, size, write, value) { return cpu.virtio_core_devices[device].core_config(offset, size, !!write, value); },
         "io_port_read16": function(addr) { return cpu.io.port_read16(addr); },
         "io_port_read32": function(addr) { return cpu.io.port_read32(addr); },
         "io_port_write8": function(addr, value) { cpu.io.port_write8(addr, value); },
@@ -950,7 +952,7 @@ V86.prototype.zstd_decompress_worker = async function(decompressed_size, src)
                     const env = Object.fromEntries([
                         "cpu_exception_hook", "run_hardware_timers",
                         "cpu_event_halt", "microtick", "get_rand_int", "stop_idling",
-                        "io_port_read8", "io_port_read16", "io_port_read32", "io_port_read_block", "io_port_write_block", "usb_transaction",
+                        "io_port_read8", "io_port_read16", "io_port_read32", "io_port_read_block", "io_port_write_block", "usb_transaction", "virtio_event", "virtio_config",
                         "io_port_write8", "io_port_write16", "io_port_write32",
                         "mmap_read8", "mmap_read32",
                         "mmap_write8", "mmap_write16", "mmap_write32", "mmap_write64", "mmap_write128",

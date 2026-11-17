@@ -344,9 +344,126 @@ export function VirtIO(cpu, options)
     }
     this.init_capabilities(capabilities, options.shared_memory || []);
 
+    /** the core's transport (src/rust/cpu/virtio_pci.rs): its index there, or -1 */
+    this.core = -1;
+    const exports = cpu.wm && cpu.wm.exports;
+    if(exports && exports["virtio_pci_new"] && options.capability_bar === undefined && !(cpu.devices.pci && cpu.devices.pci.q35))
+    {
+        const index = exports["virtio_pci_new"]();
+        if(index >= 0) this.use_core(index, options);
+    }
+
     cpu.devices.pci.register_device(this);
     this.reset();
+    if(this.core >= 0) exports["virtio_pci_activate"](this.core);
 }
+
+// the core's fields of a device (src/rust/cpu/virtio_pci.rs)
+const CORE_DEV_FSEL = 0, CORE_DRV_FSEL = 1, CORE_DEV_FEAT = 2, CORE_DRV_FEAT = 6, CORE_FEATURES_OK = 10, CORE_STATUS = 11,
+    CORE_CFG_CHANGED = 12, CORE_CFG_GEN = 13, CORE_QSEL = 14, CORE_ISR = 15, CORE_NUM_QUEUES = 16, CORE_BDF = 17,
+    CORE_NOTIFY_LEN = 18, CORE_DEVCFG_LEN = 19, CORE_DEVICE_FIELDS = 32, CORE_QUEUE_FIELDS = 10, CORE_FIELDS = 32 + 10 * 16;
+
+/**
+ * The transport is the core's: the fields here become accessors of its fields, and it asks this device for what its
+ * model has to do (core_event, core_config)
+ * @param {number} index
+ * @param {!Object} options
+ */
+VirtIO.prototype.use_core = function(index, options)
+{
+    const cpu = this.cpu;
+    this.core = index;
+    const fields = () => new Int32Array(cpu.wasm_memory.buffer, cpu.wm.exports["virtio_pci_fields"](index), CORE_FIELDS);
+    this.core_notify = options.notification.handlers;
+    this.core_on_driver_ok = options.common.on_driver_ok;
+    /** the device-specific configuration's fields with their offsets */
+    this.core_devcfg = [];
+    let offset = 0;
+    for(const field of (options.device_specific ? options.device_specific.struct : []))
+    {
+        this.core_devcfg.push({ offset, bytes: field.bytes, read: field.read, write: field.write });
+        offset += field.bytes;
+    }
+
+    const f = fields();
+    f.fill(0);
+    f[CORE_BDF] = this.pci_id;
+    f[CORE_NUM_QUEUES] = this.queues.length;
+    f[CORE_NOTIFY_LEN] = 2 * options.notification.handlers.length;
+    f[CORE_DEVCFG_LEN] = offset;
+    f.set(this.device_feature, CORE_DEV_FEAT);
+    f.set(this.driver_feature, CORE_DRV_FEAT);
+
+    const scalar = (name, i, bool) => Object.defineProperty(this, name, {
+        get: () => bool ? !!fields()[i] : fields()[i],
+        set: value => { fields()[i] = +value; },
+    });
+    scalar("device_feature_select", CORE_DEV_FSEL, false);
+    scalar("driver_feature_select", CORE_DRV_FSEL, false);
+    scalar("features_ok", CORE_FEATURES_OK, true);
+    scalar("device_status", CORE_STATUS, false);
+    scalar("config_has_changed", CORE_CFG_CHANGED, true);
+    scalar("config_generation", CORE_CFG_GEN, false);
+    scalar("queue_select", CORE_QSEL, false);
+    scalar("isr_status", CORE_ISR, false);
+    const words = (name, i) => Object.defineProperty(this, name, {
+        get: () => new Uint32Array(cpu.wasm_memory.buffer, cpu.wm.exports["virtio_pci_fields"](index) + 4 * i, 4),
+        set: value => { new Uint32Array(cpu.wasm_memory.buffer, cpu.wm.exports["virtio_pci_fields"](index) + 4 * i, 4).set(value); },
+    });
+    words("device_feature", CORE_DEV_FEAT);
+    words("driver_feature", CORE_DRV_FEAT);
+    Object.defineProperty(this, "queue_selected", {
+        get: () => this.queues[this.queue_select] || null,
+        set: value => {},
+    });
+    this.queues.forEach((queue, i) => queue.use_core(fields, CORE_DEVICE_FIELDS + CORE_QUEUE_FIELDS * i));
+    cpu.virtio_core_devices[index] = this;
+};
+
+/**
+ * From the core: a queue notification (value: the written value, the handler's index << 16), a reset, DRIVER_OK
+ * @param {number} kind
+ * @param {number} value
+ */
+VirtIO.prototype.core_event = function(kind, value)
+{
+    if(kind === 0)
+    {
+        const handler = this.core_notify[value >>> 16];
+        if(handler) handler(value & 0xFFFF);
+    }
+    else if(kind === 1)
+    {
+        this.reset();
+    }
+    else if(kind === 2)
+    {
+        this.core_on_driver_ok();
+    }
+};
+
+/**
+ * From the core: an access to the device-specific configuration (as the I/O handlers' shims: a narrower read takes its
+ * part of the field, a wider one the whole field; writes of a whole field)
+ * @param {number} offset
+ * @param {number} size in bits
+ * @param {boolean} write
+ * @param {number} value
+ * @return {number}
+ */
+VirtIO.prototype.core_config = function(offset, size, write, value)
+{
+    const field = this.core_devcfg.find(f => offset >= f.offset && offset < f.offset + f.bytes);
+    if(!field) return write ? 0 : (size === 32 ? -1 : (1 << size) - 1);
+    if(write)
+    {
+        if(offset === field.offset && size === 8 * field.bytes) field.write(value);
+        return 0;
+    }
+    const v = field.read();
+    if(size >= 8 * field.bytes) return v;
+    return v >> ((offset - field.offset) << 3) & (1 << size) - 1;
+};
 
 /**
  * @param {VirtIO_CommonCapabilityOptions} options
@@ -1055,8 +1172,8 @@ VirtIO.prototype.get_state = function()
 
     state[0] = this.device_feature_select;
     state[1] = this.driver_feature_select;
-    state[2] = this.device_feature;
-    state[3] = this.driver_feature;
+    state[2] = this.device_feature.slice();
+    state[3] = this.driver_feature.slice();
     state[4] = this.features_ok;
     state[5] = this.device_status;
     state[6] = this.config_has_changed;
@@ -1170,6 +1287,11 @@ VirtIO.prototype.needs_reset = function()
 VirtIO.prototype.raise_irq = function(type)
 {
     dbg_log("Raise irq " + h(type), LOG_VIRTIO);
+    if(this.core >= 0)
+    {
+        this.cpu.wm.exports["virtio_pci_raise_irq"](this.core, type);
+        return;
+    }
     this.isr_status |= type;
     this.pci.raise_irq(this.pci_id);
 };
@@ -1177,6 +1299,11 @@ VirtIO.prototype.raise_irq = function(type)
 VirtIO.prototype.lower_irq = function()
 {
     dbg_log("Lower irq ", LOG_VIRTIO);
+    if(this.core >= 0)
+    {
+        this.cpu.wm.exports["virtio_pci_lower_irq"](this.core);
+        return;
+    }
     this.isr_status = 0;
     this.pci.lower_irq(this.pci_id);
 };
@@ -1211,6 +1338,27 @@ function VirtQueue(cpu, virtio, options)
 
     this.reset();
 }
+
+/**
+ * The queue's fields as accessors of the core's (VirtIO.use_core)
+ * @param {function():!Int32Array} fields
+ * @param {number} base
+ */
+VirtQueue.prototype.use_core = function(fields, base)
+{
+    const names = ["size", "size_supported", "enabled", "notify_offset", "desc_addr", "avail_addr", "avail_last_idx",
+        "used_addr", "num_staged_replies", "fix_wrapping"];
+    const f = fields();
+    names.forEach((name, i) => { f[base + i] = +this[name] || 0; });
+    names.forEach((name, i) => {
+        const bool = name === "enabled" || name === "fix_wrapping";
+        Object.defineProperty(this, name, {
+            get: () => bool ? !!fields()[base + i] : fields()[base + i],
+            set: value => { fields()[base + i] = +value || 0; },
+        });
+    });
+    Object.defineProperty(this, "mask", { get: () => fields()[base] - 1, set: value => {} });
+};
 
 VirtQueue.prototype.get_state = function()
 {

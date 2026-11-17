@@ -47,6 +47,11 @@ pub mod js {
         /// pid SETUP / OUT take max_length bytes at guest address `buffer`, IN writes up to max_length there.
         /// Returns the length, or -1 no device, -2 NAK, -3 STALL, -4 babble (more than max_length)
         pub fn usb_transaction(port_mask: i32, address: i32, pid: i32, endpoint: i32, buffer: u32, max_length: i32) -> i32;
+        /// A virtio device (src/rust/cpu/virtio_pci.rs) has something for its model in src/virtio.js: kind 0 a queue
+        /// notification (value: the written value, the handler's index << 16), 1 a reset, 2 DRIVER_OK
+        pub fn virtio_event(device: i32, kind: i32, value: i32);
+        /// An access to a virtio device's device-specific configuration (offset, size in bits); returns the value read
+        pub fn virtio_config(device: i32, offset: i32, size: i32, write: bool, value: i32) -> i32;
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();
@@ -5060,6 +5065,7 @@ pub fn io_port_read8(port: i32) -> i32 {
             _ if super::pit::serves_read(port) => super::pit::pit_port_read(port),
             _ if super::vga_legacy::ports_serve(port, 8, 0, false) => super::vga_legacy::vga_port_read(port, 8),
             _ if super::uhci::serves(port) => super::uhci::uhci_port_read(port, 8),
+            _ if super::virtio_pci::serves(port) => super::virtio_pci::port_read(port, 8),
             _ if super::ide::serves(port, false) => super::ide::ide_port_read(port),
             _ if super::ide::bus_master_serves(port, 8, 0, false) => super::ide::ide_bus_master_read(port, 8),
             _ if super::floppy::serves(port, false) => super::floppy::fdc_port_read(port),
@@ -5107,6 +5113,9 @@ pub fn io_port_read16(port: i32) -> i32 {
         if super::uhci::serves(port) {
             return super::uhci::uhci_port_read(port, 16);
         }
+        if super::virtio_pci::serves(port) {
+            return super::virtio_pci::port_read(port, 16);
+        }
         if super::vga_legacy::ports_serve(port, 16, 0, false) {
             return super::vga_legacy::vga_port_read(port, 16);
         }
@@ -5130,6 +5139,9 @@ pub fn io_port_read32(port: i32) -> i32 {
         }
         if super::uhci::serves(port) {
             return super::uhci::uhci_port_read(port, 32);
+        }
+        if super::virtio_pci::serves(port) {
+            return super::virtio_pci::port_read(port, 32);
         }
         if super::ide::bus_master_serves(port, 32, 0, false) {
             return super::ide::ide_bus_master_read(port, 32);
@@ -5163,6 +5175,7 @@ pub fn io_port_write8(port: i32, value: i32) {
             _ if super::pit::serves_write(port, value) => super::pit::pit_port_write(port, value),
             _ if super::vga_legacy::ports_serve(port, 8, value, true) => super::vga_legacy::vga_port_write(port, 8, value),
             _ if super::uhci::serves(port) => super::uhci::uhci_port_write(port, 8, value),
+            _ if super::virtio_pci::serves(port) => super::virtio_pci::port_write(port, 8, value),
             _ if super::ide::serves(port, true) => super::ide::ide_port_write(port, value),
             _ if super::ide::bus_master_serves(port, 8, value, true) => super::ide::ide_bus_master_write(port, 8, value),
             _ if super::floppy::serves(port, true) => super::floppy::fdc_port_write(port, value),
@@ -5193,6 +5206,9 @@ pub fn io_port_write16(port: i32, value: i32) {
         if super::uhci::serves(port) {
             return super::uhci::uhci_port_write(port, 16, value);
         }
+        if super::virtio_pci::serves(port) {
+            return super::virtio_pci::port_write(port, 16, value);
+        }
         if super::vga_legacy::ports_serve(port, 16, value, true) {
             return super::vga_legacy::vga_port_write(port, 16, value);
         }
@@ -5216,6 +5232,9 @@ pub fn io_port_write32(port: i32, value: i32) {
         }
         if super::uhci::serves(port) {
             return super::uhci::uhci_port_write(port, 32, value);
+        }
+        if super::virtio_pci::serves(port) {
+            return super::virtio_pci::port_write(port, 32, value);
         }
         if super::ide::bus_master_serves(port, 32, value, true) {
             return super::ide::ide_bus_master_write(port, 32, value);
