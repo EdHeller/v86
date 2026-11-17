@@ -266,31 +266,29 @@ export function FloppyController(cpu, fda_image, fdb_image, fdc_config)
     {
         this.io.register_write(fdc_io_base | reg, this, value => { cpu.fdc_port_write(fdc_io_base | reg, value); });
     }
-
-    cpu.slice_hooks.push(() => this.run_transfer());
 }
 
-/** A READ or WRITE the core left: its data through DMA channel 2 */
-FloppyController.prototype.run_transfer = function()
+/**
+ * The core's READ or WRITE wants the image (src/rust/cpu/floppy.rs, floppy_io): kind 0 its bytes at offset, which
+ * go back to the core; kind 1 bytes to write there
+ */
+FloppyController.prototype.core_io = function(kind, drive_no, offset, data, length)
 {
-    const fields = new Int32Array(this.cpu.wasm_memory.buffer, this.base, 28);
-    const kind = fields[FDC_XFER];
-    if(!kind || this.transfer_running)
+    const drive = this.drives[drive_no];
+    const exports = this.cpu.wm.exports;
+    if(kind === 0)
     {
-        return;
-    }
-    const drive = this.drives[this.curr_drive_no];
-    const do_write = kind === 2;
-    this.transfer_running = true;
-    const do_dma = do_write ? this.dma.do_write : this.dma.do_read;
-    do_dma.call(this.dma, drive.buffer, fields[FDC_XFER_OFFSET], fields[FDC_XFER_LENGTH], FDC_DMA_CHANNEL, dma_error => {
-        this.transfer_running = false;
-        if(dma_error)
+        drive.buffer.get(offset, length, bytes =>
         {
-            dbg_log("DMA floppy error", LOG_FLOPPY);
-        }
-        this.cpu.fdc_transfer_done(!!dma_error);
-    });
+            const at = exports["fdc_io_buffer"](bytes.length) >>> 0;
+            new Uint8Array(this.cpu.wasm_memory.buffer, at, bytes.length).set(bytes);
+            exports["fdc_read_done"]();
+        });
+    }
+    else
+    {
+        drive.buffer.set(offset, new Uint8Array(this.cpu.wasm_memory.buffer, data, length).slice(), () => exports["fdc_write_done"]());
+    }
 };
 
 FloppyController.prototype.get_state = function()
@@ -434,6 +432,8 @@ function FloppyDrive(cpu, address, name, fdd_config, buffer, fallback_drive_type
         set: value => {
             image = value;
             new Int32Array(cpu.wasm_memory.buffer, address, DRIVE_HAS_MEDIA + 1)[DRIVE_HAS_MEDIA] = value ? 1 : 0;
+            // (the core moves the data of READ and WRITE: it checks them against the image's size)
+            cpu.wm.exports["fdc_image_size"](name === "fdb" ? 1 : 0, value ? value.byteLength : 0);
         },
     });
 

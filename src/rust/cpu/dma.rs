@@ -190,6 +190,11 @@ pub unsafe fn serves_write(port: i32) -> bool {
 /// stepped, reloaded on autoinit, and while the device wants more and the channel autoinitialises, again from its
 /// start. Returns false when the transfer would go past `out`.
 pub unsafe fn transfer_to_device(channel: usize, out: &mut [u8], start: usize, len: usize) -> bool {
+    transfer_to_device_n(channel, out, start, len).is_some()
+}
+
+/// transfer_to_device, with the bytes moved (None: past `out`)
+pub unsafe fn transfer_to_device_n(channel: usize, out: &mut [u8], start: usize, len: usize) -> Option<usize> {
     let d = dma();
     let bytes_per_count = if channel >= 5 { 2 } else { 1 };
     let mut read_count = (d.channel_count[channel] as usize + 1) & 0xFFFF;
@@ -207,7 +212,7 @@ pub unsafe fn transfer_to_device(channel: usize, out: &mut [u8], start: usize, l
         want_more = true;
     }
     if start + read_bytes > out.len() {
-        return false;
+        return None;
     }
     d.channel_addr[channel] = d.channel_addr[channel].wrapping_add(read_count as u16);
     d.channel_count[channel] = d.channel_count[channel].wrapping_sub(read_count as u16);
@@ -220,9 +225,9 @@ pub unsafe fn transfer_to_device(channel: usize, out: &mut [u8], start: usize, l
         out[start + i] = if a < *crate::cpu::global_pointers::memory_size as u64 { *crate::cpu::memory::mem8.add(a as usize) } else { 0 };
     }
     if want_more && autoinit {
-        return transfer_to_device(channel, out, start + read_bytes, len - read_bytes);
+        return transfer_to_device_n(channel, out, start + read_bytes, len - read_bytes).map(|n| n + read_bytes);
     }
-    true
+    Some(read_bytes)
 }
 
 /// The address of a channel's next byte (dma.js's address_get_8bit)
@@ -239,3 +244,19 @@ pub unsafe fn address_8bit(channel: usize) -> u32 {
 
 /// Whether a channel is masked
 pub unsafe fn masked(channel: usize) -> bool { dma().channel_mask[channel] != 0 }
+
+/// Device to memory through `channel` (dma.js's do_read): where the bytes go and how many, the channel's address
+/// stepped past them
+pub unsafe fn transfer_from_device(channel: usize) -> (u32, usize) {
+    let d = dma();
+    let mut count = d.channel_count[channel] as usize + 1;
+    if channel >= 5 {
+        count *= 2;
+    }
+    (address_8bit(channel), count)
+}
+
+pub unsafe fn step_address(channel: usize, count: usize) {
+    let d = dma();
+    d.channel_addr[channel] = d.channel_addr[channel].wrapping_add(count as u16);
+}

@@ -5,7 +5,7 @@
 // fdc_transfer_done) and the snapshot format.
 // https://github.com/qemu/qemu/blob/master/hw/block/fdc.c
 
-use crate::cpu::cpu::{device_lower_irq, device_raise_irq};
+use crate::cpu::cpu::{device_lower_irq, device_raise_irq, js};
 
 const FDC_IRQ_CHANNEL: u8 = 6;
 
@@ -724,4 +724,93 @@ pub unsafe fn serves(port: i32, write: bool) -> bool {
     }
     let reg = port & 7;
     if write { matches!(reg, 2 | 3 | 4 | 5 | 7) } else { matches!(reg, 0..=5 | 7) }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The data of a READ or WRITE through DMA channel 2, after the slice that ran the command (fdc_run_transfer, in the
+// core's timer pass): the image's bytes come from JavaScript (js::floppy_io kind 0, answered with fdc_io_buffer and
+// fdc_read_done), written ones go to it (kind 1, then fdc_write_done).
+
+const FDC_DMA_CHANNEL: usize = 2;
+static mut IMAGE_BYTES: [f64; 2] = [0.0; 2];
+static mut RUNNING: bool = false;
+static mut READ_TO: u32 = 0;
+static mut IO: Vec<u8> = Vec::new();
+
+/// The size of a drive's image (0: none)
+#[no_mangle]
+pub unsafe fn fdc_image_size(drive: i32, bytes: f64) { IMAGE_BYTES[drive as usize & 1] = bytes; }
+
+/// From the core's timer pass (after each slice): a transfer the command left starts
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn fdc_run_transfer() -> f64 {
+    let f = fdc();
+    if f.xfer == 0 || RUNNING {
+        return 100.0;
+    }
+    let image = IMAGE_BYTES[f.curr_drive_no as usize & 1];
+    let offset = f.xfer_offset as usize;
+    if f.xfer == 1 {
+        let (addr, count) = super::dma::transfer_from_device(FDC_DMA_CHANNEL);
+        if (offset + count) as f64 > image {
+            fdc_transfer_done(true);
+            return 100.0;
+        }
+        super::dma::step_address(FDC_DMA_CHANNEL, count);
+        RUNNING = true;
+        READ_TO = addr;
+        js::floppy_io(0, f.curr_drive_no, offset as f64, 0, count as i32);
+    }
+    else {
+        let room = (image - offset as f64).max(0.0) as usize;
+        let mut out = vec![0u8; room];
+        match super::dma::transfer_to_device_n(FDC_DMA_CHANNEL, &mut out, 0, f.xfer_length.max(0) as usize) {
+            None => fdc_transfer_done(true),
+            Some(n) => {
+                out.truncate(n);
+                IO = out;
+                RUNNING = true;
+                js::floppy_io(1, f.curr_drive_no, offset as f64, IO.as_ptr() as u32, n as i32);
+            },
+        }
+    }
+    100.0
+}
+
+/// Room for the bytes of a read
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn fdc_io_buffer(length: i32) -> u32 {
+    IO.clear();
+    IO.resize(length.max(0) as usize, 0);
+    IO.as_mut_ptr() as u32
+}
+
+/// The bytes of the read are in fdc_io_buffer: into memory
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn fdc_read_done() {
+    if !RUNNING {
+        return;
+    }
+    RUNNING = false;
+    let size = *crate::cpu::global_pointers::memory_size as usize;
+    let start = (READ_TO as usize).min(size);
+    let end = (READ_TO as usize + IO.len()).min(size);
+    if end > start {
+        std::ptr::copy_nonoverlapping(IO.as_ptr(), crate::cpu::memory::mem8.add(start), end - start);
+        crate::jit::jit_dirty_cache(start as u32, end as u32);
+    }
+    fdc_transfer_done(false);
+}
+
+/// The written bytes are in the image
+#[no_mangle]
+pub unsafe fn fdc_write_done() {
+    if !RUNNING {
+        return;
+    }
+    RUNNING = false;
+    fdc_transfer_done(false);
 }

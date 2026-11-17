@@ -71,6 +71,9 @@ pub mod js {
         pub fn ide_write(channel: i32, drive: i32, id: i32, start: f64, data: u32, length: i32, notify: bool);
         /// IDE: something about a drive for ide.js (0: the guest ejected the CD-ROM's medium)
         pub fn ide_event(channel: i32, drive: i32, kind: i32);
+        /// The floppy (src/rust/cpu/floppy.rs): kind 0 read `length` bytes of the drive's image at `offset` (to
+        /// fdc_io_buffer, then fdc_read_done); 1 write those at `data` there (then fdc_write_done)
+        pub fn floppy_io(kind: i32, drive: i32, offset: f64, data: u32, length: i32);
         pub fn run_hardware_timers(acpi_enabled: bool, t: f64) -> f64;
         pub fn cpu_event_halt();
         pub fn stop_idling();

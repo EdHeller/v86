@@ -73,6 +73,7 @@ async function start(data, post)
         "ide_read": () => {},
         "ide_write": () => {},
         "ide_event": () => {},
+        "floppy_io": () => {},
         "io_port_write8": (a, v) => { request(C.REQ_PORT_WRITE8, a, v); },
         "io_port_write16": (a, v) => { request(C.REQ_PORT_WRITE16, a, v); },
         "io_port_write32": (a, v) => { request(C.REQ_PORT_WRITE32, a, v); },
