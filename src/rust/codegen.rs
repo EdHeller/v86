@@ -1678,6 +1678,11 @@ pub fn gen_get_real_eip(ctx: &mut JitContext) {
     ctx.builder.and_i32();
     ctx.builder.const_i32(ctx.cpu.eip as i32 & 0xFFF);
     ctx.builder.or_i32();
+    if (ctx.cpu.eip ^ ctx.start_of_current_instruction) & !0xFFF != 0 {
+        // an instruction that crosses into the next page (jit::crossing_instruction): eip is still in this page
+        ctx.builder.const_i32(0x1000);
+        ctx.builder.add_i32();
+    }
     if !ctx.cpu.has_flat_segmentation() {
         ctx.builder
             .load_fixed_i32(global_pointers::get_seg_offset(regs::CS));

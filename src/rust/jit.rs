@@ -463,7 +463,7 @@ pub static mut COMPILE_CROSSING: bool = true;
 
 /// An instruction at physical `phys` (virtual `virt`) that crosses into the next page and can end a compiled block:
 /// where it ends, and for a relative jump its condition and offset. Only plain instructions (no use of their own eip:
-/// an allowlist of opcodes) and relative jumps (jcc, jmp; not calls), in flat 32-bit
+/// an allowlist of opcodes) and relative jumps (jcc, jmp, call), in flat 32-bit
 /// code, when the next virtual page maps to the next physical page now (the JIT decodes physical memory). When it
 /// runs, the compiled code checks that its bytes in the next page are still those (through the TLB: a remapped or
 /// rewritten page, a TLB miss, leave it to the interpreter)
@@ -496,8 +496,9 @@ fn crossing_instruction(phys: u32, virt: i32, cpu: &CpuContext) -> Option<(u32, 
         | 0xD0..=0xD3 => true,
         // test, not, neg, mul, imul (not div: #DE is fine, but keep it simple)
         0xF6 | 0xF7 => matches!(op2 >> 3 & 7, 0 | 2 | 3 | 4 | 5),
-        // jcc rel8, jmp rel32, jmp rel8 (32-bit: not after an operand size prefix)
-        0x70..=0x7F | 0xE9 | 0xEB => skip == 0,
+        // jcc rel8, jmp rel32, jmp rel8, call rel32 (32-bit: not after an operand size prefix; the call pushes its
+        // return address in the next page: codegen::gen_get_real_eip)
+        0x70..=0x7F | 0xE9 | 0xEB | 0xE8 => skip == 0,
         _ => false,
     };
     if !allowed {
@@ -707,6 +708,24 @@ fn jit_find_basic_blocks(
         }
 
         if !instruction_fits_in_page(phys_addr, &cpu) {
+            // a block of only an instruction that crosses into the next page (a jump's target or a call's return)
+            if let Some((end, jump)) = crossing_instruction(phys_addr, to_visit, &cpu) {
+                basic_blocks.insert(phys_addr, BasicBlock {
+                    addr: phys_addr,
+                    virt_addr: to_visit,
+                    last_instruction_addr: phys_addr,
+                    end_addr: end,
+                    ty: BasicBlockType::Exit,
+                    is_entry_block: false,
+                    is_call: false,
+                    has_sti: false,
+                    number_of_instructions: 1,
+                    crossing: true,
+                    crossing_jump: jump,
+                });
+                profiler::stat_increment(stat::COMPILE_CROSSING_INSTRUCTION);
+                continue;
+            }
             // Empty basic block, don't insert
             profiler::stat_increment(stat::COMPILE_CUT_OFF_AT_END_OF_PAGE);
             continue;

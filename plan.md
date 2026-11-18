@@ -178,9 +178,10 @@ libv86.js fails with "Missing import").
      Not better: going on interpreting across jumps in a page instead of returning to the dispatcher; the 24 modrm
      arms as one compact function (noise; inlined everywhere +2 MB of wasm). Next for the interpreter: decoded
      instructions cached per page (a larger change).
-   - ⬜ Next: calls that cross, blocks starting at a crossing instruction (libc's at ...ffc is still
-     interpreted on buildroot's shell loop); a faster interpreter (still 36 % of buildroot's boot, code that runs
-     once); dispatch (12 % of the shell loop).
+   - ✅ 2026-11-18 calls that cross (`call rel32`: the pushed return address is in the next page,
+     `codegen::gen_get_real_eip`) and blocks that start at a crossing instruction (a jump's target, a call's return).
+     Buildroot shell loop -2 % (noise). Test `tests/x64/jit/28_crossing_call`.
+   - ⬜ Next: dispatch (12 % of the shell loop).
    - ✅ 2026-11-18 interpreter phase 2: decoded instructions cached per physical page (`cpu/decoded.rs`, the
      handlers generated from the interpreter's arms by `gen/generate_decoded.js`: 354 opcodes); a page is decoded
      after 32 interpreted runs (`set_jit_config(73, n)`; 72 turns it off); writes reach it through jit_dirty_page.
