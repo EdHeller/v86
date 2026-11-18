@@ -301,6 +301,10 @@ pub struct BasicBlock {
     pub number_of_instructions: u32,
     /// ends with a call (its return address is the next instruction)
     pub is_call: bool,
+    /// its last instruction crosses into the next page (crossing_instruction): its bytes there are checked when it runs
+    pub crossing: bool,
+    /// that instruction is a relative jump: its condition (None: always) and offset
+    pub crossing_jump: Option<(Option<u8>, i32)>,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -453,6 +457,68 @@ fn page_is_compiling(ctx: &JitState, page: Page) -> bool {
 
 /// Compile instructions in the last 15 bytes of a page when they end within it (set_jit_config(69, ..))
 pub static mut COMPILE_NEAR_END_OF_PAGE: bool = true;
+
+/// Compile an instruction that crosses into the next page at the end of a block (set_jit_config(71, ..))
+pub static mut COMPILE_CROSSING: bool = true;
+
+/// An instruction at physical `phys` (virtual `virt`) that crosses into the next page and can end a compiled block:
+/// where it ends, and for a relative jump its condition and offset. Only plain instructions (no use of their own eip:
+/// an allowlist of opcodes) and relative jumps (jcc, jmp; not calls), in flat 32-bit
+/// code, when the next virtual page maps to the next physical page now (the JIT decodes physical memory). When it
+/// runs, the compiled code checks that its bytes in the next page are still those (through the TLB: a remapped or
+/// rewritten page, a TLB miss, leave it to the interpreter)
+fn crossing_instruction(phys: u32, virt: i32, cpu: &CpuContext) -> Option<(u32, Option<(Option<u8>, i32)>)> {
+    if !unsafe { COMPILE_CROSSING } || phys & 0xFFF == 0 || !is_near_end_of_page(phys) {
+        return None;
+    }
+    if !cpu.state_flags.is_32() || !cpu.state_flags.has_flat_segmentation() || cpu.cs_offset != 0 {
+        return None;
+    }
+    let next_page = (phys | 0xFFF) + 1;
+    if next_page + 0x1000 > unsafe { *crate::cpu::global_pointers::memory_size } || memory::in_mapped_range(next_page) {
+        return None;
+    }
+    if cpu::translate_address_read_no_side_effects((virt | 0xFFF) + 1) != Ok(next_page) {
+        return None;
+    }
+    if needs_atomic_interpretation(phys) {
+        return None;
+    }
+    // the opcode (after an operand size prefix): plain instructions only
+    let byte = |i: u32| memory::read8(phys + i) as u8;
+    let skip = (byte(0) == 0x66) as u32;
+    let (op, op2) = (byte(skip), byte(skip + 1));
+    let allowed = match op {
+        // cmovcc, setcc, imul, movzx, movsx; jcc rel32 (first: 0x0F is also in the next range)
+        0x0F => matches!(op2, 0x40..=0x4F | 0x90..=0x9F | 0xAF | 0xB6 | 0xB7 | 0xBE | 0xBF | 0x80..=0x8F),
+        0x00..=0x3F => op & 7 <= 5,
+        0x68..=0x6B | 0x80..=0x8B | 0x8D | 0xA0..=0xA3 | 0xA8 | 0xA9 | 0xB0..=0xBF | 0xC0 | 0xC1 | 0xC6 | 0xC7
+        | 0xD0..=0xD3 => true,
+        // test, not, neg, mul, imul (not div: #DE is fine, but keep it simple)
+        0xF6 | 0xF7 => matches!(op2 >> 3 & 7, 0 | 2 | 3 | 4 | 5),
+        // jcc rel8, jmp rel32, jmp rel8 (32-bit: not after an operand size prefix)
+        0x70..=0x7F | 0xE9 | 0xEB => skip == 0,
+        _ => false,
+    };
+    if !allowed {
+        return None;
+    }
+    let mut c = CpuContext { eip: phys, ..cpu.clone() };
+    let analysis = analysis::analyze_step(&mut c);
+    let jump = match analysis.ty {
+        AnalysisType::Normal if !analysis.no_next_instruction => None,
+        AnalysisType::Jump { offset, is_32: true, condition } if !analysis.absolute_jump => Some((condition, offset)),
+        _ => return None,
+    };
+    if skip != 0 && jump.is_some() {
+        return None;
+    }
+    let end = c.eip;
+    if end <= next_page || end - next_page > 14 {
+        return None;
+    }
+    Some((end, jump))
+}
 
 pub fn jit_find_cache_entry(phys_address: u32, state_flags: CachedStateFlags) -> CachedCode {
     // TODO: dedup with jit_find_cache_entry_in_page?
@@ -662,6 +728,8 @@ fn jit_find_basic_blocks(
             is_call: false,
             has_sti: false,
             number_of_instructions: 0,
+            crossing: false,
+            crossing_jump: None,
         };
         loop {
             let addr_before_instruction = current_address;
@@ -833,6 +901,17 @@ fn jit_find_basic_blocks(
             }
 
             if !next_fits {
+                // (an instruction crossing into the next page: the block's last one)
+                if !current_block.has_sti {
+                    if let Some((end, jump)) = crossing_instruction(current_address, current_virt_addr, cpu) {
+                        current_block.number_of_instructions += 1;
+                        current_block.last_instruction_addr = current_address;
+                        current_block.end_addr = end;
+                        current_block.crossing = true;
+                        current_block.crossing_jump = jump;
+                        profiler::stat_increment(stat::COMPILE_CROSSING_INSTRUCTION);
+                    }
+                }
                 profiler::stat_increment(stat::COMPILE_CUT_OFF_AT_END_OF_PAGE);
                 break;
             }
@@ -1012,8 +1091,8 @@ fn jit_analyze_and_generate(
     let mut pages = HashSet::new();
 
     for b in basic_blocks.iter() {
-        // Remove this assertion once page-crossing jit is enabled
-        dbg_assert!(Page::page_of(b.addr) == Page::page_of(b.end_addr - 1));
+        // (a crossing last instruction ends in the next page)
+        dbg_assert!(b.crossing || Page::page_of(b.addr) == Page::page_of(b.end_addr - 1));
         pages.insert(Page::page_of(b.addr));
     }
 
@@ -2299,7 +2378,16 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
             // Before the last instruction:
             // - Set eip to *after* the instruction
             // - Set previous_eip to *before* the instruction
-            if needs_eip_updated {
+            if block.crossing {
+                // eip stays in this page while it runs (exceptions are raised at its start, in this page), and goes
+                // to the next page after it
+                codegen::gen_set_previous_eip_offset_from_eip_with_low_bits(
+                    ctx.builder,
+                    last_instruction_addr as i32 & 0xFFF,
+                );
+                gen_crossing_guard(ctx, last_instruction_addr, stop_addr);
+            }
+            else if needs_eip_updated {
                 codegen::gen_set_previous_eip_offset_from_eip_with_low_bits(
                     ctx.builder,
                     last_instruction_addr as i32 & 0xFFF,
@@ -2323,6 +2411,24 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
         ctx.flags_dead = false;
         ctx.flags_jcc_only = None;
         let end_eip = ctx.cpu.eip;
+        if block.crossing && start_eip == last_instruction_addr {
+            // after the crossing instruction: eip in the next page (a jump's target: from there)
+            let after = stop_addr as i32 & 0xFFF;
+            match block.crossing_jump {
+                None => codegen::gen_set_eip_low_bits_and_jump_rel32(ctx.builder, after, 0x1000),
+                Some((None, offset)) => {
+                    codegen::gen_set_eip_low_bits_and_jump_rel32(ctx.builder, after, 0x1000i32.wrapping_add(offset))
+                },
+                Some((Some(condition), offset)) => {
+                    codegen::gen_condition_fn(ctx, condition);
+                    ctx.builder.if_void();
+                    codegen::gen_set_eip_low_bits_and_jump_rel32(ctx.builder, after, 0x1000i32.wrapping_add(offset));
+                    ctx.builder.else_();
+                    codegen::gen_set_eip_low_bits_and_jump_rel32(ctx.builder, after, 0x1000);
+                    ctx.builder.block_end();
+                },
+            }
+        }
 
         let instruction_length = end_eip - start_eip;
         let was_block_boundary = instruction_flags & JIT_INSTR_BLOCK_BOUNDARY_FLAG != 0;
@@ -2336,8 +2442,8 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
         let end_addr = ctx.cpu.eip;
 
         if end_addr == stop_addr {
-            // no page was crossed
-            dbg_assert!(Page::page_of(end_addr - 1) == Page::page_of(start_addr));
+            // no page was crossed (but by a crossing last instruction)
+            dbg_assert!(block.crossing || Page::page_of(end_addr - 1) == Page::page_of(start_addr));
             break;
         }
 
@@ -2356,6 +2462,82 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
 
         ctx.previous_instruction = mem::replace(&mut ctx.current_instruction, Instruction::Other);
     }
+}
+
+/// Before a crossing instruction (crossing_instruction): its bytes in the next page as they were compiled, read through
+/// the TLB entry of the next virtual page; otherwise the module returns with eip at the instruction, which the
+/// interpreter then runs (not counted here)
+fn gen_crossing_guard(ctx: &mut JitContext, start: u32, end: u32) {
+    let next_page = (start | 0xFFF) + 1;
+    let n = end - next_page;
+    dbg_assert!(n >= 1 && n <= 14);
+    let expected: Vec<u8> = (0..n).map(|i| memory::read8(next_page + i) as u8).collect();
+    let tlb_data_base = unsafe { (&raw const cpu::tlb_data) as u32 };
+    let check = cpu::TLB_VALID | cpu::TLB_NO_EXEC | if ctx.cpu.state_flags.cpl3() { cpu::TLB_NO_USER } else { 0 };
+
+    let gen_fail = |ctx: &mut JitContext| {
+        ctx.builder.get_local(&ctx.instruction_counter);
+        ctx.builder.const_i32(1);
+        ctx.builder.sub_i32();
+        ctx.builder.set_local(&ctx.instruction_counter);
+        codegen::gen_set_eip_low_bits(ctx.builder, start as i32 & 0xFFF);
+        ctx.builder.br(ctx.exit_label);
+    };
+
+    // the next virtual page's TLB entry
+    codegen::gen_get_eip(ctx.builder);
+    ctx.builder.const_i32(12);
+    ctx.builder.shr_u_i32();
+    ctx.builder.const_i32(1);
+    ctx.builder.add_i32();
+    let vpage = ctx.builder.set_new_local();
+    ctx.builder.get_local(&vpage);
+    ctx.builder.const_i32(2);
+    ctx.builder.shl_i32();
+    ctx.builder.load_aligned_i32(tlb_data_base);
+    let entry = ctx.builder.set_new_local();
+
+    ctx.builder.get_local(&entry);
+    ctx.builder.const_i32(check);
+    ctx.builder.and_i32();
+    ctx.builder.const_i32(cpu::TLB_VALID);
+    ctx.builder.ne_i32();
+    ctx.builder.if_void();
+    gen_fail(ctx);
+    ctx.builder.block_end();
+
+    // its bytes there: (entry & ~0xFFF) ^ (vpage << 12) is the page's address in this module's memory
+    ctx.builder.get_local(&entry);
+    ctx.builder.const_i32(!0xFFF);
+    ctx.builder.and_i32();
+    ctx.builder.get_local(&vpage);
+    ctx.builder.const_i32(12);
+    ctx.builder.shl_i32();
+    ctx.builder.xor_i32();
+    let host = ctx.builder.set_new_local();
+    let word = |bytes: &[u8]| {
+        let mut v = 0u64;
+        for (i, &b) in bytes.iter().enumerate() {
+            v |= (b as u64) << (8 * i);
+        }
+        let mask = if bytes.len() >= 8 { u64::MAX } else { (1u64 << (8 * bytes.len())) - 1 };
+        (v, mask)
+    };
+    for (k, chunk) in expected.chunks(8).enumerate() {
+        let (value, mask) = word(chunk);
+        ctx.builder.get_local(&host);
+        ctx.builder.load_unaligned_i64(8 * k as u32);
+        ctx.builder.const_i64(mask as i64);
+        ctx.builder.and_i64();
+        ctx.builder.const_i64(value as i64);
+        ctx.builder.ne_i64();
+        ctx.builder.if_void();
+        gen_fail(ctx);
+        ctx.builder.block_end();
+    }
+    ctx.builder.free_local(host);
+    ctx.builder.free_local(entry);
+    ctx.builder.free_local(vpage);
 }
 
 /// Flag elision (set_jit_config(18, ..)): instructions whose arithmetic flags are overwritten before they are read
@@ -2973,6 +3155,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         59 => JIT_THRESHOLD_NOW = value.max(1),
         68 => JIT_RECOMPILE_THRESHOLD = value.max(1),
         69 => COMPILE_NEAR_END_OF_PAGE = value != 0,
+        71 => COMPILE_CROSSING = value != 0,
         70 => MAX_COMPILING = value.max(1),
         62 => crate::cpu::instructions_0f::CPUID_HIDE = value,
         65 => INLINE_LOOKUP = value != 0,
@@ -3024,6 +3207,7 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         59 => JIT_THRESHOLD_NOW,
         68 => JIT_RECOMPILE_THRESHOLD,
         69 => COMPILE_NEAR_END_OF_PAGE as u32,
+        71 => COMPILE_CROSSING as u32,
         70 => MAX_COMPILING,
         5 => crate::cpu::jit64::STAT_COMPILED,
         6 => crate::cpu::jit64::STAT_FAILED,
@@ -3094,5 +3278,52 @@ pub fn jit_page_debug(phys_page: u32, what: u32) -> f64 {
         2 => ctx.pages.contains_key(&page) as u32 as f64,
         3 => ctx.pages.get(&page).map_or(0.0, |p| p.entry_points.len() as f64),
         _ => ctx.compiling.len() as f64,
+    }
+}
+
+/// (profiler builds) why crossing_instruction refuses the instruction at virtual `virt` now (0: it does not)
+#[cfg(feature = "profiler")]
+#[no_mangle]
+pub fn jit_crossing_debug(virt: i32) -> i32 {
+    let phys = match cpu::translate_address_read_no_side_effects(virt) {
+        Ok(p) => p,
+        Err(()) => return 1,
+    };
+    let cpu = CpuContext {
+        eip: phys,
+        prefixes: 0,
+        cs_offset: unsafe { cpu::get_seg_cs() } as u32,
+        state_flags: cpu::get_state_flags(),
+    };
+    if !unsafe { COMPILE_CROSSING } || phys & 0xFFF == 0 || !is_near_end_of_page(phys) {
+        return 2;
+    }
+    if !cpu.state_flags.is_32() || !cpu.state_flags.has_flat_segmentation() || cpu.cs_offset != 0 {
+        return 3;
+    }
+    let next_page = (phys | 0xFFF) + 1;
+    if next_page + 0x1000 > unsafe { *crate::cpu::global_pointers::memory_size } || memory::in_mapped_range(next_page) {
+        return 4;
+    }
+    if cpu::translate_address_read_no_side_effects((virt | 0xFFF) + 1) != Ok(next_page) {
+        return 5;
+    }
+    if needs_atomic_interpretation(phys) {
+        return 6;
+    }
+    let byte = |i: u32| memory::read8(phys + i) as i32;
+    let mut c = CpuContext { eip: phys, ..cpu.clone() };
+    let analysis = analysis::analyze_step(&mut c);
+    let ty = match analysis.ty {
+        AnalysisType::Normal => 10,
+        AnalysisType::BlockBoundary => 20,
+        AnalysisType::Jump { is_32: true, .. } => 30,
+        AnalysisType::Jump { is_32: false, .. } => 40,
+        AnalysisType::STI => 50,
+    };
+    match crossing_instruction(phys, virt, &cpu) {
+        Some(_) => 0,
+        None => 1000 * ty + (c.eip as i32 - phys as i32) * 10000000 + (analysis.absolute_jump as i32) * 100
+            + (analysis.no_next_instruction as i32) * 200 + byte(0) * 0 + 7,
     }
 }
