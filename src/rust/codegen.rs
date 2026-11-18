@@ -1819,7 +1819,7 @@ pub fn gen_getzf(ctx: &mut JitContext, negate: ConditionNegate) {
                 ctx.builder.eqz_i32();
             }
         },
-        &Instruction::Other => {
+        &Instruction::Other | &Instruction::Condition { .. } => {
             gen_profiler_stat_increment(ctx.builder, profiler::stat::CONDITION_UNOPTIMISED);
             gen_get_flags_changed(ctx.builder);
             ctx.builder.const_i32(FLAG_ZERO);
@@ -1918,7 +1918,7 @@ pub fn gen_getcf(ctx: &mut JitContext, negate: ConditionNegate) {
                 ctx.builder.eqz_i32();
             }
         },
-        &Instruction::Other => {
+        &Instruction::Other | &Instruction::Condition { .. } => {
             gen_profiler_stat_increment(ctx.builder, profiler::stat::CONDITION_UNOPTIMISED);
 
             gen_get_flags_changed(ctx.builder);
@@ -1988,7 +1988,7 @@ pub fn gen_getsf(ctx: &mut JitContext, negate: ConditionNegate) {
                 }
             }
         },
-        &Instruction::Other => {
+        &Instruction::Other | &Instruction::Condition { .. } => {
             gen_profiler_stat_increment(ctx.builder, profiler::stat::CONDITION_UNOPTIMISED);
             gen_get_flags_changed(ctx.builder);
             ctx.builder.const_i32(FLAG_SIGN);
@@ -2079,7 +2079,7 @@ pub fn gen_getof(ctx: &mut JitContext) {
             ctx.builder.const_i32(FLAG_OVERFLOW);
             ctx.builder.and_i32();
         },
-        &Instruction::Other => {
+        &Instruction::Other | &Instruction::Condition { .. } => {
             gen_profiler_stat_increment(ctx.builder, profiler::stat::CONDITION_UNOPTIMISED);
             gen_get_flags_changed(ctx.builder);
             let flags_changed = ctx.builder.tee_new_local();
@@ -2225,7 +2225,7 @@ pub fn gen_test_be(ctx: &mut JitContext, negate: ConditionNegate) {
                 ctx.builder.eqz_i32();
             }
         },
-        Instruction::Other | Instruction::NonZeroShift { .. } | Instruction::AdcSbb { .. } => {
+        Instruction::Other | Instruction::Condition { .. } | Instruction::NonZeroShift { .. } | Instruction::AdcSbb { .. } => {
             gen_profiler_stat_increment(ctx.builder, profiler::stat::CONDITION_UNOPTIMISED);
             gen_getcf(ctx, ConditionNegate::False);
             gen_getzf(ctx, ConditionNegate::False);
@@ -2342,6 +2342,7 @@ pub fn gen_test_l(ctx: &mut JitContext, negate: ConditionNegate) {
             gen_getsf(ctx, negate);
         },
         &Instruction::Other
+        | &Instruction::Condition { .. }
         | Instruction::Add { .. }
         | Instruction::NonZeroShift { .. }
         | Instruction::AdcSbb { .. } => {
@@ -2475,6 +2476,7 @@ pub fn gen_test_le(ctx: &mut JitContext, negate: ConditionNegate) {
             }
         },
         Instruction::Other
+        | Instruction::Condition { .. }
         | Instruction::Add { .. }
         | Instruction::NonZeroShift { .. }
         | Instruction::AdcSbb { .. } => {
@@ -2680,6 +2682,19 @@ pub fn gen_condition_fn_negated(ctx: &mut JitContext, condition: u8) {
 }
 
 pub fn gen_condition_fn(ctx: &mut JitContext, condition: u8) {
+    if let Instruction::Condition { condition: c } = ctx.previous_instruction {
+        if condition & 0xF0 == 0x70 || condition & 0xF0 == 0x80 {
+            if c & 0xF == condition & 0xF {
+                ctx.builder.get_local(&ctx.condition_local);
+                return;
+            }
+            if c & 0xF == (condition ^ 1) & 0xF {
+                ctx.builder.get_local(&ctx.condition_local);
+                ctx.builder.eqz_i32();
+                return;
+            }
+        }
+    }
     if condition & 0xF0 == 0x00 || condition & 0xF0 == 0x70 || condition & 0xF0 == 0x80 {
         match condition & 0xF {
             0x0 => {

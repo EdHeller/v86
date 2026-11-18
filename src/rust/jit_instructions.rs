@@ -1563,6 +1563,16 @@ fn gen_cmp(
         source: source_operand.to_instruction_operand(ctx),
         opsize: size,
     };
+    if let Some(cc) = ctx.flags_jcc_only {
+        if !codegen::condition_from_locals(&ctx.current_instruction, cc)
+            && gen_cmp_condition(ctx, dest_operand, source_operand, size, cc)
+        {
+            // (the jump reads the condition: the flags are not stored)
+            codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+            ctx.current_instruction = Instruction::Condition { condition: cc };
+            return;
+        }
+    }
     if flags_skip(ctx) {
         // (cmp only sets the flags)
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
@@ -1596,6 +1606,78 @@ fn gen_cmp(
     ctx.builder.store_aligned_i32(0);
     codegen::gen_set_last_op_size_and_flags_changed(ctx.builder, size, FLAGS_ALL | FLAG_SUB);
 }
+/// The condition cc (its low four bits: b ae z nz be a s ns l ge le g) of `cmp dest, source` of the given size, into
+/// ctx.condition_local (Instruction::Condition); false (nothing generated) for the others (o, no, p, np)
+fn gen_cmp_condition(
+    ctx: &mut JitContext,
+    dest: &WasmLocal,
+    source: &LocalOrImmediate,
+    size: i32,
+    cc: u8,
+) -> bool {
+    let cc = cc & 0xF;
+    if !matches!(cc, 0x2..=0x9 | 0xC..=0xF) {
+        return false;
+    }
+    let bits = if size == OPSIZE_8 { 8 } else if size == OPSIZE_16 { 16 } else { 32 };
+    let mask = if bits == 32 { -1 } else { (1 << bits) - 1 };
+    // operands zero-extended (unsigned compares) or moved to the top bits (signed ones keep their order)
+    let operands = |ctx: &mut JitContext, signed: bool| {
+        for i in 0..2 {
+            if i == 0 { ctx.builder.get_local(dest) } else { source.gen_get(ctx.builder) }
+            if bits != 32 {
+                if signed {
+                    ctx.builder.const_i32(32 - bits);
+                    ctx.builder.shl_i32();
+                }
+                else {
+                    ctx.builder.const_i32(mask);
+                    ctx.builder.and_i32();
+                }
+            }
+        }
+    };
+    match cc {
+        0x2 | 0x3 | 0x6 | 0x7 => {
+            operands(ctx, false);
+            match cc {
+                0x2 => ctx.builder.ltu_i32(),
+                0x3 => ctx.builder.geu_i32(),
+                0x6 => ctx.builder.leu_i32(),
+                _ => ctx.builder.gtu_i32(),
+            }
+        },
+        0x4 | 0x5 => {
+            operands(ctx, false);
+            if cc == 0x4 { ctx.builder.eq_i32() } else { ctx.builder.ne_i32() }
+        },
+        0x8 | 0x9 => {
+            // the sign of the difference
+            ctx.builder.get_local(dest);
+            source.gen_get(ctx.builder);
+            ctx.builder.sub_i32();
+            ctx.builder.const_i32(32 - bits);
+            ctx.builder.shl_i32();
+            ctx.builder.const_i32(31);
+            ctx.builder.shr_u_i32();
+            if cc == 0x9 {
+                ctx.builder.eqz_i32();
+            }
+        },
+        _ => {
+            operands(ctx, true);
+            match cc {
+                0xC => ctx.builder.lt_i32(),
+                0xD => ctx.builder.ge_i32(),
+                0xE => ctx.builder.le_i32(),
+                _ => ctx.builder.gt_i32(),
+            }
+        },
+    }
+    ctx.builder.set_local(&ctx.condition_local);
+    true
+}
+
 fn gen_cmp8(ctx: &mut JitContext, dest: &WasmLocal, source: &LocalOrImmediate) {
     gen_cmp(ctx, dest, source, OPSIZE_8)
 }

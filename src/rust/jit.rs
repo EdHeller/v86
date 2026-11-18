@@ -382,6 +382,11 @@ pub enum Instruction {
         dest: InstructionOperandDest,
         opsize: i32,
     },
+    /// a compare whose flags only the conditional jump after it reads: it left that jump's condition (by its low
+    /// four bits) in JitContext::condition_local
+    Condition {
+        condition: u8,
+    },
     Other,
 }
 
@@ -408,6 +413,8 @@ pub struct JitContext<'a> {
     /// per basic block of the module: whether the flags may be read after its end, and what its instructions do to
     /// them (see flags_live_out)
     pub flags_live_out: HashMap<u32, (bool, Vec<(bool, bool)>)>,
+    /// see Instruction::Condition
+    pub condition_local: WasmLocal,
 }
 impl<'a> JitContext<'a> {
     pub fn reg(&self, i: u32) -> WasmLocal {
@@ -1457,6 +1464,7 @@ fn jit_generate_module(
     let instruction_counter = builder.set_new_local();
     builder.const_i32(0);
     let instruction_counter_flushed = builder.set_new_local();
+    let condition_local = builder.alloc_local();
 
     let exit_label = builder.block_void();
     let exit_with_fault_label = builder.block_void();
@@ -1500,6 +1508,7 @@ fn jit_generate_module(
         flags_dead: false,
         flags_jcc_only: None,
         flags_live_out,
+        condition_local,
     };
 
     let entry_blocks = {
@@ -2308,6 +2317,7 @@ fn jit_generate_module(
         .free_local(ctx.instruction_counter.unsafe_clone());
     ctx.builder
         .free_local(ctx.instruction_counter_flushed.unsafe_clone());
+    ctx.builder.free_local(ctx.condition_local.unsafe_clone());
 
     if unsafe { DROP_REGISTER_MOVES } {
         ctx.builder.drop_unused_register_moves();
