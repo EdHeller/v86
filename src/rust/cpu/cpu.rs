@@ -2718,7 +2718,10 @@ pub fn tlb_set_has_code(physical_page: Page, has_code: bool) {
 
     check_tlb_invariants();
 }
-pub fn tlb_set_has_code_multiple(physical_pages: &HashSet<Page>, has_code: bool) {
+pub fn tlb_set_has_code_multiple<S: std::hash::BuildHasher>(
+    physical_pages: &std::collections::HashSet<Page, S>,
+    has_code: bool,
+) {
     if has_code {
         for p in physical_pages {
             unsafe { super::long_mem::code_page_added(p.to_u32()) }

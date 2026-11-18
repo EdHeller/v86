@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
+// (the jit's maps and sets hash with page::FastHasher unless they name another hasher)
+type HashMap<K, V, S = crate::page::FastBuildHasher> = std::collections::HashMap<K, V, S>;
+type HashSet<K, S = crate::page::FastBuildHasher> = std::collections::HashSet<K, S>;
 use std::iter::FromIterator;
 use std::mem::{self, MaybeUninit};
 use std::ops::{Deref, DerefMut};
@@ -266,7 +269,7 @@ impl JitState {
             compiling: Vec::new(),
 
             #[cfg(debug_assertions)]
-            wasm_table_index_to_page: HashMap::new(),
+            wasm_table_index_to_page: HashMap::default(),
         }
     }
 }
@@ -626,11 +629,11 @@ fn jit_find_basic_blocks(
         if !pages.contains(&phys_page) {
             // page seen for the first time, handle entry points
             if let Some((hotness, entry_points)) = ctx.entry_points.get_mut(&phys_page) {
-                let existing_entry_points = match ctx.pages.get(&phys_page) {
+                let existing_entry_points: HashSet<u16> = match ctx.pages.get(&phys_page) {
                     Some(PageInfo { entry_points, .. }) => {
                         HashSet::from_iter(entry_points.iter().map(|x| x.0))
                     },
-                    None => HashSet::new(),
+                    None => HashSet::default(),
                 };
 
                 if entry_points
@@ -671,10 +674,10 @@ fn jit_find_basic_blocks(
     }
 
     let mut to_visit_stack: Vec<i32> = Vec::new();
-    let mut marked_as_entry: HashSet<i32> = HashSet::new();
+    let mut marked_as_entry: HashSet<i32> = HashSet::default();
     let mut basic_blocks: BTreeMap<u32, BasicBlock> = BTreeMap::new();
-    let mut pages: HashSet<Page> = HashSet::new();
-    let mut page_blacklist = HashSet::new();
+    let mut pages: HashSet<Page> = HashSet::default();
+    let mut page_blacklist = HashSet::default();
 
     // 16-bit doesn't work correctly, most likely due to instruction pointer wrap-around
     let max_pages = if cpu.state_flags.is_32() { unsafe { MAX_PAGES } } else { 1 };
@@ -1064,9 +1067,9 @@ fn jit_analyze_and_generate(
         Some(entry_points) => entry_points,
     };
 
-    let existing_entry_points = match ctx.pages.get(&page) {
+    let existing_entry_points: HashSet<u16> = match ctx.pages.get(&page) {
         Some(PageInfo { entry_points, .. }) => HashSet::from_iter(entry_points.iter().map(|x| x.0)),
-        None => HashSet::new(),
+        None => HashSet::default(),
     };
 
     if entry_points
@@ -1107,7 +1110,7 @@ fn jit_analyze_and_generate(
         .collect();
     let basic_blocks = jit_find_basic_blocks(ctx, entry_points, cpu.clone());
 
-    let mut pages = HashSet::new();
+    let mut pages: HashSet<Page> = HashSet::default();
 
     for b in basic_blocks.iter() {
         // (a crossing last instruction ends in the next page)
@@ -1334,7 +1337,7 @@ pub fn codegen_finalize_finished(
             .insert(wasm_table_index, pages.keys().copied().collect());
     }
 
-    let mut check_for_unused_wasm_table_index = HashSet::new();
+    let mut check_for_unused_wasm_table_index: HashSet<WasmTableIndex> = HashSet::default();
 
     for (page, mut info) in pages {
         dbg_assert!(info.state_flags == state_flags);
@@ -1480,7 +1483,7 @@ fn jit_generate_module(
         flags_live_out(&cpu, basic_blocks)
     }
     else {
-        HashMap::new()
+        HashMap::default()
     };
     let ctx = &mut JitContext {
         cpu: &mut cpu,
@@ -1527,7 +1530,7 @@ fn jit_generate_module(
         result
     };
 
-    let mut index_for_addr = HashMap::new();
+    let mut index_for_addr: HashMap<u32, u16> = HashMap::default();
     for (i, &addr) in entry_blocks.iter().enumerate() {
         dbg_assert!(i < 0x10000);
         index_for_addr.insert(addr, i as u16);
@@ -1540,7 +1543,7 @@ fn jit_generate_module(
         }
     }
 
-    let mut label_for_addr: HashMap<u32, (Label, Option<u16>)> = HashMap::new();
+    let mut label_for_addr: HashMap<u32, (Label, Option<u16>)> = HashMap::default();
 
     enum Work {
         WasmStructure(WasmStructure),
@@ -2143,7 +2146,7 @@ fn jit_generate_module(
                     codegen::gen_profiler_stat_increment(ctx.builder, stat::DISPATCHER_SMALL);
                     let nexts: HashSet<u32> = next_addr
                         .as_ref()
-                        .map_or(HashSet::new(), |nexts| nexts.iter().copied().collect());
+                        .map_or(HashSet::default(), |nexts| nexts.iter().copied().collect());
                     for &addr in &entries {
                         if nexts.contains(&addr) {
                             continue;
@@ -2185,7 +2188,7 @@ fn jit_generate_module(
                     }
                 }
 
-                let mut olds = HashMap::new();
+                let mut olds = HashMap::default();
                 for &target in entries.iter() {
                     let index = if entries.len() == 1 {
                         None
@@ -2229,7 +2232,7 @@ fn jit_generate_module(
 
                 let targets = next_addr.clone().unwrap();
                 let label = ctx.builder.block_void();
-                let mut olds = HashMap::new();
+                let mut olds = HashMap::default();
                 for &target in targets.iter() {
                     let index = if targets.len() == 1 {
                         None
@@ -2684,7 +2687,7 @@ fn flags_live_out(
     let mut effects: HashMap<u32, Vec<(bool, bool)>> =
         basic_blocks.values().map(|b| (b.addr, block_flag_effects(cpu, b.addr, b.end_addr))).collect();
     let mut live_in: HashMap<u32, bool> = basic_blocks.keys().map(|&a| (a, false)).collect();
-    let mut live_out: HashMap<u32, bool> = HashMap::new();
+    let mut live_out: HashMap<u32, bool> = HashMap::default();
     let successor = |live_in: &HashMap<u32, bool>, addr: Option<u32>| match addr {
         Some(a) => live_in.get(&a).copied().unwrap_or(true),
         None => true,
@@ -3045,7 +3048,7 @@ pub fn jit_clear_cache_js() { jit_clear_cache(&mut get_jit_state()) }
 
 fn jit_clear_cache(ctx: &mut JitState) {
     crate::cpu::decoded::clear();
-    let mut pages_with_code = HashSet::new();
+    let mut pages_with_code: HashSet<Page> = HashSet::default();
 
     for &p in ctx.entry_points.keys() {
         pages_with_code.insert(p);

@@ -286,7 +286,9 @@ loop -11 %, md5 -23 %, sha256 -66 %, gzip -11 %, fork +2 %).
    once per iteration, its page not hot enough to recompile). The ~20 % of the profile is the first run's warm-up.
    Not better: heat for every interpreted run on top of its instructions (+10 per run: loop +2.5 %, +40: +9 %).
 2. ⬜ Decoded-instruction cache for prefixed (66, segment, rep string ops) and 16-bit code (BIOS, DOS).
-3. ⬜ JIT code generation (~8.5 % of boot): allocations, SipHash maps/sets in the analysis, buffer growth.
+3. ✅ 2026-11-18 JIT code generation: the analysis's and code generator's maps and sets hash with
+   `page::FastHasher` (FxHash's step) instead of SipHash with a random seed: generating code 0.21-0.28 s ->
+   0.20-0.21 s of a buildroot boot, the core 30 KB smaller. What is left is spread thin (no function above 1 %).
 4. ⬜ The fork workload, the only one not faster: page faults, TLB flushes, copy-on-write, code invalidation.
 5. ⬜ Compiled code of gzip's hot loops: memory fast paths, flags, register moves.
 6. ⬜ The experiments lost in V8 (chaining, nested calls, bigger modules) measured in Firefox.
