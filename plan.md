@@ -171,7 +171,14 @@ libv86.js fails with "Missing import").
      modules at once.
    - ✅ 2026-11-18 instructions crossing a page compiled at the end of their block (plain ones from an allowlist,
      jcc/jmp rel; their bytes in the next page compared through the TLB before they run): gzip -4.4 %, shell loop
-     -1.7 % (noise). ⬜ Next: calls that cross, blocks starting at a crossing instruction (libc's at ...ffc is still
+     -1.7 % (noise).
+   - ✅ 2026-11-18 interpreter: read_imm inlined, flat segment bases without loads, modrm_resolve inlined, the TLB
+     fast path of compiled code for safe_read/safe_write/safe_read_write 8/16/32. JIT off (the interpreter alone):
+     buildroot boot -24 %, faster in every round. With the JIT: within noise (Alpine +1.7 %, buildroot -3.5 %).
+     Not better: going on interpreting across jumps in a page instead of returning to the dispatcher; the 24 modrm
+     arms as one compact function (noise; inlined everywhere +2 MB of wasm). Next for the interpreter: decoded
+     instructions cached per page (a larger change).
+   - ⬜ Next: calls that cross, blocks starting at a crossing instruction (libc's at ...ffc is still
      interpreted on buildroot's shell loop); a faster interpreter (still 36 % of buildroot's boot, code that runs
      once); dispatch (12 % of the shell loop).
    - ⬜ For later (2026-11-17): a faster interpreter for cold code. An Alpine x86 boot interprets 255 M instructions
