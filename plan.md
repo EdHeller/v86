@@ -299,6 +299,8 @@ loop -11 %, md5 -23 %, sha256 -66 %, gzip -11 %, fork +2 %).
    flags only the next jcc reads computes the jump's condition into a local at the cmp (`Instruction::Condition`;
    any size, memory operands), instead of storing the lazy flags and reloading them. Kit, 5 rounds against the
    build before: md5 -3.9 %, gzip -2.5 %, sha256 -0.6 %, fork faster in 4 of 5 rounds. Test `jit/29_cmp_condition`.
+   The same for `test` (CF and OF clear: every condition from the result's sign and zero; test `jit/30_test_condition`):
+   within noise on the kit (md5 -4.1 %, gzip -1.8 %, sha256 +4.7 %).
 6. ⬜ The experiments lost in V8 (chaining, nested calls, bigger modules) measured in Firefox.
 7. ⬜ Refresh the benchmark kit.
 

@@ -1949,6 +1949,16 @@ fn gen_test(
             InstructionOperandDest::Other
         },
     };
+    if let Some(cc) = ctx.flags_jcc_only {
+        if !codegen::condition_from_locals(&ctx.current_instruction, cc)
+            && gen_test_condition(ctx, dest_operand, source_operand, size, cc)
+        {
+            // (the jump reads the condition: the flags are not stored)
+            codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+            ctx.current_instruction = Instruction::Condition { condition: cc };
+            return;
+        }
+    }
     if flags_skip(ctx) {
         // (test only sets the flags)
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
@@ -1974,6 +1984,68 @@ fn gen_test(
     );
     codegen::gen_clear_flags_bits(ctx.builder, FLAG_CARRY | FLAG_OVERFLOW | FLAG_ADJUST);
 }
+/// The condition cc (low four bits; not p, np) of `test dest, source` of the given size into ctx.condition_local
+/// (Instruction::Condition): CF and OF are clear, so every condition is one of the result's sign and zero; false
+/// (nothing generated) for p and np
+fn gen_test_condition(
+    ctx: &mut JitContext,
+    dest: &WasmLocal,
+    source: &LocalOrImmediate,
+    size: i32,
+    cc: u8,
+) -> bool {
+    let cc = cc & 0xF;
+    if cc == 0xA || cc == 0xB {
+        return false;
+    }
+    let bits = if size == OPSIZE_8 { 8 } else if size == OPSIZE_16 { 16 } else { 32 };
+    match cc {
+        // o, b: never; no, ae: always
+        0x0 | 0x2 => ctx.builder.const_i32(0),
+        0x1 | 0x3 => ctx.builder.const_i32(1),
+        _ => {
+            // the result in the top bits: its sign at bit 31
+            ctx.builder.get_local(dest);
+            if !source.eq_local(dest) {
+                source.gen_get(ctx.builder);
+                ctx.builder.and_i32();
+            }
+            if bits != 32 {
+                ctx.builder.const_i32(32 - bits);
+                ctx.builder.shl_i32();
+            }
+            match cc {
+                // e, be: zero; ne, a: not zero
+                0x4 | 0x6 => ctx.builder.eqz_i32(),
+                0x5 | 0x7 => {
+                    ctx.builder.const_i32(0);
+                    ctx.builder.ne_i32();
+                },
+                // s, l: negative; ns, ge: not
+                0x8 | 0xC => {
+                    ctx.builder.const_i32(0);
+                    ctx.builder.lt_i32();
+                },
+                0x9 | 0xD => {
+                    ctx.builder.const_i32(0);
+                    ctx.builder.ge_i32();
+                },
+                // le: zero or negative; g: positive
+                0xE => {
+                    ctx.builder.const_i32(0);
+                    ctx.builder.le_i32();
+                },
+                _ => {
+                    ctx.builder.const_i32(0);
+                    ctx.builder.gt_i32();
+                },
+            }
+        },
+    }
+    ctx.builder.set_local(&ctx.condition_local);
+    true
+}
+
 fn gen_test8(ctx: &mut JitContext, dest: &WasmLocal, source: &LocalOrImmediate) {
     gen_test(ctx, dest, source, OPSIZE_8)
 }
