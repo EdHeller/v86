@@ -3761,12 +3761,22 @@ unsafe fn jit_run_interpreted(mut phys_addr: u32) {
 
         i += 1;
         let start_eip = *instruction_pointer;
-        #[cfg(feature = "profiler")]
-        interp_opcode_note(phys_addr);
         dbg_assert!(*prefixes == 0);
         match if !page_cache.is_null() && *is_32 { super::decoded::lookup(page_cache, phys_addr) } else { None } {
-            Some(d) => super::decoded::run(&d),
+            Some(d) => {
+                #[cfg(feature = "profiler")]
+                {
+                    INTERP_OPCODES[1024] += 1;
+                }
+                super::decoded::run(&d)
+            },
             None => {
+                // (profiler: the instructions the decoded cache does not run, by opcode, and why)
+                #[cfg(feature = "profiler")]
+                {
+                    INTERP_OPCODES[if page_cache.is_null() { if *is_32 { 1025 } else { 1027 } } else { 1026 }] += 1;
+                    interp_opcode_note(phys_addr);
+                }
                 let opcode = *memory::mem8.offset(phys_addr as isize) as i32;
                 *instruction_pointer += 1;
                 run_instruction(opcode | (*is_32 as i32) << 8);
@@ -5696,7 +5706,8 @@ pub unsafe fn safe_write32(addr: i32, value: i32) -> OrPageFault<()> {
 // (profiler builds) interpreted instructions by opcode: [0..256) one-byte opcodes, [256..512) 0F xx; the second half
 // of each counts those whose modrm (when the byte after the opcode is read as one) is a memory operand
 #[cfg(feature = "profiler")]
-static mut INTERP_OPCODES: [u64; 1024] = [0; 1024];
+/// (1024: run from the decoded cache; 1025: 32-bit, page not decoded yet; 1026: not cacheable; 1027: 16-bit)
+static mut INTERP_OPCODES: [u64; 1028] = [0; 1028];
 
 #[cfg(feature = "profiler")]
 unsafe fn interp_opcode_note(phys: u32) {

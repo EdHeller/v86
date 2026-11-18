@@ -285,7 +285,10 @@ loop -11 %, md5 -23 %, sha256 -66 %, gzip -11 %, fork +2 %).
    `interp_addrs`: the interpreted entry addresses; the top one a crossing instruction that is a jump target, run
    once per iteration, its page not hot enough to recompile). The ~20 % of the profile is the first run's warm-up.
    Not better: heat for every interpreted run on top of its instructions (+10 per run: loop +2.5 %, +40: +9 %).
-2. ⬜ Decoded-instruction cache for prefixed (66, segment, rep string ops) and 16-bit code (BIOS, DOS).
+2. ✅ 2026-11-18 measured, not extended (profiler counters in `interp_opcodes`, entries 1024-1027): buildroot's
+   boot interprets 48 M instructions, 89 % from the decoded cache, 8 % on pages not decoded yet, 1.9 % not
+   cacheable (prefixes), 0.8 % 16-bit; FreeDOS's 6 M are 86 % 16-bit but under 0.1 s. Prefixed or 16-bit decoding
+   would gain at most a few percent of the interpreter's share.
 3. ✅ 2026-11-18 JIT code generation: the analysis's and code generator's maps and sets hash with
    `page::FastHasher` (FxHash's step) instead of SipHash with a random seed: generating code 0.21-0.28 s ->
    0.20-0.21 s of a buildroot boot, the core 30 KB smaller. What is left is spread thin (no function above 1 %).
