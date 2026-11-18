@@ -276,6 +276,28 @@ libv86.js fails with "Missing import").
      `tests/a64/boot.mjs`, `tests/virtio_gpu.mjs`), snapshots from the step before restore, and the micro benchmarks
      (`port`, `pit`, `interrupt`, `rdtsc`) against the JavaScript version. Same rule for ARM (`src/arm/`) after x86.
 
+## Profile (2026-11-18, rust c3368cc): where the time goes
+
+Buildroot boot + the kit's five workloads, host clock (`--clock real`; the virtual clock hangs on this sequence),
+22.3 s CPU, 11.25 G guest instructions (99.3 % run compiled, 84 % in user space).
+
+| phase | CPU s | compiled code | dispatch (main loop) | interpreter + rest of core | JIT codegen |
+|---|---|---|---|---|---|
+| boot | 3.16 | 1.16 | 0.36 | 0.97 | 0.27 |
+| shell loop | 5.54 | 3.90 | 0.79 | 0.41 | 0.13 |
+| md5 | 1.37 | 0.84 | 0.15 | 0.13 | 0.05 |
+| sha256 | 2.84 | 2.26 | 0.31 | 0.10 | 0.01 |
+| gzip | 6.13 | 5.68 | 0.10 | 0.14 | 0.02 |
+| fork | 3.28 | 2.12 | 0.45 | 0.39 | 0.09 |
+| all | 22.33 | 15.96 (71.5 %) | 2.15 (9.6 %) | 2.14 (9.6 %) | 0.56 (2.5 %) |
+
+Per 1000 guest instructions (profiler counters): 460 memory accesses with the inline TLB check (307 reads, 136
+writes, 17 read-modify-writes; slow paths ~0), 282 of them base register + offset (the stack); flags stored 128
+(elided 216); conditions read from stored flags 23 (from locals 89); loop-safety checks 35; module entries 12.2
+(an entry runs ~82 instructions), of which exits to another page 8.4; indirect jumps 9.1, 4.6 of them leaving the
+module (no entry for the target). Guest side: the kernel's ChaCha (/dev/urandom, the gzip input) is 6 % of all
+instructions; the boot's decompressor and initramfs unpacking 4.5 %.
+
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
 Numbers from the last profile (buildroot boot and shell loop) and the kit (rust against original: boot -7 %, shell
