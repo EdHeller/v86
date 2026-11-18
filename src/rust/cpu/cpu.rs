@@ -2747,6 +2747,7 @@ pub fn check_tlb_invariants() {
 
 pub const DISABLE_EIP_TRANSLATION_OPTIMISATION: bool = false;
 
+#[inline(always)]
 pub unsafe fn read_imm8() -> OrPageFault<i32> {
     let eip = *instruction_pointer;
     if DISABLE_EIP_TRANSLATION_OPTIMISATION || 0 != eip & !0xFFF ^ *last_virt_eip {
@@ -2759,8 +2760,10 @@ pub unsafe fn read_imm8() -> OrPageFault<i32> {
     return Ok(data8);
 }
 
+#[inline(always)]
 pub unsafe fn read_imm8s() -> OrPageFault<i32> { return Ok(read_imm8()? << 24 >> 24); }
 
+#[inline(always)]
 pub unsafe fn read_imm16() -> OrPageFault<i32> {
     // Two checks in one comparison:
     // 1. Did the high 20 bits of eip change
@@ -2777,6 +2780,7 @@ pub unsafe fn read_imm16() -> OrPageFault<i32> {
     };
 }
 
+#[inline(always)]
 pub unsafe fn read_imm32s() -> OrPageFault<i32> {
     // Analogue to the above comment
     if DISABLE_EIP_TRANSLATION_OPTIMISATION
@@ -3365,9 +3369,15 @@ pub unsafe fn segment_prefix(default_segment: i32) -> i32 {
     }
 }
 
+#[inline(always)]
 pub unsafe fn get_seg_prefix(default_segment: i32) -> OrPageFault<i32> {
     dbg_assert!(!in_jit);
     let prefix = *prefixes & prefix::PREFIX_MASK_SEGMENT;
+    // flat segmentation (the cached state the JIT uses): ds and ss are based at 0, ds is not null
+    if 0 == prefix && (default_segment == DS || default_segment == SS) && (*state_flags).has_flat_segmentation() {
+        dbg_assert!(*segment_offsets.offset(default_segment as isize) == 0);
+        return Ok(0);
+    }
     if 0 != prefix {
         if prefix == prefix::SEG_PREFIX_ZERO {
             return Ok(0);
@@ -3381,14 +3391,17 @@ pub unsafe fn get_seg_prefix(default_segment: i32) -> OrPageFault<i32> {
     };
 }
 
+#[inline(always)]
 pub unsafe fn get_seg_prefix_ds(offset: i32) -> OrPageFault<i32> {
     Ok(get_seg_prefix(DS)? + offset)
 }
 
+#[inline(always)]
 pub unsafe fn get_seg_prefix_ss(offset: i32) -> OrPageFault<i32> {
     Ok(get_seg_prefix(SS)? + offset)
 }
 
+#[inline(always)]
 pub unsafe fn modrm_resolve(modrm_byte: i32) -> OrPageFault<i32> {
     if is_asize_32() {
         resolve_modrm32(modrm_byte)
@@ -3948,11 +3961,13 @@ pub unsafe fn virt_boundary_write32(low: u32, high: u32, value: i32) {
     memory::write8(high as u32, value >> 24);
 }
 
-pub unsafe fn safe_read8(addr: i32) -> OrPageFault<i32> {
+#[inline(never)]
+pub unsafe fn safe_read8_slow(addr: i32) -> OrPageFault<i32> {
     Ok(memory::read8(translate_address_read(addr)?))
 }
 
-pub unsafe fn safe_read16(addr: i32) -> OrPageFault<i32> {
+#[inline(never)]
+pub unsafe fn safe_read16_slow(addr: i32) -> OrPageFault<i32> {
     if addr & 0xFFF == 0xFFF {
         Ok(safe_read8(addr)? | safe_read8(addr + 1)? << 8)
     }
@@ -3961,7 +3976,8 @@ pub unsafe fn safe_read16(addr: i32) -> OrPageFault<i32> {
     }
 }
 
-pub unsafe fn safe_read32s(addr: i32) -> OrPageFault<i32> {
+#[inline(never)]
+pub unsafe fn safe_read32s_slow(addr: i32) -> OrPageFault<i32> {
     if addr & 0xFFF >= 0xFFD {
         Ok(safe_read16(addr)? | safe_read16(addr + 2)? << 16)
     }
@@ -4370,7 +4386,8 @@ pub unsafe fn writable_or_pagefault_jit(
     0
 }
 
-pub unsafe fn safe_write8(addr: i32, value: i32) -> OrPageFault<()> {
+#[inline(never)]
+pub unsafe fn safe_write8_slow(addr: i32, value: i32) -> OrPageFault<()> {
     let (phys_addr, can_skip_dirty_page) = translate_address_write_and_can_skip_dirty(addr)?;
     if memory::in_mapped_range(phys_addr) {
         memory::mmap_write8(phys_addr, value);
@@ -4387,7 +4404,8 @@ pub unsafe fn safe_write8(addr: i32, value: i32) -> OrPageFault<()> {
     Ok(())
 }
 
-pub unsafe fn safe_write16(addr: i32, value: i32) -> OrPageFault<()> {
+#[inline(never)]
+pub unsafe fn safe_write16_slow(addr: i32, value: i32) -> OrPageFault<()> {
     let (phys_addr, can_skip_dirty_page) = translate_address_write_and_can_skip_dirty(addr)?;
     dbg_assert!(value >= 0 && value < 0x10000);
     if addr & 0xFFF == 0xFFF {
@@ -4408,7 +4426,8 @@ pub unsafe fn safe_write16(addr: i32, value: i32) -> OrPageFault<()> {
     Ok(())
 }
 
-pub unsafe fn safe_write32(addr: i32, value: i32) -> OrPageFault<()> {
+#[inline(never)]
+pub unsafe fn safe_write32_slow(addr: i32, value: i32) -> OrPageFault<()> {
     let (phys_addr, can_skip_dirty_page) = translate_address_write_and_can_skip_dirty(addr)?;
     if addr & 0xFFF > 0x1000 - 4 {
         virt_boundary_write32(
@@ -5515,4 +5534,65 @@ pub unsafe fn interp_histogram() -> u32 {
         }
     }
     OUT.as_ptr() as u32
+}
+
+// The interpreter's memory accesses, as compiled code makes them: the TLB entry of the page holds the host address
+// (mem8 added) and whether the access may go straight to it (valid, user access allowed, not device memory; for
+// writes also writable and without compiled code). Anything else, and accesses that cross a page, go the long way
+#[inline(always)]
+unsafe fn fast_entry(addr: i32, bytes: i32, write: bool) -> Option<i32> {
+    let entry = tlb_data[(addr as u32 >> 12) as usize];
+    let mask = TLB_VALID
+        | TLB_IN_MAPPED_RANGE
+        | if *cpl == 3 { TLB_NO_USER } else { 0 }
+        | if write { TLB_READONLY | TLB_HAS_CODE } else { 0 };
+    if entry & mask == TLB_VALID && addr & 0xFFF <= 0x1000 - bytes {
+        Some(entry & !0xFFF ^ addr)
+    }
+    else {
+        None
+    }
+}
+
+#[inline(always)]
+pub unsafe fn safe_read8(addr: i32) -> OrPageFault<i32> {
+    match fast_entry(addr, 1, false) {
+        Some(host) => Ok(*(host as *const u8) as i32),
+        None => safe_read8_slow(addr),
+    }
+}
+#[inline(always)]
+pub unsafe fn safe_read16(addr: i32) -> OrPageFault<i32> {
+    match fast_entry(addr, 2, false) {
+        Some(host) => Ok(ptr::read_unaligned(host as *const u16) as i32),
+        None => safe_read16_slow(addr),
+    }
+}
+#[inline(always)]
+pub unsafe fn safe_read32s(addr: i32) -> OrPageFault<i32> {
+    match fast_entry(addr, 4, false) {
+        Some(host) => Ok(ptr::read_unaligned(host as *const i32)),
+        None => safe_read32s_slow(addr),
+    }
+}
+#[inline(always)]
+pub unsafe fn safe_write8(addr: i32, value: i32) -> OrPageFault<()> {
+    match fast_entry(addr, 1, true) {
+        Some(host) => Ok(*(host as *mut u8) = value as u8),
+        None => safe_write8_slow(addr, value),
+    }
+}
+#[inline(always)]
+pub unsafe fn safe_write16(addr: i32, value: i32) -> OrPageFault<()> {
+    match fast_entry(addr, 2, true) {
+        Some(host) => Ok(ptr::write_unaligned(host as *mut u16, value as u16)),
+        None => safe_write16_slow(addr, value),
+    }
+}
+#[inline(always)]
+pub unsafe fn safe_write32(addr: i32, value: i32) -> OrPageFault<()> {
+    match fast_entry(addr, 4, true) {
+        Some(host) => Ok(ptr::write_unaligned(host as *mut i32, value)),
+        None => safe_write32_slow(addr, value),
+    }
 }
