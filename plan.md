@@ -169,9 +169,11 @@ libv86.js fails with "Missing import").
      shell loop and forks about -3 %. Also: the guest sampler of `--guest-map` was mostly measuring IRQ stubs
      (fixed: eip from the core's timer pass). Not better: a lower first-compile threshold (100 K, 50 K), 8
      modules at once.
-   - ⬜ Next: instructions that cross a page are still interpreted (on buildroot's shell loop about 8 entries a
-     loop iteration on one busybox page); compiling them needs the next page's mapping checked at run time and its
-     writes tracked. The interpreter is still 36 % of buildroot's boot (code that runs once).
+   - ✅ 2026-11-18 instructions crossing a page compiled at the end of their block (plain ones from an allowlist,
+     jcc/jmp rel; their bytes in the next page compared through the TLB before they run): gzip -4.4 %, shell loop
+     -1.7 % (noise). ⬜ Next: calls that cross, blocks starting at a crossing instruction (libc's at ...ffc is still
+     interpreted on buildroot's shell loop); a faster interpreter (still 36 % of buildroot's boot, code that runs
+     once); dispatch (12 % of the shell loop).
    - ⬜ For later (2026-11-17): a faster interpreter for cold code. An Alpine x86 boot interprets 255 M instructions
      (about 15 % of its time, about 28 ns each against 6 ns compiled): code that runs too rarely to be compiled
      (compiling earlier was slower: +3.8 % at a 50 K threshold). Idea: cache decoded instructions per page (the
