@@ -3701,7 +3701,7 @@ pub unsafe fn cycle_internal() {
         interp_histogram_note(phys_addr, initial_eip as u32, *instruction_counter);
         jit_run_interpreted(phys_addr);
         #[cfg(feature = "profiler")]
-        interp_histogram_steps(phys_addr, *instruction_counter - initial_instruction_counter);
+        interp_histogram_steps(phys_addr, *instruction_counter - initial_instruction_counter, initial_eip as u32);
 
         jit::jit_increase_hotness_and_maybe_compile(
             initial_eip,
@@ -5546,6 +5546,32 @@ pub fn core_has_long_mode() -> bool { LONG_MODE }
 // address, and whether the page had compiled code (tlb_code) for this state
 #[cfg(feature = "profiler")]
 static mut INTERP_HIST: Option<std::collections::HashMap<u32, [u64; 7]>> = None;
+#[cfg(feature = "profiler")]
+static mut INTERP_ADDRS: Option<std::collections::HashMap<u32, (u64, u64, u32)>> = None;
+
+/// (profiler builds) the 64 physical addresses with the most interpreted runs: (phys, runs, steps, virt) at the
+/// returned address; reset: clear them
+#[cfg(feature = "profiler")]
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn interp_addrs(reset: u32) -> u32 {
+    static mut OUT: [f64; 256] = [0.0; 256];
+    let h = INTERP_ADDRS.get_or_insert_with(Default::default);
+    if reset != 0 {
+        h.clear();
+        return 0;
+    }
+    let mut v: Vec<_> = h.iter().map(|(k, e)| (*k, *e)).collect();
+    v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    OUT = [0.0; 256];
+    for (i, (a, e)) in v.iter().take(64).enumerate() {
+        OUT[4 * i] = *a as f64;
+        OUT[4 * i + 1] = e.0 as f64;
+        OUT[4 * i + 2] = e.1 as f64;
+        OUT[4 * i + 3] = e.2 as f64;
+    }
+    OUT.as_ptr() as u32
+}
 
 #[cfg(feature = "profiler")]
 #[allow(static_mut_refs)]
@@ -5571,7 +5597,13 @@ unsafe fn interp_histogram_note(phys: u32, virt: u32, _counter: u32) {
 
 #[cfg(feature = "profiler")]
 #[allow(static_mut_refs)]
-unsafe fn interp_histogram_steps(phys: u32, steps: u32) {
+unsafe fn interp_histogram_steps(phys: u32, steps: u32, virt: u32) {
+    {
+        let e = INTERP_ADDRS.get_or_insert_with(Default::default).entry(phys).or_insert((0, 0, 0));
+        e.0 += 1;
+        e.1 += steps as u64;
+        e.2 = virt;
+    }
     if let Some(e) = INTERP_HIST.get_or_insert_with(Default::default).get_mut(&(phys >> 12)) {
         e[1] += steps as u64;
     }

@@ -281,8 +281,10 @@ libv86.js fails with "Missing import").
 Numbers from the last profile (buildroot boot and shell loop) and the kit (rust against original: boot -7 %, shell
 loop -11 %, md5 -23 %, sha256 -66 %, gzip -11 %, fork +2 %).
 
-1. ⬜ Compile what the shell loop still interprets (the interpreter is ~20 % of the loop phase): which pages and
-   opcodes (profiler histograms), why they stay interpreted, fix.
+1. ✅ 2026-11-18 What the shell loop interprets: in steady state under 1 % of its instructions (profiler export
+   `interp_addrs`: the interpreted entry addresses; the top one a crossing instruction that is a jump target, run
+   once per iteration, its page not hot enough to recompile). The ~20 % of the profile is the first run's warm-up.
+   Not better: heat for every interpreted run on top of its instructions (+10 per run: loop +2.5 %, +40: +9 %).
 2. ⬜ Decoded-instruction cache for prefixed (66, segment, rep string ops) and 16-bit code (BIOS, DOS).
 3. ⬜ JIT code generation (~8.5 % of boot): allocations, SipHash maps/sets in the analysis, buffer growth.
 4. ⬜ The fork workload, the only one not faster: page faults, TLB flushes, copy-on-write, code invalidation.
