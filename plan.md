@@ -305,7 +305,12 @@ loop -11 %, md5 -23 %, sha256 -66 %, gzip -11 %, fork +2 %).
    environment; the kit's `bench.html` runs the workloads in any browser with switches for the three (checked in
    headless Chromium: nested calls on, shell loop +6.5 %, fork +27 %, as in Node). The user's Firefox 160 (Windows,
    3 rounds, no experiments), rust against original, faster in every round: boot -10.2 %, shell loop -8.9 %, md5
-   -28.3 %, sha256 -58.3 %, gzip -12.4 %, fork -7.4 %. Next: the same with one experiment switched on at a time.
+   -28.3 %, sha256 -58.3 %, gzip -12.4 %, fork -7.4 %. One experiment at a time (rust, medians of 3; two baseline runs:
+   shell loop 9.00/9.02, md5 0.59/0.61, sha256 1.54/1.28 (it flips between ~1.3 and ~1.55 s: one mode per boot),
+   gzip 2.86/2.88, fork 1.51/1.54): chaining neutral (9.10, 0.61, 1.31, 2.88, 1.54); bigger modules neutral (8.89,
+   0.63, 1.28, 2.89, 1.50); nested calls shell loop 8.40 (-7 %, every round) but fork 1.61 (+5 %), the rest the
+   same. In Chrome nested calls lost on both (+6.5 %, +27 %). Not switched on: next, find what nested calls cost
+   in fork (kernel paths, deep call chains) before a Firefox-only default.
 7. ✅ 2026-11-18 Kit refreshed (rust at c18db79), 5 rounds against original: boot -13.6 %, shell loop -8.1 %, md5
    -25.4 %, sha256 -65.0 %, gzip -12.2 %, fork -4.8 %.
 
