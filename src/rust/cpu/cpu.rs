@@ -2669,9 +2669,33 @@ pub unsafe fn trigger_pagefault(
     }
 }
 
+/// The mark of the TLB entry of virtual page `page` when it maps physical_page
+fn tlb_set_has_code_at(page: i32, physical_page: Page, has_code: bool) {
+    let entry = unsafe { tlb_data[page as usize] };
+    if 0 == entry {
+        return;
+    }
+    let tlb_physical_page =
+        Page::of_u32((entry as u32 >> 12 ^ page as u32) - (unsafe { memory::mem8 } as u32 >> 12));
+    if physical_page == tlb_physical_page {
+        unsafe { tlb_data[page as usize] = if has_code { entry | TLB_HAS_CODE } else { entry & !TLB_HAS_CODE } }
+        if !has_code {
+            clear_tlb_code(page);
+        }
+    }
+}
+
 pub fn tlb_set_has_code(physical_page: Page, has_code: bool) {
     if has_code {
         unsafe { super::long_mem::code_page_added(physical_page.to_u32()) }
+    }
+    if unsafe { *cr } & CR0_PG == 0 {
+        // without paging a page is reached only at its own address (the TLB is cleared when paging is turned on or
+        // off): no need to look through every entry (in real mode code and data share pages, and their marks change
+        // often)
+        tlb_set_has_code_at(physical_page.to_u32() as i32, physical_page, has_code);
+        check_tlb_invariants();
+        return;
     }
     for i in 0..unsafe { valid_tlb_entries_count } {
         let page = unsafe { valid_tlb_entries[i as usize] };
@@ -2699,6 +2723,13 @@ pub fn tlb_set_has_code_multiple(physical_pages: &HashSet<Page>, has_code: bool)
         for p in physical_pages {
             unsafe { super::long_mem::code_page_added(p.to_u32()) }
         }
+    }
+    if unsafe { *cr } & CR0_PG == 0 {
+        for &p in physical_pages {
+            tlb_set_has_code_at(p.to_u32() as i32, p, has_code);
+        }
+        check_tlb_invariants();
+        return;
     }
     let physical_pages: Vec<Page> = physical_pages.into_iter().copied().collect();
     for i in 0..unsafe { valid_tlb_entries_count } {

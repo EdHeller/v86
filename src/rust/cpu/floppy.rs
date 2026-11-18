@@ -714,7 +714,14 @@ pub unsafe fn fdc_transfer_done(error: bool) {
 pub unsafe fn fdc_port_read(port: i32) -> i32 { fdc().read(port & 7) }
 
 #[no_mangle]
-pub unsafe fn fdc_port_write(port: i32, value: i32) { fdc().write(port & 7, value & 0xFF) }
+pub unsafe fn fdc_port_write(port: i32, value: i32) {
+    fdc().write(port & 7, value & 0xFF);
+    if fdc().xfer != 0 {
+        // the transfer of a READ or WRITE starts at once (as the original device did): waiting for the timer pass
+        // left a guest that halts after the command asleep until the next timer interrupt
+        fdc_run_transfer();
+    }
+}
 
 /// Whether the core answers this port itself (0x3F6 is the IDE's)
 #[inline]

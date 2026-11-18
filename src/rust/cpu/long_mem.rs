@@ -278,6 +278,10 @@ unsafe fn fast_flags(phys: u32, perm: u8) -> u8 {
 
 /// Code was compiled from the physical page: its tlb entries must not allow inline writes any more
 pub unsafe fn code_page_added(physical_page: u32) {
+    if !ANY_ENTRY {
+        // (16/32-bit code: the tables are empty, and scanning them was most of a DOS boot)
+        return;
+    }
     #[allow(static_mut_refs)]
     for e in TLB.iter_mut() {
         if e.vpn != INVALID && e.phys >> 12 == physical_page {
@@ -296,7 +300,11 @@ static mut FETCH_VPN: u64 = INVALID;
 static mut FETCH_PHYS: u32 = 0;
 static mut FETCH_USER: bool = false;
 
+/// Whether the tables may hold a translation (since the last flush): JTLB's entries come from TLB's
+static mut ANY_ENTRY: bool = false;
+
 pub unsafe fn flush() {
+    ANY_ENTRY = false;
     #[allow(static_mut_refs)]
     for e in TLB.iter_mut() {
         e.vpn = INVALID;
@@ -382,6 +390,7 @@ pub unsafe fn translate(addr: u64, write: bool, user: bool, fetch: bool) -> OrPa
     }
     let (phys, perm) = walk(addr, write, user, fetch, true, true)?;
     *e = Entry { vpn, phys: phys & !0xFFF, perm, fast: fast_flags(phys, perm) };
+    ANY_ENTRY = true;
     jtlb_update(vpn, phys & !0xFFF, (*e).fast, perm);
     if perm & F_GLOBAL == 0 {
         note_filled(vpn as usize & (TLB_SIZE - 1));
