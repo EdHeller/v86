@@ -181,7 +181,10 @@ libv86.js fails with "Missing import").
    - ✅ 2026-11-18 calls that cross (`call rel32`: the pushed return address is in the next page,
      `codegen::gen_get_real_eip`) and blocks that start at a crossing instruction (a jump's target, a call's return).
      Buildroot shell loop -2 % (noise). Test `tests/x64/jit/28_crossing_call`.
-   - ⬜ Next: dispatch (12 % of the shell loop).
+   - ✅ 2026-11-18 dispatch (12 % of the shell loop) looked at again: its hot path is the tlb_code lookup, the state
+     check and the indirect call; the profiler-only branches compile out. Nothing cheap left; fewer round trips
+     need the measured-and-lost options (chaining +6.7 %, nested calls +5.9 %, bigger modules). Removed a leftover
+     IRQ debug log from the interrupt path.
    - ✅ 2026-11-18 interpreter phase 2: decoded instructions cached per physical page (`cpu/decoded.rs`, the
      handlers generated from the interpreter's arms by `gen/generate_decoded.js`: 354 opcodes); a page is decoded
      after 32 interpreted runs (`set_jit_config(73, n)`; 72 turns it off); writes reach it through jit_dirty_page.

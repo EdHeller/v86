@@ -5134,14 +5134,7 @@ pub unsafe fn handle_irqs() {
     }
 }
 
-pub static mut IRQ_LOG: [[u32; 5]; 256] = [[0; 5]; 256];
-pub static mut IRQ_COUNT: u32 = 0;
-#[no_mangle]
-pub unsafe fn irq_log(i: u32, j: u32) -> u32 { if i == 0xFFFF { IRQ_COUNT } else { IRQ_LOG[i as usize & 255][j as usize] } }
-
 pub unsafe fn pic_call_irq(interrupt_nr: u8) {
-    IRQ_LOG[IRQ_COUNT as usize & 255] = [apic::CURRENT_CORE as u32, interrupt_nr as u32, *instruction_pointer as u32, *reg32.offset(4) as u32, *flags as u32];
-    IRQ_COUNT += 1;
     *previous_ip = *instruction_pointer; // XXX: What if called after instruction (port IO)
     if *in_hlt {
         js::stop_idling();
