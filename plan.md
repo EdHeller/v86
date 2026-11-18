@@ -292,7 +292,9 @@ loop -11 %, md5 -23 %, sha256 -66 %, gzip -11 %, fork +2 %).
 3. ✅ 2026-11-18 JIT code generation: the analysis's and code generator's maps and sets hash with
    `page::FastHasher` (FxHash's step) instead of SipHash with a random seed: generating code 0.21-0.28 s ->
    0.20-0.21 s of a buildroot boot, the core 30 KB smaller. What is left is spread thin (no function above 1 %).
-4. ⬜ The fork workload, the only one not faster: page faults, TLB flushes, copy-on-write, code invalidation.
+4. ✅ 2026-11-18 The fork workload is not slower: on the virtual clock (4 rounds) 500 forks take 3.45 s against
+   3.55 s on `Vibe-Claude` (-3 %, noisy; the kit's +2 % was noise). Its time: compiled code 54 %, interpreter 18 %
+   (cold kernel paths of exec), dispatch 13 %; nothing particular to fork stands out.
 5. ⬜ Compiled code of gzip's hot loops: memory fast paths, flags, register moves.
 6. ⬜ The experiments lost in V8 (chaining, nested calls, bigger modules) measured in Firefox.
 7. ⬜ Refresh the benchmark kit.
