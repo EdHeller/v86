@@ -4501,6 +4501,14 @@ pub unsafe fn safe_write128(addr: i32, value: reg128) -> OrPageFault<()> {
 
 #[inline(always)]
 pub unsafe fn safe_read_write8(addr: i32, instruction: &dyn Fn(i32) -> i32) {
+    // (as safe_write8: straight to the page when its TLB entry allows it; not with atomic read-modify-write)
+    if !memory::ATOMIC_RMW {
+        if let Some(host) = fast_entry(addr, 1, true) {
+            let x = ptr::read_unaligned(host as *const u8) as i32;
+            ptr::write_unaligned(host as *mut u8, instruction(x) as u8);
+            return;
+        }
+    }
     let (phys_addr, can_skip_dirty_page) =
         return_on_pagefault!(translate_address_write_and_can_skip_dirty(addr));
     if memory::ATOMIC_RMW && !memory::in_mapped_range(phys_addr) {
@@ -4530,6 +4538,14 @@ pub unsafe fn safe_read_write8(addr: i32, instruction: &dyn Fn(i32) -> i32) {
 
 #[inline(always)]
 pub unsafe fn safe_read_write16(addr: i32, instruction: &dyn Fn(i32) -> i32) {
+    // (as safe_write16: straight to the page when its TLB entry allows it; not with atomic read-modify-write)
+    if !memory::ATOMIC_RMW {
+        if let Some(host) = fast_entry(addr, 2, true) {
+            let x = ptr::read_unaligned(host as *const u16) as i32;
+            ptr::write_unaligned(host as *mut u16, instruction(x) as u16);
+            return;
+        }
+    }
     let (phys_addr, can_skip_dirty_page) =
         return_on_pagefault!(translate_address_write_and_can_skip_dirty(addr));
     if phys_addr & 0xFFF == 0xFFF {
@@ -4566,6 +4582,14 @@ pub unsafe fn safe_read_write16(addr: i32, instruction: &dyn Fn(i32) -> i32) {
 
 #[inline(always)]
 pub unsafe fn safe_read_write32(addr: i32, instruction: &dyn Fn(i32) -> i32) {
+    // (as safe_write32: straight to the page when its TLB entry allows it; not with atomic read-modify-write)
+    if !memory::ATOMIC_RMW {
+        if let Some(host) = fast_entry(addr, 4, true) {
+            let x = ptr::read_unaligned(host as *const i32) as i32;
+            ptr::write_unaligned(host as *mut i32, instruction(x) as i32);
+            return;
+        }
+    }
     let (phys_addr, can_skip_dirty_page) =
         return_on_pagefault!(translate_address_write_and_can_skip_dirty(addr));
     if phys_addr & 0xFFF >= 0xFFD {
