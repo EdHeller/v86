@@ -6,6 +6,7 @@ INSTRUCTION_TABLES=src/rust/gen/jit.rs src/rust/gen/jit0f.rs \
 		   src/rust/gen/interpreter.rs src/rust/gen/interpreter0f.rs \
 		   src/rust/gen/interpreter64.rs src/rust/gen/interpreter0f64.rs \
 		   src/rust/gen/analyzer.rs src/rust/gen/analyzer0f.rs \
+		   src/rust/gen/decoded.rs \
 
 # Only the dependencies common to both generate_{jit,interpreter}.js
 GEN_DEPENDENCIES=$(filter-out gen/generate_interpreter.js gen/generate_jit.js gen/generate_analyzer.js, $(wildcard gen/*.js))
@@ -101,7 +102,8 @@ RUST_FILES=$(shell find src/rust/ -name '*.rs') \
 	   src/rust/gen/interpreter.rs src/rust/gen/interpreter0f.rs \
 	   src/rust/gen/interpreter64.rs src/rust/gen/interpreter0f64.rs \
 	   src/rust/gen/jit.rs src/rust/gen/jit0f.rs \
-	   src/rust/gen/analyzer.rs src/rust/gen/analyzer0f.rs
+	   src/rust/gen/analyzer.rs src/rust/gen/analyzer0f.rs \
+	   src/rust/gen/decoded.rs
 
 GRAPHICS_ADAPTER_COMMON=src/cjs.js src/const.js src/lib.js src/log.js src/bus.js src/display.js \
 	src/device_machine.js src/graphics_adapters/machine.js src/graphics_adapters/vga_core.js src/graphics_adapters/renderer_protocol.js
@@ -302,6 +304,9 @@ src/rust/gen/interpreter64.rs: $(INTERPRETER_DEPENDENCIES)
 	./gen/generate_interpreter.js --output-dir build/ --table interpreter64
 src/rust/gen/interpreter0f64.rs: $(INTERPRETER_DEPENDENCIES)
 	./gen/generate_interpreter.js --output-dir build/ --table interpreter0f64
+
+src/rust/gen/decoded.rs: gen/generate_decoded.js src/rust/gen/interpreter.rs src/rust/gen/interpreter0f.rs
+	./gen/generate_decoded.js
 
 src/rust/gen/analyzer.rs: $(ANALYZER_DEPENDENCIES)
 	./gen/generate_analyzer.js --output-dir build/ --table analyzer

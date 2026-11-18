@@ -181,11 +181,12 @@ libv86.js fails with "Missing import").
    - ⬜ Next: calls that cross, blocks starting at a crossing instruction (libc's at ...ffc is still
      interpreted on buildroot's shell loop); a faster interpreter (still 36 % of buildroot's boot, code that runs
      once); dispatch (12 % of the shell loop).
-   - ⬜ For later (2026-11-17): a faster interpreter for cold code. An Alpine x86 boot interprets 255 M instructions
-     (about 15 % of its time, about 28 ns each against 6 ns compiled): code that runs too rarely to be compiled
-     (compiling earlier was slower: +3.8 % at a 50 K threshold). Idea: cache decoded instructions per page (the
-     opcode handler, the modrm form, the immediates) so a second run skips decoding; or a cheaper first-tier
-     compile. Expect a few percent; a large change.
+   - ✅ 2026-11-18 interpreter phase 2: decoded instructions cached per physical page (`cpu/decoded.rs`, the
+     handlers generated from the interpreter's arms by `gen/generate_decoded.js`: 354 opcodes); a page is decoded
+     after 32 interpreted runs (`set_jit_config(73, n)`; 72 turns it off); writes reach it through jit_dirty_page.
+     JIT off: buildroot boot -19 %; with the JIT: -2 to -4 % (noise). Lost: handlers as function pointers (an
+     indirect call per instruction, +13 %); decoding on the first run (+6 % with the JIT: cold code). Test
+     `tests/x64/jit/27_decoded_cache_smc`; nasm tests 15,659/15,659 with every page decoded.
    - ⬜ For later (2026-11-17): measure the experiments that lost in V8 in Firefox (SpiderMonkey): chaining with tail
      calls (`set_jit_config(17, 1)`, +6.7 % in V8), nested calls (`(21, 1)`, +5.9 %), bigger modules
      (`(1, 4)`, `(1, 8)`). Their cost in V8 was the call between generated modules; another engine may make it

@@ -2863,7 +2863,7 @@ fn maybe_has_code_clear(page: Page) {
     let i = page.to_u32() as usize;
     unsafe { MAYBE_HAS_CODE[i >> 6] &= !(1 << (i & 63)) };
 }
-fn maybe_has_code(page: Page) -> bool {
+pub fn maybe_has_code(page: Page) -> bool {
     if crate::cpu::parallel::active() {
         return unsafe { crate::cpu::parallel::any_owner(page.to_u32()) };
     }
@@ -2876,6 +2876,7 @@ fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
     if !maybe_has_code(page) {
         return;
     }
+    crate::cpu::decoded::invalidate(page);
     if crate::cpu::parallel::active() {
         // the other instances that compiled the page retire their code too
         unsafe { crate::cpu::parallel::announce_write(page.to_u32()) };
@@ -3020,6 +3021,7 @@ pub fn jit_dirty_cache_small(start_addr: u32, end_addr: u32) {
 pub fn jit_clear_cache_js() { jit_clear_cache(&mut get_jit_state()) }
 
 fn jit_clear_cache(ctx: &mut JitState) {
+    crate::cpu::decoded::clear();
     let mut pages_with_code = HashSet::new();
 
     for &p in ctx.entry_points.keys() {
@@ -3156,6 +3158,8 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         68 => JIT_RECOMPILE_THRESHOLD = value.max(1),
         69 => COMPILE_NEAR_END_OF_PAGE = value != 0,
         71 => COMPILE_CROSSING = value != 0,
+        72 => crate::cpu::decoded::ENABLED = value != 0,
+        73 => crate::cpu::decoded::THRESHOLD = value.max(1),
         70 => MAX_COMPILING = value.max(1),
         62 => crate::cpu::instructions_0f::CPUID_HIDE = value,
         65 => INLINE_LOOKUP = value != 0,

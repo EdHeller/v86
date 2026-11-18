@@ -3708,6 +3708,12 @@ unsafe fn jit_run_interpreted(mut phys_addr: u32) {
 
     jit_block_boundary = false;
     let mut i = 0;
+    let page_cache = if super::decoded::ENABLED && *is_32 && !*is_64 && !super::parallel::active() {
+        super::decoded::page_for(phys_addr)
+    }
+    else {
+        std::ptr::null_mut()
+    };
 
     loop {
         if CHECK_MISSED_ENTRY_POINTS {
@@ -3721,10 +3727,17 @@ unsafe fn jit_run_interpreted(mut phys_addr: u32) {
 
         i += 1;
         let start_eip = *instruction_pointer;
-        let opcode = *memory::mem8.offset(phys_addr as isize) as i32;
-        *instruction_pointer += 1;
+        #[cfg(feature = "profiler")]
+        interp_opcode_note(phys_addr);
         dbg_assert!(*prefixes == 0);
-        run_instruction(opcode | (*is_32 as i32) << 8);
+        match if !page_cache.is_null() && *is_32 { super::decoded::lookup(page_cache, phys_addr) } else { None } {
+            Some(d) => super::decoded::run(&d),
+            None => {
+                let opcode = *memory::mem8.offset(phys_addr as isize) as i32;
+                *instruction_pointer += 1;
+                run_instruction(opcode | (*is_32 as i32) << 8);
+            },
+        }
         dbg_assert!(*prefixes == 0);
 
         if *flags & FLAG_TRAP != 0 {
@@ -5620,3 +5633,31 @@ pub unsafe fn safe_write32(addr: i32, value: i32) -> OrPageFault<()> {
         None => safe_write32_slow(addr, value),
     }
 }
+
+// (profiler builds) interpreted instructions by opcode: [0..256) one-byte opcodes, [256..512) 0F xx; the second half
+// of each counts those whose modrm (when the byte after the opcode is read as one) is a memory operand
+#[cfg(feature = "profiler")]
+static mut INTERP_OPCODES: [u64; 1024] = [0; 1024];
+
+#[cfg(feature = "profiler")]
+unsafe fn interp_opcode_note(phys: u32) {
+    if phys as u64 + 3 > *memory_size as u64 {
+        return;
+    }
+    let b = |i: u32| *memory::mem8.add((phys + i) as usize) as usize;
+    let mut at = 0;
+    // (prefixes)
+    while at < 4 && matches!(b(at), 0x66 | 0x67 | 0xF2 | 0xF3 | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0xF0) {
+        at += 1;
+    }
+    let (index, modrm) = if b(at) == 0x0F { (256 + b(at + 1), b(at + 2)) } else { (b(at), b(at + 1)) };
+    INTERP_OPCODES[index] += 1;
+    if modrm < 0xC0 {
+        INTERP_OPCODES[512 + index] += 1;
+    }
+}
+
+#[cfg(feature = "profiler")]
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub unsafe fn interp_opcodes() -> u32 { INTERP_OPCODES.as_ptr() as u32 }

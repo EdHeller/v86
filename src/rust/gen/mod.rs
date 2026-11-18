@@ -17,3 +17,6 @@ pub mod jit0f;
 pub mod analyzer;
 #[rustfmt::skip]
 pub mod analyzer0f;
+
+#[rustfmt::skip]
+pub mod decoded;

@@ -3,6 +3,7 @@ pub mod apic;
 pub mod arith;
 pub mod call_indirect;
 pub mod cpu;
+pub mod decoded;
 pub mod dma;
 pub mod floppy;
 pub mod fpu;
