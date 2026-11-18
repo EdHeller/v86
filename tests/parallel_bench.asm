@@ -43,7 +43,7 @@ SHARED_RECORD equ CONTROL + 0x100
 RECORDS equ CONTROL + 0x400     ; 64 bytes per core: +0 barrier sense
 BUFFER equ 0x1000000            ; 4 MiB, filled once by the BSP
 SCRATCH equ 0x1400000           ; 4 KiB per core
-PM_TIMER equ 0x608
+PM_TIMER equ 0xB008             ; the PM block stays at 0xB000 without firmware (src/acpi.js)
 LAPIC equ 0xFEE00000
 STACKS equ 0x300000
 

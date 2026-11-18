@@ -441,6 +441,10 @@ What v64 has and we don't yet (2026-10-31, by comparing the two trees and v64's 
 
 ## Done
 
+- ✅ 2026-11-18 Multi-core cores rebuilt with the new JS (`v86-parallel.wasm`, `v64-parallel.wasm`, `vcpu-worker.js`);
+  `tests/parallel_bench.mjs` passes every workload (its io workload read the PM timer at 0x608, where nothing is
+  without firmware: the block stays at 0xB000; it failed on `Vibe-Claude` too). Workers, 2 / 4 cores, against
+  `Vibe-Claude`: compute 0.12 / 0.13 s against 0.44 / 0.34 s; lock about the same.
 - ✅ 2026-11-18 Marking a page as holding code scanned the x86_64 TLB tables (empty outside long mode) and, without
   paging, every TLB entry: 66 % of a FreeDOS boot. Now skipped / one entry: FreeDOS from floppy to its prompt in a
   quarter of the CPU time of `Vibe-Claude` (-73 %). The floppy transfer starts at the command again (24 M -> 10 M
