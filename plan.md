@@ -303,7 +303,9 @@ loop -11 %, md5 -23 %, sha256 -66 %, gzip -11 %, fork +2 %).
    within noise on the kit (md5 -4.1 %, gzip -1.8 %, sha256 +4.7 %).
 6. ⬜ The experiments lost in V8 (chaining, nested calls, bigger modules) measured in Firefox: no Firefox in this
    environment; the kit's `bench.html` runs the workloads in any browser with switches for the three (checked in
-   headless Chromium: nested calls on, shell loop +6.5 %, fork +27 %, as in Node). Waiting for the user's numbers.
+   headless Chromium: nested calls on, shell loop +6.5 %, fork +27 %, as in Node). The user's Firefox 160 (Windows,
+   3 rounds, no experiments), rust against original, faster in every round: boot -10.2 %, shell loop -8.9 %, md5
+   -28.3 %, sha256 -58.3 %, gzip -12.4 %, fork -7.4 %. Next: the same with one experiment switched on at a time.
 7. ✅ 2026-11-18 Kit refreshed (rust at c18db79), 5 rounds against original: boot -13.6 %, shell loop -8.1 %, md5
    -25.4 %, sha256 -65.0 %, gzip -12.2 %, fork -4.8 %.
 
