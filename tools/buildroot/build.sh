@@ -3,7 +3,7 @@
 # build.sh — small Buildroot 2026.08 development images for the v86 emulator
 #            (https://github.com/copy/v86), built under WSL or any Linux.
 #
-# Builds ONE environment per run; each gets its own bzImage + rootfs.cpio.zstd:
+# Builds ONE environment per run; each gets its own bzImage + rootfs.cpio.zst (v86 unpacks it):
 #
 #   --no-gui              console only: bash, nano, gcc/g++, sound (no SDL3 unless --SDL3)
 #   --qemu                Xorg modesetting on bochs-drm (v86's Bochs/QEMU VGA), 1024x768x24
@@ -4744,9 +4744,11 @@ verify_image() {
     ((WORDS)) || ! grep -qE '(^|/)usr/share/dict/words$' <<<"$list" || { warn "--no-words image contains /usr/share/dict/words"; ok=0; }
     ((GUI && ADIE)) || ! grep -qE '(^|/)usr/bin/adie$' <<<"$list" || { warn "image without Adie contains adie"; ok=0; }
     ((ok)) || die "the packed image is incomplete (see above)"
-    mb=$(( $("$z" -dc "$img" | wc -c) / 1048576 ))
+    UNPACKED_BYTES=$("$z" -dc "$img" | wc -c)
+    mb=$(( UNPACKED_BYTES / 1048576 ))
     UNPACKED_MB=$mb
-    ((mb < 640)) || warn "rootfs unpacks to $mb MB: give v86 more than 1024 MB memory_size"
+    # (.zst: the kernel holds the unpacked initrd and the unpacked files at once, see deliver)
+    (( (XZ ? mb : 2 * mb) + 152 <= 1024 )) || warn "rootfs unpacks to $mb MB: the page needs more than 1024 MB memory_size"
     msg "image OK: $mb MB unpacked, $(du -h "$img" | cut -f1) compressed"
 }
 
@@ -4878,31 +4880,51 @@ deliver() {
     local img="$OUT/images" vram=8 ksize rsize
     ((GUI)) && vram=16                  # room for xmode up to 1024x768x32
     cp -f "$img/bzImage"         "$IMAGE_DIR/v86-$NAME-bzImage"
-    # Delivered as .zstd, not .zst: v86 decompresses any URL ending in ".zst" in the
-    # browser and needs its unpacked size; without one, the guest gets an empty initrd
-    # ("VFS: Unable to mount root fs"). The kernel unpacks zstd itself, so v86 shouldn't.
-    # xz: .cpio.xz, which v86 passes through untouched.
-    local rootfs="v86-$NAME-rootfs.cpio.zstd"
+    # Delivered as .zst: v86 decompresses any URL ending in ".zst" itself, in its WebAssembly
+    # code (about half a second), and the kernel gets an unpacked initrd. Unpacking zstd in the
+    # emulated kernel was about half of the boot (GUI image: desktop after 30 s, now 20 s).
+    # v86 needs the UNPACKED size as the initrd's size (printed below); a wrong or missing
+    # one gives the guest an empty initrd ("VFS: Unable to mount root fs").
+    # xz: .cpio.xz, which v86 passes through untouched: the kernel unpacks it.
+    local rootfs="v86-$NAME-rootfs.cpio.zst"
     ((XZ)) && rootfs="v86-$NAME-rootfs.cpio.xz"
-    rm -f "$IMAGE_DIR/v86-$NAME-rootfs.cpio.zst"
+    rm -f "$IMAGE_DIR/v86-$NAME-rootfs.cpio.zstd"       # (the old name)
     cp -f "$img/rootfs.cpio.$ROOTFS_EXT" "$IMAGE_DIR/$rootfs"
+    local unpacked=0
+    if ((!XZ)); then
+        local z="$OUT/host/bin/zstd"; [[ -x "$z" ]] || z=zstd      # Buildroot's own, else the host's
+        unpacked=${UNPACKED_BYTES:-$("$z" -dc "$IMAGE_DIR/$rootfs" | wc -c)}
+        ((unpacked > 0)) || die "could not unpack $rootfs to measure it (no zstd?)"
+    fi
     if [[ -n "${V86_ALL_REPORT:-}" ]]; then         # run by --all: report the files for its list
         stat -c '%s %n' "$IMAGE_DIR/v86-$NAME-bzImage" "$IMAGE_DIR/$rootfs" >> "$V86_ALL_REPORT"
+        ((XZ)) || echo "$unpacked $IMAGE_DIR/$rootfs unpacked (the page's initrd size)" >> "$V86_ALL_REPORT"
     fi
-    # RAM: v86 loads the initrd at 64 MB; while unpacking, the kernel holds the compressed
-    # file, the unpacked rootfs (it stays in RAM) and the decompressor's window (xz 32 MB,
-    # zstd 8 MB). Then room for programs: 64 MB console, 128 MB with X. Rounded up to 64 MB.
+    # RAM: v86 loads the initrd at 64 MB; while unpacking, the kernel holds the initrd as
+    # loaded and the unpacked rootfs (it stays in RAM). .zst: the initrd is already unpacked,
+    # so twice the unpacked size (GUI max-env: 301 MB unpacked needs 768 MB; 640 and 704 hang).
+    # xz: the compressed file and the decompressor's 32 MB window. Then room for programs:
+    # 64 MB console, 128 MB with X. Rounded up to 64 MB.
     local comp mem
     comp=$(( ($(stat -c %s "$img/rootfs.cpio.$ROOTFS_EXT") + 1048575) / 1048576 ))
-    mem=$(( ${UNPACKED_MB:-200} + comp + 24 + ( XZ ? 32 : 8 ) + ( GUI ? 128 : 64 ) ))
-    (( mem < 64 + comp + 32 )) && mem=$(( 64 + comp + 32 ))
+    if ((XZ)); then
+        mem=$(( ${UNPACKED_MB:-200} + comp + 24 + 32 + ( GUI ? 128 : 64 ) ))
+        (( mem < 64 + comp + 32 )) && mem=$(( 64 + comp + 32 ))
+    else
+        mem=$(( 2 * ( (unpacked + 1048575) / 1048576 ) + 24 + ( GUI ? 128 : 64 ) ))
+    fi
     mem=$(( (mem + 63) / 64 * 64 ))
     step "Done in $((SECONDS / 60))m$((SECONDS % 60))s"
     ls -lh "$IMAGE_DIR/v86-$NAME-bzImage" "$IMAGE_DIR/$rootfs"
     # The page's V86 settings for this image, with each file's size in bytes: v86 uses it
-    # for its download progress when the server doesn't send one. Only printed: IMAGE_DIR
+    # for its download progress when the server doesn't send one, and for a .zst file it
+    # is the UNPACKED size (v86 unpacks it to that many bytes). Only printed: IMAGE_DIR
     # gets just the two images.
     ksize=$(stat -c %s "$IMAGE_DIR/v86-$NAME-bzImage") rsize=$(stat -c %s "$IMAGE_DIR/$rootfs")
+    if ((!XZ)); then
+        msg "rootfs $rootfs: $rsize bytes to download, $unpacked bytes unpacked: the page's initrd size is the unpacked one ($unpacked)"
+        rsize=$unpacked
+    fi
     echo
     cat <<EOF
       var emulator = window.emulator = new V86({
@@ -4918,7 +4940,7 @@ $( ((SMP)) && printf '%s\n' \
           bios:     { url: "/bios/seabios.bin" },
           vga_bios: { url: "/bios/vgabios.bin" },   // required: the VESA boot mode comes from this BIOS
           bzimage:  { url: "${IMAGE_URL}v86-$NAME-bzImage", size: $ksize },
-          initrd:   { url: "${IMAGE_URL}$rootfs", size: $rsize },$( ((XZ)) || echo '   // keep .zstd, not .zst: see build.sh')
+          initrd:   { url: "${IMAGE_URL}$rootfs", size: $rsize },$( ((XZ)) || echo '   // .zst: v86 unpacks it; size: the UNPACKED size')
           net_devices: [
               { type: "ne2k",   relay_url: "wss://relay.widgetry.org/" },  // internet (DHCP from the relay)
               { type: "virtio", relay_url: "inbrowser" },                  // other v86 pages in this browser
