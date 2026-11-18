@@ -6,6 +6,7 @@ pub mod cpu;
 pub mod decoded;
 pub mod dma;
 pub mod floppy;
+pub mod firmware_rom;
 pub mod fpu;
 pub mod ide;
 pub mod global_pointers;

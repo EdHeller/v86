@@ -2093,7 +2093,12 @@ CPU.prototype.load_bios = function()
         // older versions of seabios
         this.write_blob(vga_bios8, 0xC0000);
 
-        // newer versions of seabios (needs to match pci rom address, see vga.js)
+        // newer versions of seabios (needs to match pci rom address, see vga.js); the core serves the reads
+        // (src/rust/cpu/firmware_rom.rs), this is the range's entry and the fallback
+        {
+            const at = this.wm.exports["firmware_vga_rom_buffer"](vga_bios8.length) >>> 0;
+            new Uint8Array(this.wasm_memory.buffer, at, vga_bios8.length).set(vga_bios8);
+        }
         this.io.mmap_register(0xFEB00000, 0x100000,
             function(addr)
             {
@@ -2117,7 +2122,8 @@ CPU.prototype.load_bios = function()
         dbg_log("Warning: No VGA BIOS");
     }
 
-    // seabios expects the bios to be mapped to 0xFFF00000 also
+    // seabios expects the bios to be mapped to 0xFFF00000 also (served by the core: src/rust/cpu/firmware_rom.rs)
+    this.wm.exports["firmware_bios_alias"]();
     this.io.mmap_register(0xFFF00000, 0x100000,
         function(addr)
         {

@@ -320,7 +320,8 @@ when due. Check per device: Alpine boots on both cores, a serial login, `tools/p
 | VMware backdoor pointer (GETVERSION, absolute pointer, packet queue) | `vmware.js` (mouse events, clipboard, GETTIME) | `vmware.rs` | ✅ 2026-11-17; `tests/devices/vmware.js` same on old and new |
 | vmware_svga, virtio-gpu (shared with ARM) | the GPU protocols | | ⬜ renderer bridges: stay JavaScript |
 | Port table: which accesses a JavaScript device answers (`ports.rs`); port 0x92 | `io.js` keeps it in step | `ports.rs` | ✅ 2026-11-15: accesses nobody answers return the empty port's value in the core |
-| Port and MMIO handler tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | ⬜ last |
+| Firmware MMIO: the VGA option ROM at 0xFEB00000, the BIOS alias at 0xFFF00000 | `cpu.js` load_bios (hands them over; registers the ranges) | `firmware_rom.rs` | ✅ 2026-11-18; calls into JavaScript per buildroot boot 10,052 -> 967 (port I/O 437, the timer pass 530) |
+| Port and MMIO handler tables (`io.js`), machine setup and snapshots (`cpu.js`, `state.js`) | 3,800 | | stays: the tables hold the closures of the devices that stay JavaScript (renderers, 9p, network, images); setup builds those objects. What reaches JavaScript at run time is now firmware-time setup only |
 | `src/browser/` (DOM, canvas, audio, network, files) | 13,000 | | stays JavaScript |
 
 **Still JavaScript (2026-11-17)**, and why. Boot crossings into JavaScript on i686 buildroot to a shell: about 10,000,

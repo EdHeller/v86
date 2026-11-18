@@ -2346,7 +2346,11 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
     let stop_addr = block.end_addr;
 
     // First iteration of do-while assumes the caller confirms this condition
-    dbg_assert!(instruction_fits_in_page(start_addr, &ctx.cpu));
+    // (or the block is one crossing instruction)
+    dbg_assert!(
+        instruction_fits_in_page(start_addr, &ctx.cpu)
+            || block.crossing && start_addr == last_instruction_addr
+    );
 
     if cfg!(feature = "profiler") {
         ctx.builder.const_i32(start_addr as i32);
