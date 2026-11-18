@@ -295,7 +295,10 @@ loop -11 %, md5 -23 %, sha256 -66 %, gzip -11 %, fork +2 %).
 4. ✅ 2026-11-18 The fork workload is not slower: on the virtual clock (4 rounds) 500 forks take 3.45 s against
    3.55 s on `Vibe-Claude` (-3 %, noisy; the kit's +2 % was noise). Its time: compiled code 54 %, interpreter 18 %
    (cold kernel paths of exec), dispatch 13 %; nothing particular to fork stands out.
-5. ⬜ Compiled code of gzip's hot loops: memory fast paths, flags, register moves.
+5. ✅ 2026-11-18 Compiled code of gzip's hot loop (longest_match: byte loads and `cmp m8, r8; jne`): a cmp whose
+   flags only the next jcc reads computes the jump's condition into a local at the cmp (`Instruction::Condition`;
+   any size, memory operands), instead of storing the lazy flags and reloading them. Kit, 5 rounds against the
+   build before: md5 -3.9 %, gzip -2.5 %, sha256 -0.6 %, fork faster in 4 of 5 rounds. Test `jit/29_cmp_condition`.
 6. ⬜ The experiments lost in V8 (chaining, nested calls, bigger modules) measured in Firefox.
 7. ⬜ Refresh the benchmark kit.
 
