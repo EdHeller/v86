@@ -276,6 +276,15 @@ libv86.js fails with "Missing import").
      `tests/a64/boot.mjs`, `tests/virtio_gpu.mjs`), snapshots from the step before restore, and the micro benchmarks
      (`port`, `pit`, `interrupt`, `rdtsc`) against the JavaScript version. Same rule for ARM (`src/arm/`) after x86.
 
+## Fixed 2026-11-18: hang at "Run /init" (the user's buildroot no-GUI image, learncode.nekoweb.org)
+
+A block of only an instruction that crosses into the next page (allowed since the crossing-call change) whose
+check of the next page's bytes failed (that page not in the TLB) returned without running anything; the
+dispatcher called it again at the same eip, forever: the tab froze (Firefox and Chrome). Now the dispatcher runs
+the instruction interpreted when a compiled run made no progress (`cycle_internal`). The user's image boots to its
+prompt (5 of 5 on v86.wasm, 2 of 2 on v86-fallback.wasm; `set_jit_config(71, 0)` had made it boot too). No small
+test reproduces it (the block, its entry and a TLB miss of only the next page together); the image is the check.
+
 ## Profile (2026-11-18, rust c3368cc): where the time goes
 
 Buildroot boot + the kit's five workloads, host clock (`--clock real`; the virtual clock hangs on this sequence),

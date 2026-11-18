@@ -3624,6 +3624,15 @@ pub unsafe fn cycle_internal() {
         {
             in_jit = false;
         }
+        if *instruction_counter == initial_instruction_counter && *instruction_pointer == initial_eip {
+            // nothing ran: a block of only an instruction that crosses into the next page, whose check of the next
+            // page's bytes failed (jit::gen_crossing_guard; say that page is not in the TLB yet). The interpreter
+            // runs it, and so makes progress: calling the block again would fail the same way, forever
+            *previous_ip = initial_eip;
+            let phys_addr = return_on_pagefault!(get_phys_eip());
+            jit_run_interpreted(phys_addr);
+            return;
+        }
         profiler::stat_increment_by(
             stat::RUN_FROM_CACHE_STEPS,
             (*instruction_counter - initial_instruction_counter) as u64,

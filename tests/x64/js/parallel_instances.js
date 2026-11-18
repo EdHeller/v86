@@ -16,7 +16,9 @@ if(!fs.existsSync(wasm))
 const { instantiate_v86, instantiate_relocated } = await import("../../../src/parallel/relocate.js");
 
 const bytes = new Uint8Array(fs.readFileSync(wasm));
-const stubs = () => ({
+// (any other function the core imports: a stub returning 0, so new imports do not break this test)
+const function_imports = WebAssembly.Module.imports(new WebAssembly.Module(bytes)).filter(i => i.module === "env" && i.kind === "function").map(i => i.name);
+const stubs = () => with_defaults({
     mmap_read8() { return 0; }, mmap_read32() { return 0; }, mmap_write8() {}, mmap_write16() {}, mmap_write32() {}, mmap_write64() {}, mmap_write128() {},
     io_port_read8() { return 0; }, io_port_read16() { return 0; }, io_port_read32() { return 0; },
     io_port_write8() {}, io_port_write16() {}, io_port_write32() {},
@@ -26,6 +28,11 @@ const stubs = () => ({
     cpu_exception_hook() { return false; }, dbg_trace_from_wasm() {}, log_from_wasm() {},
     __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 1024 + 5000 }),
 });
+function with_defaults(env)
+{
+    for(const name of function_imports) if(!(name in env)) env[name] = () => 0;
+    return env;
+}
 
 const env0 = stubs();
 const { instance: a } = await instantiate_v86(bytes, { env: env0 });
