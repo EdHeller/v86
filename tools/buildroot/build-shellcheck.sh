@@ -12,17 +12,28 @@
 #   sudo ./build-shellcheck.sh --clean     delete the build system it made (keeps the binary)
 #
 # Writes shellcheck-<version>-i386 next to this script (older ones are deleted: build.sh takes
-# the last one it finds).
+# the last one it finds). Measured: ShellCheck 0.11.0 (and 0.10.0) with GHC 9.8.4, 18 MB, needing
+# only glibc and GMP; build.sh packs it with upx to 4.3 MB when upx is installed (Debian's: 56 MB).
+# A first run takes ~30-60 minutes (the Debian system, GHC, ~40 Haskell libraries); later runs reuse
+# them.
 #
-# How: a Debian i386 system in a folder (debootstrap, ~2 GB with the compiler), entered with
-# chroot: an x86_64 Linux kernel runs i386 programs directly (WSL2 too), no emulator. In it,
-# Debian's Haskell compiler and libraries (apt-get build-dep shellcheck) and Debian's ShellCheck
-# source build the program with -split-sections, then strip it. The libraries it needs are the
-# ones build.sh adds from Buildroot (GMP, libffi); Debian 13's glibc (2.41) is older than the
-# image's, which is what a program built elsewhere needs. The build system stays for the next
-# run (SC_WORK, default /var/tmp/v86-shellcheck): only --clean removes it.
+# How: a Debian i386 system in a folder (debootstrap), entered with chroot: an x86_64 Linux
+# kernel runs i386 programs directly (WSL2 too), no emulator. In it, GHC's own i386 release
+# (downloads.haskell.org, checked against its SHA256SUMS) and cabal build ShellCheck and every
+# Haskell library it uses from Hackage's source, all with -split-sections (each function in its
+# own section) so the linker keeps only what the program uses, then strip it. That is what makes
+# it small. Not Debian's GHC: on i386 it is "unregisterised" (compiles through C, no object
+# splitting), and everything built with it, Debian's own package too, stays ~56 MB.
+# The C libraries it needs are the ones build.sh adds from Buildroot (GMP, libffi, libnuma);
+# Debian 13's glibc (2.41) is older than the image's, which is what a program built elsewhere
+# needs. The build system and cabal's cache stay for the next run (SC_WORK, default
+# /var/tmp/v86-shellcheck, ~3 GB): only --clean removes them.
 #
 # Settings (environment):
+#   SC_VERSION=0.10.0                     the ShellCheck release on Hackage (default: the newest)
+#   SC_GHC=9.8.4                          GHC's release (an i386 Linux build of it must exist on
+#                                         downloads.haskell.org; 9.8 is the newest Debian 13's
+#                                         cabal 3.10 works with)
 #   SC_SUITE=trixie                       the Debian release (its glibc must not be newer than
 #                                         the image's: Buildroot 2026.08 has 2.44)
 #   SC_MIRROR=https://deb.debian.org/debian
@@ -31,7 +42,8 @@
 #                                         http_proxy / https_proxy / no_proxy are passed through.
 #                                         (sudo drops them: sudo -E, or sudo env https_proxy=... ./build-shellcheck.sh)
 #
-# Needs: root (debootstrap, chroot, mount), debootstrap, an x86_64 or i686 Linux host.
+# Needs: root (debootstrap, chroot, mount), debootstrap, an x86_64 or i686 Linux host, and
+# access to deb.debian.org, downloads.haskell.org and hackage.haskell.org.
 #   sudo apt-get install debootstrap
 set -euo pipefail
 
@@ -39,6 +51,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SC_SUITE=${SC_SUITE:-trixie}
 SC_MIRROR=${SC_MIRROR:-https://deb.debian.org/debian}
 SC_WORK=${SC_WORK:-/var/tmp/v86-shellcheck}
+SC_GHC=${SC_GHC:-9.8.4}
 ROOT="$SC_WORK/$SC_SUITE-i386"
 
 msg() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -86,34 +99,53 @@ fi
 in_root() { chroot "$ROOT" /usr/bin/env -i HOME=/root LANG=C.UTF-8 PATH=/usr/sbin:/usr/bin:/sbin:/bin \
     DEBIAN_FRONTEND=noninteractive "${proxy_env[@]}" /bin/bash -euo pipefail -c "$1"; }
 
-msg "the compiler and ShellCheck's libraries (apt-get build-dep shellcheck)"
+msg "cabal (Debian) and the C libraries the Haskell ones bind to"
 in_root "
-cat > /etc/apt/sources.list <<EOF
-deb $SC_MIRROR $SC_SUITE main
-deb-src $SC_MIRROR $SC_SUITE main
-EOF
+echo 'deb $SC_MIRROR $SC_SUITE main' > /etc/apt/sources.list
 apt-get update -q
-apt-get install -y -q --no-install-recommends dpkg-dev ca-certificates binutils file
-apt-get build-dep -y -q shellcheck
+apt-get install -y -q --no-install-recommends cabal-install libgmp-dev libffi-dev libnuma-dev \
+    zlib1g-dev libtinfo6 ca-certificates curl xz-utils make gcc g++ libc6-dev binutils file
 "
 
-# ── ShellCheck: Debian's source, built with -split-sections ─────────────────────
-msg "ShellCheck's source and the build"
+# ── GHC: its own i386 release (registerised: real machine code, split sections) ─
+if ! in_root "[ -x /opt/ghc-$SC_GHC/bin/ghc ]" 2>/dev/null; then
+    msg "GHC $SC_GHC (i386 release from downloads.haskell.org)"
+    in_root "
+mkdir -p /opt/src && cd /opt/src
+base=https://downloads.haskell.org/~ghc/$SC_GHC
+curl -fsSL -o SHA256SUMS \$base/SHA256SUMS
+f=''
+for d in deb10 deb9; do
+    grep -q \"ghc-$SC_GHC-i386-\$d-linux.tar.xz\$\" SHA256SUMS && { f=ghc-$SC_GHC-i386-\$d-linux.tar.xz; break; }
+done
+[ -n \"\$f\" ] || { echo 'no i386 Linux build of GHC $SC_GHC (SC_GHC=...)' >&2; exit 1; }
+curl -fsSL -o \$f \$base/\$f
+grep \" ./\$f\$\\| \$f\$\" SHA256SUMS | sed 's| \./| |' | sha256sum -c -
+find . -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + && tar xJf \$f
+cd \$(find . -maxdepth 1 -type d -name 'ghc-$SC_GHC*' | head -n1)
+./configure --prefix=/opt/ghc-$SC_GHC >/dev/null
+make install >/dev/null
+cd / && rm -rf /opt/src
+"
+fi
+# (registerised: native code generator, -split-sections works; Debian's i386 GHC isn't)
+in_root "/opt/ghc-$SC_GHC/bin/ghc --info | grep -q '\"Unregisterised\",\"NO\"'" \
+    || die "GHC $SC_GHC is unregisterised: -split-sections won't work and the program would stay big"
+
+# ── ShellCheck and its libraries from Hackage, all with -split-sections ────────
+msg "ShellCheck${SC_VERSION:+ $SC_VERSION} and its libraries from Hackage (a first run builds ~40 libraries)"
 in_root "
+export PATH=/opt/ghc-$SC_GHC/bin:\$PATH
+cabal update -v1
 rm -rf /build && mkdir -p /build && cd /build
-apt-get source -q shellcheck >/dev/null
-cd \$(find . -maxdepth 1 -type d -name 'shellcheck-*' | head -n1)
-[ -f Setup.hs ] || [ -f Setup.lhs ] || printf 'import Distribution.Simple\nmain = defaultMain\n' > Setup.hs
-ghc -v0 --make Setup -o /build/setup
-# -split-sections: each function in its own section, so the linker drops what the program
-# doesn't use (the Haskell libraries are linked in statically)
-/build/setup configure --prefix=/opt/sc --disable-tests --disable-benchmarks \
-    --disable-library-profiling --disable-profiling --disable-shared --disable-debug-info \
-    --ghc-options='-O1 -split-sections -optl-Wl,--gc-sections'
-/build/setup build exe:shellcheck
-bin=\$(find dist -type f -name shellcheck -perm -u+x | head -n1)
-[ -n \"\$bin\" ] || { echo 'no shellcheck binary was built' >&2; exit 1; }
-strip --strip-all \"\$bin\" -o /build/shellcheck
+cabal get -v1 ShellCheck${SC_VERSION:+-$SC_VERSION}
+cd \$(find . -maxdepth 1 -type d -name 'ShellCheck-*' | head -n1)
+# for every package, the libraries too (a command-line flag would reach only ShellCheck itself)
+printf '%s\n' 'package *' '  split-sections: True' '  executable-stripping: True' \
+    '  library-profiling: False' '  documentation: False' '  optimization: 1' \
+    '  ghc-options: -split-sections' 'tests: False' 'benchmarks: False' > cabal.project.local
+cabal build -v1 -w /opt/ghc-$SC_GHC/bin/ghc exe:shellcheck --ghc-options='-optl-Wl,--gc-sections'
+strip --strip-all \$(cabal list-bin -w /opt/ghc-$SC_GHC/bin/ghc exe:shellcheck) -o /build/shellcheck
 /build/shellcheck --version
 file /build/shellcheck
 "
@@ -122,9 +154,10 @@ file /build/shellcheck
 ver=$(chroot "$ROOT" /build/shellcheck --version | sed -n 's/^version: *//p')
 [[ "$ver" =~ ^[0-9][0-9.]*$ ]] || die "the new shellcheck doesn't report a version"
 # a test: one warning (SC2086, unquoted variable) in a two-line script
+# (it exits with 1 when it reports something: expected here)
 printf '#!/bin/sh\necho $1\n' > "$ROOT/build/t.sh"
-chroot "$ROOT" /build/shellcheck -f gcc /build/t.sh | grep -q SC2086 \
-    || die "the new shellcheck doesn't find the expected warning"
+report=$(chroot "$ROOT" /build/shellcheck -f gcc /build/t.sh || true)
+grep -q SC2086 <<<"$report" || die "the new shellcheck doesn't find the expected warning: $report"
 # its libraries: glibc, and what build.sh adds from Buildroot (sc_libs in build.sh)
 bad=$(readelf -d "$ROOT/build/shellcheck" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' \
     | grep -vxE 'libc\.so\.6|libm\.so\.6|libpthread\.so\.0|librt\.so\.1|libdl\.so\.2|libutil\.so\.1|ld-linux\.so\.2|libgmp\.so\.10|libffi\.so\.8|libnuma\.so\.1' || true)

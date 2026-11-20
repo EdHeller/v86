@@ -35,3 +35,4 @@ __pycache__/
 /tools/v86-bench/bios
 /tools/v86-bench/images
 tools/buildroot/downloads/
+/tools/buildroot/shellcheck-*-i386
