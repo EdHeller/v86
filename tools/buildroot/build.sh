@@ -111,11 +111,9 @@
 #   --beep                the bell starts on (the default: text consoles beep through the
 #                         PC speaker, xterm through the sound card)
 #   --niceness-fix-off    the desktop's terminal shells run at the normal nice 0 instead of
-#                         nice 1. At nice 0 a program that floods the terminal (yes) can
-#                         freeze xterm, Ctrl+C included, on the browser's slower CPU.
-#                         KNOWN ISSUE: nice 1 doesn't always help either; yes can still
-#                         stop answering Ctrl+C, seemingly more often the longer the VM has
-#                         run. Workaround: see Readme.md (Known issues)
+#                         nice 1. (A program that flooded the terminal (yes) froze xterm,
+#                         Ctrl+C included, on the browser's slower CPU; nice 1 didn't always
+#                         help. The fix is xterm's read sizes in ~/.Xdefaults, see there.)
 #   --niceness-fix        terminal shells at nice 1, one step below xterm (the default;
 #                         undoes an earlier --niceness-fix-off)
 #   --bash-dev            shell-script development kit: GNU sed, awk (gawk), grep, find/xargs,
@@ -3220,6 +3218,14 @@ XTerm*loginShell:  true
 XTerm*locale:      false
 XTerm*utf8:        1
 XTerm*utf8Title:   true
+! A program that floods the terminal (yes) froze xterm on the emulated CPU, Ctrl+C included: xterm
+! handles keys and redraws only after a pty read that finds nothing, or after maxBufSize bytes read
+! in full minBufSize pieces (xterm 410, charproc.c in_put). xterm parses slower than yes refills the
+! pty, so a read never finds it empty, and 4096-byte reads come back partial, ending the run before
+! maxBufSize. 1024-byte reads come back full: xterm stops every 32 KB for keys and the screen.
+! Measured: Ctrl+C ends yes in 0.2-0.7 s (it never did before); printing costs ~20 % more
+XTerm*minBufSize:  1024
+XTerm*maxBufSize:  32768
 ! Text: xterm's classic 6x13 "fixed" font (misc-fixed, ~4,100 characters), drawn through
 ! Xft so other fonts fill in what it lacks: emoji in colour from Twemoji (listed second, so
 ! it is tried first), CJK and the rest from Unifont. Colour mode (emojistyle) also hides
