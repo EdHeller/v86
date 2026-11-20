@@ -4749,6 +4749,8 @@ verify_image() {
     ((KBD)) || ! grep -qE '(^|/)usr/bin/loadkeys$' <<<"$list" || { warn "image without --kbd contains loadkeys"; ok=0; }
     ((WORDS)) || ! grep -qE '(^|/)usr/share/dict/words$' <<<"$list" || { warn "--no-words image contains /usr/share/dict/words"; ok=0; }
     ((GUI && ADIE)) || ! grep -qE '(^|/)usr/bin/adie$' <<<"$list" || { warn "image without Adie contains adie"; ok=0; }
+    # the page's filesystem: {} (virtio-9p, tag host9p) is mounted at /mnt/9p by S50mount9p
+    grep -qE '(^|/)etc/init\.d/S50mount9p$' <<<"$list" || { warn "image without the 9p mount (etc/init.d/S50mount9p)"; ok=0; }
     ((ok)) || die "the packed image is incomplete (see above)"
     UNPACKED_BYTES=$("$z" -dc "$img" | wc -c)
     mb=$(( UNPACKED_BYTES / 1048576 ))
