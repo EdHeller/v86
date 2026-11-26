@@ -2732,6 +2732,8 @@ pub static mut NESTED_CALLS: bool = false;
 /// how deep they are nested now; at most NESTED_CALL_DEPTH
 pub static mut NESTED_CALL_LEVEL: i32 = 0;
 pub const NESTED_CALL_DEPTH: i32 = 16;
+/// set_jit_config 27: the depth limit generated into new modules (default NESTED_CALL_DEPTH)
+pub static mut NESTED_CALL_DEPTH_NOW: i32 = NESTED_CALL_DEPTH;
 /// nested calls made, and those after which the caller went on (get_jit_config(32), (33))
 pub static mut NESTED_CALLS_MADE: u64 = 0;
 /// (set_jit_config(22, 1): count them)
@@ -3377,6 +3379,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         22 => NESTED_CALL_STATS = value != 0,
         23 => FLAG_ELISION_JCC = value != 0,
         24 => REP_STRING_CONTINUE = value != 0,
+        27 => NESTED_CALL_DEPTH_NOW = (value as i32).max(1),
         25 => codegen::PAGE_ANCHORS = value != 0,
         26 => LOOP_EIP_ON_EXIT = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,

@@ -3100,7 +3100,7 @@ pub fn gen_nested_call(
 /// The function of gen_nested_call: eip (the callee) -> the state of this module to go on at, or -1
 fn gen_nested_call_body(b: &mut WasmBuilder, wasm_table_index: u16, state_flags: u8) {
     use crate::cpu::cpu::{interrupt_shadow, tlb_code, Code, FLAG_TRAP, IRQ_CHECK, WASM_TABLE_OFFSET};
-    use crate::jit::{NESTED_CALL_DEPTH, NESTED_CALL_LEVEL};
+    use crate::jit::NESTED_CALL_LEVEL;
     use std::mem::offset_of;
 
     let level = (&raw const NESTED_CALL_LEVEL) as u32;
@@ -3116,7 +3116,7 @@ fn gen_nested_call_body(b: &mut WasmBuilder, wasm_table_index: u16, state_flags:
     );
 
     b.load_fixed_i32(level);
-    b.const_i32(NESTED_CALL_DEPTH);
+    b.const_i32(unsafe { crate::jit::NESTED_CALL_DEPTH_NOW });
     b.lt_i32();
     b.if_void();
     {

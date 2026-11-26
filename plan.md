@@ -354,6 +354,14 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   instructions at a time, the hot page's heat climbing to 700 k+ meanwhile. Not better: 16 compile slots (boot
   +6.5 %, noise), threshold 100 k instead of 200 k (+5.0 %, noise; 117 modules instead of 92). The engine's compile
   throughput is the limit; nothing cheap left here.
+- 2026-11-26 #31 nested calls in Firefox: Firefox 161 headless runs the kit (tools/bench-kit: bench.html with
+  `builds=new,new%2321=1`, `auto`, `report=/log`; serve.mjs collects the lines). 4 rounds, the same core:
+  nested calls (21=1): boot -0.9 %, shell loop -8.2 % (every round), md5 -9.5 %, sha256 +7.3 %, gzip -2.2 %,
+  fork +2.7 % (every round): about -4 % of the whole sequence. Page anchors off (25=0) in Firefox: sha256 +12.4 %
+  (every round), the rest within noise: anchors help there too. In V8 nested calls make 8.7 M calls on sha256 +
+  fork, 71 % of which the caller goes on after; fork +5.6 % (every round). The depth limit (new set_jit_config 27:
+  1, 4, 16) changes nothing measurable: the fork loss is not deep nesting. Left off by default (V8 loses); a page
+  could turn it on for Firefox (`set_jit_config(21, 1)` when navigator.userAgent has "Firefox").
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
