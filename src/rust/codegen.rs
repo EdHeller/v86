@@ -673,6 +673,101 @@ pub fn gen_safe_write128(
     )
 }
 
+/// The displacement range around a register that its page anchor covers (gen_access_anchor): [reg - W, reg + W)
+const ANCHOR_WINDOW: i32 = 128;
+/// set_jit_config 25: page anchors on
+pub static mut PAGE_ANCHORS: bool = true;
+
+pub enum PageAnchorUse {
+    /// test the anchor's entry (a local) before the full TLB check
+    Check(WasmLocal),
+    /// no anchor for the register yet: after the access, its TLB entry becomes one (gen_anchor_from_entry)
+    Create { reg: u32, version: u32 },
+}
+
+/// For an access of `bytes` at address_local, when that address is a register plus a small displacement (the hint
+/// modrm::gen left, for the local it was stored in) and the register is unchanged since: the register's page anchor
+/// in this basic block, a local with the TLB entry of the register's page (or 0 when the register is too near its
+/// page's edge for every displacement in the window to stay in the page). An access then only tests that entry,
+/// without loading it or checking for a page crossing; when it fails, the full check runs as before. The first such
+/// access makes the anchor from the entry its own check loaded.
+fn gen_access_anchor(ctx: &mut JitContext, address_local: &WasmLocal, bytes: u32) -> Option<PageAnchorUse> {
+    if !unsafe { PAGE_ANCHORS } {
+        return None;
+    }
+    let hint = ctx.address_hint?;
+    if ctx.builder.local_last_write(address_local) != hint.pos
+        || hint.disp < -ANCHOR_WINDOW
+        || hint.disp + bytes as i32 > ANCHOR_WINDOW
+    {
+        return None;
+    }
+    let version = ctx.builder.local_version(&ctx.reg(hint.reg));
+    if version != hint.reg_version {
+        return None;
+    }
+    for a in &ctx.anchors {
+        if a.reg == hint.reg && a.version == version && ctx.builder.structure_token_valid(a.token) {
+            return Some(PageAnchorUse::Check(a.local.unsafe_clone()));
+        }
+    }
+    if ctx.anchors.len() >= 8 {
+        return None;
+    }
+    Some(PageAnchorUse::Create { reg: hint.reg, version })
+}
+
+/// After an access (at the level of its start) whose check loaded entry_local: the register's anchor, the entry if
+/// W <= (reg & 0xFFF) <= 0x1000 - W, else 0. (After the slow path entry_local is not a TLB entry, but its lowest bit
+/// is clear: it never passes an anchor check)
+fn gen_anchor_from_entry(ctx: &mut JitContext, reg: u32, version: u32, entry_local: &WasmLocal) {
+    let reg_local = ctx.reg(reg);
+    if ctx.builder.local_version(&reg_local) != version {
+        return;
+    }
+    ctx.builder.get_local(entry_local);
+    ctx.builder.const_i32(0);
+    ctx.builder.get_local(&reg_local);
+    ctx.builder.const_i32(0xFFF);
+    ctx.builder.and_i32();
+    ctx.builder.const_i32(ANCHOR_WINDOW);
+    ctx.builder.sub_i32();
+    ctx.builder.const_i32(0x1000 - 2 * ANCHOR_WINDOW);
+    ctx.builder.le_u_i32();
+    ctx.builder.select();
+    let local = ctx.builder.set_new_local();
+    gen_profiler_stat_increment(ctx.builder, profiler::stat::PAGE_ANCHOR_LOADED);
+    ctx.anchors.push(crate::jit::PageAnchor {
+        reg,
+        version,
+        token: ctx.builder.structure_token(),
+        local,
+    });
+}
+
+/// In an access's TLB check: the anchor's entry into entry_local (and the outcome into flag), on to cont if it allows
+/// the access
+fn gen_anchor_check(
+    ctx: &mut JitContext,
+    anchor: &WasmLocal,
+    entry_local: &WasmLocal,
+    mask: i32,
+    cont: Label,
+    flag: Option<&WasmLocal>,
+) {
+    gen_profiler_stat_increment(ctx.builder, profiler::stat::PAGE_ANCHOR_CHECK);
+    ctx.builder.get_local(anchor);
+    ctx.builder.tee_local(entry_local);
+    ctx.builder.const_i32(mask);
+    ctx.builder.and_i32();
+    ctx.builder.const_i32(TLB_VALID as i32);
+    ctx.builder.eq_i32();
+    if let Some(flag) = flag {
+        ctx.builder.tee_local(flag);
+    }
+    ctx.builder.br_if(cont);
+}
+
 fn gen_safe_read(
     ctx: &mut JitContext,
     bits: BitSize,
@@ -688,7 +783,13 @@ fn gen_safe_read(
     //   if page_fault: goto exit-with-pagefault
     //   fast: mem[(entry & ~0xFFF) ^ addr]
 
+    let anchor = gen_access_anchor(ctx, address_local, bits.bytes());
+    let entry_local = ctx.builder.alloc_local();
     let cont = ctx.builder.block_void();
+    if let Some(PageAnchorUse::Check(anchor)) = &anchor {
+        // the page of the register the address is relative to, checked once in the basic block
+        gen_anchor_check(ctx, anchor, &entry_local, (0xFFF & !TLB_READONLY & !TLB_GLOBAL & !TLB_HAS_CODE & !TLB_NO_EXEC & !(if ctx.cpu.cpl3() { 0 } else { TLB_NO_USER })) as i32, cont, None);
+    }
     ctx.builder.get_local(&address_local);
 
     ctx.builder.const_i32(12);
@@ -698,7 +799,7 @@ fn gen_safe_read(
 
     ctx.builder
         .load_aligned_i32(unsafe { &tlb_data[0] as *const i32 as u32 });
-    let entry_local = ctx.builder.tee_new_local();
+    ctx.builder.tee_local(&entry_local);
 
     ctx.builder.const_i32(
         (0xFFF
@@ -810,6 +911,9 @@ fn gen_safe_read(
         },
     }
 
+    if let Some(PageAnchorUse::Create { reg, version }) = anchor {
+        gen_anchor_from_entry(ctx, reg, version, &entry_local);
+    }
     ctx.builder.free_local(entry_local);
 }
 
@@ -905,7 +1009,13 @@ fn gen_safe_write(
     //   if page_fault: goto exit-with-pagefault
     //   fast: mem[(entry & ~0xFFF) ^ addr] <- value
 
+    let anchor = gen_access_anchor(ctx, address_local, bits.bytes());
+    let entry_local = ctx.builder.alloc_local();
     let cont = ctx.builder.block_void();
+    if let Some(PageAnchorUse::Check(anchor)) = &anchor {
+        // the page of the register the address is relative to, checked once in the basic block
+        gen_anchor_check(ctx, anchor, &entry_local, (0xFFF & !TLB_GLOBAL & !TLB_NO_EXEC & !(if ctx.cpu.cpl3() { 0 } else { TLB_NO_USER })) as i32, cont, None);
+    }
     ctx.builder.get_local(&address_local);
 
     ctx.builder.const_i32(12);
@@ -915,7 +1025,7 @@ fn gen_safe_write(
 
     ctx.builder
         .load_aligned_i32(unsafe { &tlb_data[0] as *const i32 as u32 });
-    let entry_local = ctx.builder.tee_new_local();
+    ctx.builder.tee_local(&entry_local);
 
     ctx.builder.const_i32(
         (0xFFF & !TLB_GLOBAL & !TLB_NO_EXEC & !(if ctx.cpu.cpl3() { 0 } else { TLB_NO_USER }))
@@ -1037,6 +1147,9 @@ fn gen_safe_write(
         BitSize::DQWORD => {}, // handled above
     }
 
+    if let Some(PageAnchorUse::Create { reg, version }) = anchor {
+        gen_anchor_from_entry(ctx, reg, version, &entry_local);
+    }
     ctx.builder.free_local(entry_local);
 }
 
@@ -1059,7 +1172,14 @@ pub fn gen_safe_read_write(
     //   if !can_use_fast_path { safe_write_jit_slow(addr, value, instruction_pointer) }
     //   mem[(entry & ~0xFFF) ^ addr] <- value
 
+    let anchor = gen_access_anchor(ctx, address_local, bits.bytes());
+    let entry_local = ctx.builder.alloc_local();
+    let can_use_fast_path_local = ctx.builder.alloc_local();
     let cont = ctx.builder.block_void();
+    if let Some(PageAnchorUse::Check(anchor)) = &anchor {
+        // the page of the register the address is relative to, checked once in the basic block
+        gen_anchor_check(ctx, anchor, &entry_local, (0xFFF & !TLB_GLOBAL & !TLB_NO_EXEC & !(if ctx.cpu.cpl3() { 0 } else { TLB_NO_USER })) as i32, cont, Some(&can_use_fast_path_local));
+    }
     ctx.builder.get_local(address_local);
 
     ctx.builder.const_i32(12);
@@ -1069,7 +1189,7 @@ pub fn gen_safe_read_write(
 
     ctx.builder
         .load_aligned_i32(unsafe { &tlb_data[0] as *const i32 as u32 });
-    let entry_local = ctx.builder.tee_new_local();
+    ctx.builder.tee_local(&entry_local);
 
     ctx.builder.const_i32(
         (0xFFF & !TLB_GLOBAL & !TLB_NO_EXEC & !(if ctx.cpu.cpl3() { 0 } else { TLB_NO_USER }))
@@ -1089,7 +1209,7 @@ pub fn gen_safe_read_write(
         ctx.builder.and_i32();
     }
 
-    let can_use_fast_path_local = ctx.builder.tee_new_local();
+    ctx.builder.tee_local(&can_use_fast_path_local);
 
     ctx.builder.br_if(cont);
 
@@ -1150,6 +1270,9 @@ pub fn gen_safe_read_write(
     ctx.builder.get_local(&address_local);
     ctx.builder.xor_i32();
 
+    if let Some(PageAnchorUse::Create { reg, version }) = anchor {
+        gen_anchor_from_entry(ctx, reg, version, &entry_local);
+    }
     ctx.builder.free_local(entry_local);
     let phys_addr_local = ctx.builder.tee_new_local();
 

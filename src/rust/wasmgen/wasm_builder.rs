@@ -99,6 +99,16 @@ pub struct WasmBuilder {
     locals_written: [u64; 4],
     /// the guest register loads and stores of the main body: (start, end, local index, is a store)
     register_moves: Vec<(u32, u32, u8, bool)>,
+    /// per local: how often it was written, and the body's length before its last write (u32::MAX: in a function
+    /// besides the main one); for values that stay valid while a local is unchanged (codegen's page anchors)
+    local_versions: Box<[u32; 256]>,
+    local_last_write: Box<[u32; 256]>,
+    /// the open blocks' ids (a new one for each block and else branch), and an epoch that loops advance: see
+    /// structure_token
+    structure_ids: Vec<u32>,
+    next_structure_id: u32,
+    structure_epoch: u32,
+    in_internal: bool,
     pub arg_local_initial_state: WasmLocal,
 
     /// functions of the module besides the main one: (key, write signature, body with its local
@@ -159,6 +169,12 @@ impl WasmBuilder {
             locals_read: [0; 4],
             locals_written: [0; 4],
             register_moves: Vec::new(),
+            local_versions: Box::new([0; 256]),
+            local_last_write: Box::new([u32::MAX; 256]),
+            structure_ids: Vec::new(),
+            next_structure_id: 1,
+            structure_epoch: 0,
+            in_internal: false,
             local_count: 0,
             arg_local_initial_state: WasmLocal(0),
             internal: Vec::new(),
@@ -660,11 +676,17 @@ impl WasmBuilder {
                 let body = std::mem::take(&mut self.instruction_body);
                 let stack = std::mem::take(&mut self.label_stack);
                 let depth = std::mem::take(&mut self.label_to_depth);
+                let ids = std::mem::take(&mut self.structure_ids);
+                self.in_internal = true;
                 gen(self);
+                self.in_internal = false;
+                // (its locals are not the main body's: what was derived from them is void)
+                self.structure_epoch += 1;
                 dbg_assert!(self.label_stack.is_empty());
                 let code = std::mem::replace(&mut self.instruction_body, body);
                 self.label_stack = stack;
                 self.label_to_depth = depth;
+                self.structure_ids = ids;
                 let mut f = vec![];
                 if i32_locals > 0 {
                     f.push(1);
@@ -721,7 +743,33 @@ impl WasmBuilder {
     pub fn get_output_ptr(&self) -> *const u8 { self.output.as_ptr() }
     pub fn get_output_len(&self) -> u32 { self.output.len() as u32 }
 
+    fn note_write(&mut self, idx: u8) {
+        self.local_versions[idx as usize] = self.local_versions[idx as usize].wrapping_add(1);
+        self.local_last_write[idx as usize] =
+            if self.in_internal { u32::MAX } else { self.instruction_body.len() as u32 };
+    }
+    /// how often the local was written so far
+    pub fn local_version(&self, local: &WasmLocal) -> u32 { self.local_versions[local.idx() as usize] }
+    /// the body's length right before the local's last write (u32::MAX if unknown)
+    pub fn local_last_write(&self, local: &WasmLocal) -> u32 { self.local_last_write[local.idx() as usize] }
+
+    /// Where code is being generated, for structure_token_valid: code after this point that is dominated by it
+    /// (in the same block or one nested in it, no loop opened since, which could run it again after later code)
+    pub fn structure_token(&self) -> (u32, usize, u32) {
+        (self.structure_epoch, self.structure_ids.len(), self.structure_ids.last().copied().unwrap_or(0))
+    }
+    pub fn structure_token_valid(&self, token: (u32, usize, u32)) -> bool {
+        let (epoch, depth, id) = token;
+        epoch == self.structure_epoch
+            && self.structure_ids.len() >= depth
+            && (depth == 0 || self.structure_ids[depth - 1] == id)
+    }
+    /// what was derived before this point is not valid after it (a basic block's start: it is entered from elsewhere)
+    pub fn structure_barrier(&mut self) { self.structure_epoch += 1; }
+
     fn open_block(&mut self) -> Label {
+        self.structure_ids.push(self.next_structure_id);
+        self.next_structure_id += 1;
         let label = self.next_label;
         self.next_label = self.next_label.next();
         self.label_to_depth
@@ -730,6 +778,7 @@ impl WasmBuilder {
         label
     }
     fn close_block(&mut self) {
+        self.structure_ids.pop();
         let label = self.label_stack.pop().unwrap();
         let old_depth = self.label_to_depth.remove(&label).unwrap();
         dbg_assert!(self.label_to_depth.len() + 1 == old_depth);
@@ -757,6 +806,7 @@ impl WasmBuilder {
     #[must_use = "local allocated but not used"]
     pub fn set_new_local(&mut self) -> WasmLocal {
         let local = self.alloc_local();
+        self.note_write(local.idx());
         self.instruction_body.push(op::OP_SETLOCAL);
         self.instruction_body.push(local.idx());
         local
@@ -764,16 +814,19 @@ impl WasmBuilder {
     #[must_use = "local allocated but not used"]
     pub fn tee_new_local(&mut self) -> WasmLocal {
         let local = self.alloc_local();
+        self.note_write(local.idx());
         self.instruction_body.push(op::OP_TEELOCAL);
         self.instruction_body.push(local.idx());
         local
     }
     pub fn set_local(&mut self, local: &WasmLocal) {
+        self.note_write(local.idx());
         self.locals_written[local.idx() as usize >> 6] |= 1 << (local.idx() & 63);
         self.instruction_body.push(op::OP_SETLOCAL);
         self.instruction_body.push(local.idx());
     }
     pub fn tee_local(&mut self, local: &WasmLocal) {
+        self.note_write(local.idx());
         self.locals_written[local.idx() as usize >> 6] |= 1 << (local.idx() & 63);
         self.instruction_body.push(op::OP_TEELOCAL);
         self.instruction_body.push(local.idx());
@@ -792,6 +845,7 @@ impl WasmBuilder {
         self.register_moves.push((start, self.instruction_body.len() as u32, local.idx(), store));
     }
     pub fn set_local_untracked(&mut self, local: &WasmLocal) {
+        self.note_write(local.idx());
         self.instruction_body.push(op::OP_SETLOCAL);
         self.instruction_body.push(local.idx());
     }
@@ -1279,6 +1333,7 @@ impl WasmBuilder {
     pub fn ne_i64(&mut self) { self.instruction_body.push(op::OP_I64NE); }
 
     pub fn le_i32(&mut self) { self.instruction_body.push(op::OP_I32LES); }
+    pub fn le_u_i32(&mut self) { self.instruction_body.push(op::OP_I32LEU); }
     pub fn lt_i32(&mut self) { self.instruction_body.push(op::OP_I32LTS); }
     pub fn ge_i32(&mut self) { self.instruction_body.push(op::OP_I32GES); }
     pub fn gt_i32(&mut self) { self.instruction_body.push(op::OP_I32GTS); }
@@ -1354,10 +1409,15 @@ impl WasmBuilder {
 
     pub fn else_(&mut self) {
         dbg_assert!(!self.label_stack.is_empty());
+        if let Some(id) = self.structure_ids.last_mut() {
+            *id = self.next_structure_id;
+            self.next_structure_id += 1;
+        }
         self.instruction_body.push(op::OP_ELSE);
     }
 
     pub fn loop_void(&mut self) -> Label {
+        self.structure_epoch += 1;
         self.instruction_body.push(op::OP_LOOP);
         self.instruction_body.push(op::TYPE_VOID_BLOCK);
         self.open_block()

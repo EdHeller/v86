@@ -247,6 +247,22 @@ pub fn gen(ctx: &mut JitContext, modrm_byte: ModrmByte, esp_offset: i32) {
         ctx.builder.and_i32();
     }
     jit_add_seg_offset(ctx, modrm_byte.segment);
+
+    // register + displacement in a flat segment: a hint for the access (codegen::gen_access_anchor)
+    ctx.address_hint = None;
+    if let (Some(reg), None, false) = (modrm_byte.first_reg, modrm_byte.second_reg, modrm_byte.is_16) {
+        let prefix = ctx.cpu.prefixes & PREFIX_MASK_SEGMENT;
+        let seg = if prefix != 0 { (prefix - 1) as u32 } else { modrm_byte.segment };
+        if prefix == SEG_PREFIX_ZERO || can_optimize_get_seg(ctx, seg) {
+            let reg_version = ctx.builder.local_version(&ctx.reg(reg));
+            ctx.address_hint = Some(crate::jit::AddressHint {
+                reg,
+                disp: modrm_byte.immediate.wrapping_add(if reg == ESP { esp_offset } else { 0 }),
+                reg_version,
+                pos: ctx.builder.instruction_body_length(),
+            });
+        }
+    }
 }
 
 pub fn get_as_reg_index_if_possible(ctx: &mut JitContext, modrm_byte: &ModrmByte) -> Option<u32> {

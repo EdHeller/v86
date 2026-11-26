@@ -39,6 +39,8 @@
 //   --keys name=text         the same on the keyboard
 //   --guest-map file         also sample the guest: which of its code the instructions go to. file is the
 //                            System.map of the guest's kernel (boot it with nokaslr), or "none" for addresses
+//   --dump-modules dir[@mark] save the wasm modules the 32-bit JIT generates (after the mark) in dir, named
+//                            <eip at compile>_<physical start>_<n>.wasm (wasm2wat from wabt reads them)
 //   --step-profile           x86_64: the instructions jit64 does not compile, by opcode: those run by the
 //                            interpreter inside a compiled block, and those a block ended at
 //   --frames                 fill the screen 60 times a second as a browser does (VGA drawing; Node's screen
@@ -137,6 +139,8 @@ const base = {
     memory: +args.memory || 512, timeout: +args.timeout || 600, interval: +args.interval || 200,
     marks, stat_names, guest_profile: !!args["guest-map"], step_profile: !!args["step-profile"], count_crossings: !!args["count-crossings"], frames: !!args["frames"], check_draw: !!args["check-draw"],
     jit_config: Object.fromEntries((args["jit-config"] || []).map(split)),
+    dump_modules: args["dump-modules"] ? abs(args["dump-modules"].split("@")[0]) : undefined,
+    dump_after: args["dump-modules"] ? args["dump-modules"].split("@")[1] : undefined,
     v86: args.v86 ? JSON.parse(args.v86) : undefined,
 };
 if(!["virtual", "real"].includes(base.clock)) { console.error("--clock: virtual or real"); process.exit(1); }

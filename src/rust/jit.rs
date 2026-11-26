@@ -453,6 +453,27 @@ pub struct JitContext<'a> {
     pub flags_live_out: HashMap<u32, (bool, Vec<(bool, bool)>)>,
     /// see Instruction::Condition
     pub condition_local: WasmLocal,
+    /// the address modrm::gen computed last, when it is a register plus a displacement (codegen::gen_access_anchor)
+    pub address_hint: Option<AddressHint>,
+    /// the registers' pages whose TLB entries were loaded in this basic block (codegen::gen_access_anchor)
+    pub anchors: Vec<PageAnchor>,
+}
+
+#[derive(Copy, Clone)]
+pub struct AddressHint {
+    pub reg: u32,
+    pub disp: i32,
+    /// the register local's version (WasmBuilder::local_version) when the address was computed
+    pub reg_version: u32,
+    /// the body's length at the end of the computation: the store of the address into its local follows
+    pub pos: u32,
+}
+
+pub struct PageAnchor {
+    pub reg: u32,
+    pub version: u32,
+    pub token: (u32, usize, u32),
+    pub local: WasmLocal,
 }
 impl<'a> JitContext<'a> {
     pub fn reg(&self, i: u32) -> WasmLocal {
@@ -1566,6 +1587,8 @@ fn jit_generate_module(
         flags_jcc_only: None,
         flags_live_out,
         condition_local,
+        address_hint: None,
+        anchors: Vec::new(),
     };
 
     let entry_blocks = {
@@ -2375,6 +2398,9 @@ fn jit_generate_module(
     ctx.builder
         .free_local(ctx.instruction_counter_flushed.unsafe_clone());
     ctx.builder.free_local(ctx.condition_local.unsafe_clone());
+    for a in ctx.anchors.drain(..) {
+        ctx.builder.free_local(a.local);
+    }
 
     if unsafe { DROP_REGISTER_MOVES } {
         ctx.builder.drop_unused_register_moves();
@@ -2436,6 +2462,11 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
     ctx.cpu.eip = start_addr;
     ctx.current_instruction = Instruction::Other;
     ctx.previous_instruction = Instruction::Other;
+    // (a basic block is entered from several places: nothing loaded before it is known here)
+    for a in ctx.anchors.drain(..) {
+        ctx.builder.free_local(a.local);
+    }
+    ctx.builder.structure_barrier();
 
     let mut jcc_only = None;
     let flags_dead = if unsafe { FLAG_ELISION } {
@@ -2506,6 +2537,7 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
         let wasm_length_before = ctx.builder.instruction_body_length();
 
         ctx.start_of_current_instruction = ctx.cpu.eip;
+        ctx.address_hint = None;
         let start_eip = ctx.cpu.eip;
         let mut instruction_flags = 0;
         ctx.flags_dead = flags_dead.get(instruction_index).copied().unwrap_or(false);
@@ -3328,6 +3360,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         22 => NESTED_CALL_STATS = value != 0,
         23 => FLAG_ELISION_JCC = value != 0,
         24 => REP_STRING_CONTINUE = value != 0,
+        25 => codegen::PAGE_ANCHORS = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
         _ => dbg_assert!(false),

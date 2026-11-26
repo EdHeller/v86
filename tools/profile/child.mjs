@@ -155,6 +155,7 @@ function note_screen()
 // The guest's side: where its instructions go. The guest's instruction pointer at the end of each slice of the main
 // loop is a sample (weighted with the instructions since the last one).
 // Addresses are resolved in profile.mjs with a System.map of the guest's kernel (--guest-map).
+let dump_on = !opt.dump_after;
 const guest = new Map();
 let guest_view = null, guest_last = 0;
 function guest_sample()
@@ -276,6 +277,7 @@ function check()
         if(!hit) return;
         result.marks.push(snapshot(m.name));
         mark_index++;
+        if(opt.dump_modules && m.name === opt.dump_after) dump_on = true;
         if(m.send) emulator.serial0_send(m.send);
         if(m.keys) emulator.keyboard_send_text(m.keys);
     }
@@ -370,6 +372,25 @@ async function finish(ok, error)
 
 emulator.add_listener("emulator-ready", async () => {
     const v86 = emulator.v86;
+    if(opt.dump_modules)
+    {
+        // --dump-modules dir[@mark]: the wasm modules generated (after the mark), as <eip at compile>_<phys>_<n>.wasm
+        fs.mkdirSync(opt.dump_modules, { recursive: true });
+        const cpu = v86.cpu, finalize = cpu.codegen_finalize;
+        let n = 0;
+        cpu.codegen_finalize = function(index, start, state_flags, ptr, len)
+        {
+            if(dump_on)
+            {
+                const name = (cpu.instruction_pointer[0] >>> 0).toString(16) + "_" + (start >>> 0).toString(16) + "_" + n++ + ".wasm";
+                fs.writeFileSync(opt.dump_modules + "/" + name, new Uint8Array(cpu.wasm_memory.buffer, ptr >>> 0, len >>> 0));
+                // (and the guest's page the module starts in: objdump -D -b binary -m i386 --adjust-vma=...)
+                const page = (start >>> 0) & ~0xFFF;
+                fs.writeFileSync(opt.dump_modules + "/" + name.replace(/\.wasm$/, ".page"), cpu.mem8.slice(page, page + 4096));
+            }
+            return finalize.call(cpu, index, start, state_flags, ptr, len);
+        };
+    }
     // The yield of the main loop: t is how long the halted guest wants to sleep. With the virtual clock that
     // time is skipped at once (nothing else can wake the guest), with the real clock it is waited out and counted.
     v86.yield = function(t, tick)
