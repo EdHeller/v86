@@ -337,6 +337,10 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   window removed). Same core on vs off, 6 rounds, the whole kit sequence: -3.0 % (5 of 6 rounds faster; per
   workload loop -3.2 %, md5 -4.7 %, sha256 -6.7 %, gzip -4.5 %, fork -3.0 %, each within its rounds' noise);
   wasm +6.6 %.
+- 2026-11-26 #29 loop safety: the check itself is a compare on a local and a br_if; each iteration also stored eip's
+  low bits (load, and, or, store) for that exit only. Moved into the exit (set_jit_config 26): measured on vs off, 6
+  rounds, +1.5 % to +3.8 % per workload, all within noise: no gain in V8 (the store is cheap; the if around the exit
+  may cost as much). Off by default, the code kept for Firefox.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 

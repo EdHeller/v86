@@ -348,8 +348,9 @@ pub static mut CODE_INVALIDATIONS: u32 = 0;
 /// set_jit_config 24: rep string instructions that finished go on in the module
 pub static mut REP_STRING_CONTINUE: bool = true;
 
-/// set_jit_config 26: a loop's eip store only on its loop-limit exit
-pub static mut LOOP_EIP_ON_EXIT: bool = true;
+/// set_jit_config 26: a loop's eip store only on its loop-limit exit (off: measured +1.5..+3.8 % in V8, noise; the
+/// if around the exit seems to cost what the store saved)
+pub static mut LOOP_EIP_ON_EXIT: bool = false;
 
 #[derive(Copy, Clone, PartialEq)]
 pub struct CachedCode {
@@ -2275,13 +2276,18 @@ fn jit_generate_module(
                         ctx.builder.get_local(&ctx.instruction_counter);
                         ctx.builder.const_i32(unsafe { cpu::JIT_LOOP_LIMIT });
                         ctx.builder.geu_i32();
-                        ctx.builder.if_void();
-                        if unsafe { LOOP_EIP_ON_EXIT } {
-                            codegen::gen_set_eip_low_bits(ctx.builder, addr as i32 & 0xFFF);
+                        if unsafe { LOOP_EIP_ON_EXIT } || cfg!(feature = "profiler") {
+                            ctx.builder.if_void();
+                            if unsafe { LOOP_EIP_ON_EXIT } {
+                                codegen::gen_set_eip_low_bits(ctx.builder, addr as i32 & 0xFFF);
+                            }
+                            codegen::gen_debug_track_jit_exit(ctx.builder, addr);
+                            ctx.builder.br(exit_label);
+                            ctx.builder.block_end();
                         }
-                        codegen::gen_debug_track_jit_exit(ctx.builder, addr);
-                        ctx.builder.br(exit_label);
-                        ctx.builder.block_end();
+                        else {
+                            ctx.builder.br_if(exit_label);
+                        }
                     }
                     else {
                         codegen::gen_set_eip_low_bits(ctx.builder, addr as i32 & 0xFFF);
