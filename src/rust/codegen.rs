@@ -491,7 +491,11 @@ pub fn gen_modrm_resolve_with_local(
     gen: &dyn Fn(&mut JitContext, &WasmLocal),
 ) {
     if let Some(r) = modrm::get_as_reg_index_if_possible(ctx, &modrm_byte) {
+        // (the register's local is the address: a hint for its access, gen_access_anchor)
+        let reg_version = ctx.builder.local_version(&ctx.reg(r));
+        ctx.address_hint = Some(crate::jit::AddressHint { reg: r, disp: 0, reg_version, pos: 0, is_reg_local: true });
         gen(ctx, &ctx.reg(r));
+        ctx.address_hint = None;
     }
     else {
         gen_modrm_resolve(ctx, modrm_byte);
@@ -696,7 +700,13 @@ fn gen_access_anchor(ctx: &mut JitContext, address_local: &WasmLocal, bytes: u32
         return None;
     }
     let hint = ctx.address_hint?;
-    if ctx.builder.local_last_write(address_local) != hint.pos
+    let is_the_address = if hint.is_reg_local {
+        address_local.idx() == ctx.reg(hint.reg).idx()
+    }
+    else {
+        ctx.builder.local_last_write(address_local) == hint.pos
+    };
+    if !is_the_address
         || hint.disp < -ANCHOR_WINDOW
         || hint.disp + bytes as i32 > ANCHOR_WINDOW
     {

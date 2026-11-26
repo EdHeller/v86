@@ -467,6 +467,9 @@ pub struct AddressHint {
     pub reg_version: u32,
     /// the body's length at the end of the computation: the store of the address into its local follows
     pub pos: u32,
+    /// the address is the register's own local (no displacement: gen_modrm_resolve_with_local), not a local
+    /// written at pos
+    pub is_reg_local: bool,
 }
 
 pub struct PageAnchor {

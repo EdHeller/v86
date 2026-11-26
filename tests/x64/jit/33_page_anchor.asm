@@ -1,5 +1,5 @@
 ; EXPECT: pass
-; DESC: 32-bit JIT, page anchors (codegen::gen_access_anchor): accesses at a register plus a small displacement test the TLB entry of the register's page, loaded once per basic block. With paging, two virtual pages swapped (each maps to the other's physical page): a register moved into the next page between two accesses, a register too near its page's end (an access in the next page), the window's edges (reg & 0xFFF = 0x80 and 0xF80, displacements -128 and +124), and a write through an anchored register into a page with compiled code (once, halfway)
+; DESC: 32-bit JIT, page anchors (codegen::gen_access_anchor): accesses at a register plus a small displacement test the TLB entry of the register's page, loaded once per basic block. With paging, two neighbouring virtual pages mapped to unrelated physical pages (not a swap: a TLB entry holds physical ^ virtual, through which the swapped page's address would come out right): a register moved into the next page between two accesses, a register too near its page's end (an access in the next page), the window's edges (reg & 0xFFF = 0x80 and 0xF80, displacements -128 and +124), and a write through an anchored register into a page with compiled code (once, halfway)
 %include "inc/pm32.inc"
 
 %define N 200000
@@ -7,9 +7,11 @@
 %define PT 0x31000
 %define V1 0x200000
 %define V2 0x201000
+%define P1 0x300000
+%define P2 0x305000
 
 test_main:
-    ; identity map the first 4 MiB but V1 <-> V2
+    ; identity map the first 4 MiB but V1 -> P1, V2 -> P2
     mov edi, PT
     mov eax, 3
     mov ecx, 1024
@@ -18,17 +20,17 @@ test_main:
     add eax, 0x1000
     add edi, 4
     loop .pte
-    mov dword [PT + (V1 >> 12) * 4], V2 | 3
-    mov dword [PT + (V2 >> 12) * 4], V1 | 3
+    mov dword [PT + (V1 >> 12) * 4], P1 | 3
+    mov dword [PT + (V2 >> 12) * 4], P2 | 3
     mov dword [PD], PT | 3
     ; the data, by physical address (paging off): what the virtual addresses will show
-    mov dword [V2 + 0xF00], 0x10        ; V1 + 0xF00
-    mov dword [V1 + 0x100], 0x20        ; V2 + 0x100
-    mov dword [V2 + 0xFF8], 0x30        ; V1 + 0xFF8
-    mov dword [V1 + 0x000], 0x40        ; V2 + 0x000
-    mov dword [V2 + 0x000], 5           ; V1 + 0x000
-    mov dword [V2 + 0x0FC], 7           ; V1 + 0x0FC
-    mov dword [V2 + 0xFFC], 9           ; V1 + 0xFFC
+    mov dword [P1 + 0xF00], 0x10        ; V1 + 0xF00
+    mov dword [P2 + 0x100], 0x20        ; V2 + 0x100
+    mov dword [P1 + 0xFF8], 0x30        ; V1 + 0xFF8
+    mov dword [P2 + 0x000], 0x40        ; V2 + 0x000
+    mov dword [P1 + 0x000], 5           ; V1 + 0x000
+    mov dword [P1 + 0x0FC], 7           ; V1 + 0x0FC
+    mov dword [P1 + 0xFFC], 9           ; V1 + 0xFFC
     mov eax, PD
     mov cr3, eax
     mov eax, cr0

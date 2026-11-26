@@ -260,6 +260,7 @@ pub fn gen(ctx: &mut JitContext, modrm_byte: ModrmByte, esp_offset: i32) {
                 disp: modrm_byte.immediate.wrapping_add(if reg == ESP { esp_offset } else { 0 }),
                 reg_version,
                 pos: ctx.builder.instruction_body_length(),
+                is_reg_local: false,
             });
         }
     }
