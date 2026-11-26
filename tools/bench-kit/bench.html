@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v86 browser benchmark</title>
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4; --accent: #2563eb; --good: #15803d; --bad: #b91c1c; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --line: #44403c; --accent: #60a5fa; --good: #4ade80; --bad: #f87171; } }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 860px; padding: 24px 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.note { color: var(--muted); margin: 0 0 20px; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 16px; padding: 12px 16px; }
+  legend { color: var(--muted); padding: 0 6px; }
+  label { display: inline-flex; gap: 6px; align-items: center; margin: 4px 18px 4px 0; }
+  button { background: var(--accent); border: 0; border-radius: 6px; color: #fff; cursor: pointer; font: inherit; padding: 8px 18px; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { border-collapse: collapse; margin-top: 16px; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  pre { background: color-mix(in srgb, var(--fg) 6%, transparent); border-radius: 6px; max-height: 260px; overflow: auto; padding: 10px; font-size: 13px; }
+  input[type=number] { width: 4em; }
+</style>
+</head>
+<body>
+<h1>v86 browser benchmark</h1>
+<p class="note">Boots the i686 buildroot image with each build in turn and times the same workloads as bench.mjs, on this
+browser's engine. Serve this folder over HTTP (for example <code>python3 -m http.server</code> here) and open
+<code>http://localhost:8000/bench.html</code>. Close other tabs; keep this one in the foreground.</p>
+
+<fieldset>
+  <legend>Image</legend>
+  Loaded from <code>buildroot-bzimage68.bin</code> in this folder (beside bench.html). Or choose another file:
+  <input type="file" id="image">
+</fieldset>
+
+<fieldset>
+  <legend>Builds (folders beside this page)</legend>
+  <label><input type="checkbox" class="build" value="original" checked> original</label>
+  <label><input type="checkbox" class="build" value="rust" checked> rust</label>
+  <label>rounds <input type="number" id="rounds" value="3" min="1" max="20"></label>
+</fieldset>
+
+<fieldset>
+  <legend>Experiments (32-bit JIT; applied to every build). They lost in Chrome/V8: measure them here</legend>
+  <label><input type="checkbox" class="cfg" data-k="17" data-v="1"> block chaining (tail calls between modules)</label>
+  <label><input type="checkbox" class="cfg" data-k="21" data-v="1"> nested calls (call/ret as wasm calls)</label>
+  <label><input type="checkbox" class="cfg" data-k="1" data-v="4"> bigger modules (4 pages)</label>
+</fieldset>
+
+<button id="go">Run</button>
+<p class="note">Nothing to tick or choose: the defaults run both builds with no experiments. Progress appears below
+as each step finishes (one build: about 30-60 s); the table fills in after each build.</p>
+<table id="table" hidden></table>
+<pre id="log"></pre>
+
+<script type="module">
+const WORKLOADS = [
+    ["shell loop", "i=0; while [ $i -lt 300000 ]; do i=$((i+1)); done"],
+    ["md5 64 MiB", "dd if=/dev/zero bs=1M count=64 2>/dev/null | md5sum >/dev/null"],
+    ["sha256 32 MiB", "dd if=/dev/zero bs=1M count=32 2>/dev/null | sha256sum >/dev/null"],
+    ["gzip 16 MiB", "dd if=/dev/urandom bs=1M count=16 2>/dev/null | gzip -1 >/dev/null"],
+    ["fork 500", "i=0; while [ $i -lt 500 ]; do /bin/true; i=$((i+1)); done"],
+];
+const KEYS = ["boot", ...WORKLOADS.map(w => w[0])];
+const $ = s => document.querySelector(s);
+// URL parameters (all optional): builds=original,rust (a build named dir#k=v,k=v runs dir's core with those
+// set_jit_config values: the same core twice with one setting changed), rounds=3, auto (start at once),
+// report=/url (POST every log line there, for a browser run from a script)
+const params = new URLSearchParams(location.search);
+const log = s => {
+    $("#log").textContent += s + "\n"; $("#log").scrollTop = 1e9;
+    if(params.get("report")) fetch(params.get("report"), { method: "POST", body: s }).catch(() => {});
+};
+const median = xs => { const s = [...xs].sort((a, b) => a - b); return s[s.length >> 1]; };
+const fetch_buffer = async u => (await fetch(u)).arrayBuffer();
+
+async function run(name, image, config)
+{
+    // (dir#k=v,k=v: dir's core with those settings too)
+    const [build, extra] = name.split("#");
+    if(extra) config = [...config, ...extra.split(",").map(kv => kv.split("=").map(Number))];
+    const { V86 } = await import(`./${build}/libv86.mjs?${Math.random()}`);
+    const t0 = performance.now();
+    const e = new V86({
+        wasm_path: `${build}/v86.wasm`,
+        bios: { buffer: await fetch_buffer("bios/seabios.bin") },
+        vga_bios: { buffer: await fetch_buffer("bios/vgabios.bin") },
+        bzimage: { buffer: image },
+        cmdline: "tsc=reliable mitigations=off random.trust_cpu=on console=ttyS0",
+        memory_size: 256 << 20, autostart: true, log_level: 0, filesystem: {}, disable_speaker: true,
+    });
+    e.add_listener("emulator-started", () => {
+        for(const [k, v] of config) e.v86.cpu.wm.exports["set_jit_config"](k, v);
+    });
+    let out = "";
+    e.add_listener("serial0-output-byte", c => { out += String.fromCharCode(c); });
+    const until = (re, ms) => new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { clearInterval(iv); reject(new Error("timeout waiting for " + re)); }, ms);
+        const iv = setInterval(() => { if(re.test(out)) { clearInterval(iv); clearTimeout(timer); resolve(); } }, 5);
+    });
+    log(`  ${name}: booting...`);
+    await until(/~% |# $/, 300000);
+    const result = { boot: (performance.now() - t0) / 1000 };
+    log(`  ${name}: boot ${result.boot.toFixed(2)}s`);
+    for(const [name_, cmd] of WORKLOADS)
+    {
+        out = "";
+        const t = performance.now();
+        e.serial0_send(cmd + "; echo BENCH_END\n");
+        await until(/\nBENCH_END/, 600000);
+        result[name_] = (performance.now() - t) / 1000;
+        log(`  ${build}: ${name_} ${result[name_].toFixed(2)}s`);
+    }
+    await e.destroy();
+    return result;
+}
+
+function show(builds, results)
+{
+    const t = $("#table");
+    t.hidden = false;
+    const two = builds.length === 2;
+    let html = "<tr><th>median, seconds</th>" + builds.map(b => `<th>${b}</th>`).join("") + (two ? "<th>change</th>" : "") + "</tr>";
+    for(const k of KEYS)
+    {
+        const m = builds.map(b => results[b].length ? median(results[b].map(r => r[k])) : NaN);
+        let change = "";
+        if(two && m.every(isFinite))
+        {
+            const c = (m[1] / m[0] - 1) * 100;
+            change = `<td class="${c < -3 ? "good" : c > 3 ? "bad" : ""}">${c > 0 ? "+" : ""}${c.toFixed(1)} %</td>`;
+        }
+        html += `<tr><td>${k}</td>` + m.map(x => `<td>${isFinite(x) ? x.toFixed(2) : "–"}</td>`).join("") + change + "</tr>";
+    }
+    t.innerHTML = html;
+}
+
+$("#go").onclick = async () => {
+    const file = $("#image").files[0];
+    let image;
+    if(file) image = await file.arrayBuffer();
+    else
+    {
+        const r = await fetch("buildroot-bzimage68.bin");
+        if(!r.ok) { log("buildroot-bzimage68.bin is not in this folder (beside bench.html): put it there, or choose the file"); return; }
+        image = await r.arrayBuffer();
+    }
+    const builds = params.get("builds") ? params.get("builds").split(",") : [...document.querySelectorAll(".build:checked")].map(x => x.value);
+    const config = [...document.querySelectorAll(".cfg:checked")].map(x => [+x.dataset.k, +x.dataset.v]);
+    const rounds = +(params.get("rounds") || $("#rounds").value) || 1;
+    $("#go").disabled = true;
+    log("loading the image...");
+    log(`${navigator.userAgent}\nbuilds ${builds.join(", ")}; experiments ${config.length ? JSON.stringify(config) : "none"}; ${rounds} rounds`);
+    const results = Object.fromEntries(builds.map(b => [b, []]));
+    try
+    {
+        for(let r = 1; r <= rounds; r++)
+        {
+            for(const b of builds)
+            {
+                const res = await run(b, image.slice(0), config);
+                results[b].push(res);
+                log(`round ${r} ${b}: ` + KEYS.map(k => `${k} ${res[k].toFixed(2)}s`).join(", "));
+                show(builds, results);
+            }
+        }
+        log("done");
+    }
+    catch(err) { log("error: " + err.message); }
+    $("#go").disabled = false;
+};
+if(params.has("auto")) $("#go").click();
+</script>
+</body>
+</html>
