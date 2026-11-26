@@ -369,6 +369,13 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   with the offset esp moved by. Test `jit/33_page_anchor` (40 pushes across a page, checked at the physical pages;
   fails with the offset not kept; the test needed values that change per iteration and its data off the code page).
   6 rounds on vs off: +3.6 % to +8.1 % per workload (each within noise, all slower). Off by default.
+- 2026-11-26 #34 nested calls' fork loss: every nested call the caller could not go on after was one whose callee
+  left its page other than by returning (new counter: none needed the dispatcher). A per-site skip after 4 misses
+  (set_jit_config 30, on when nested calls are) helps the shell loop but not fork. Firefox, 4 rounds against
+  nested calls off: with the skip shell loop -17.3 % (every round), md5 -3.3 %, sha256 +2.7 %, gzip +0.1 %,
+  fork +8.4 %; without it shell loop -12.4 %, fork +8.1 %. V8, 5 rounds: both slower everywhere (skip: loop +5.5 %,
+  sha256 +5.4 %, fork +4.6 %). The fork loss is not the failed attempts; nested calls stay off by default, and are
+  worth turning on for Firefox (set_jit_config(21, 1)) when the guest runs shell-style code.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
