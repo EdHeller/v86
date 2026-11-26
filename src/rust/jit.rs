@@ -574,7 +574,7 @@ pub fn jit_find_cache_entry_in_page(
 
     unsafe {
         match cpu::tlb_code[(virt_address >> 12) as usize] {
-            None => {},
+            None => profiler::stat_increment(stat::INDIRECT_JUMP_NO_CODE),
             Some(c) => {
                 let c = c.as_ref();
                 if state_flags == c.state_flags && wasm_table_index == c.wasm_table_index {
@@ -582,6 +582,13 @@ pub fn jit_find_cache_entry_in_page(
                     if state != u16::MAX {
                         return state.into();
                     }
+                    profiler::stat_increment(stat::INDIRECT_JUMP_SAME_MODULE_NOT_ENTRY);
+                }
+                else if state_flags != c.state_flags {
+                    profiler::stat_increment(stat::INDIRECT_JUMP_OTHER_STATE);
+                }
+                else {
+                    profiler::stat_increment(stat::INDIRECT_JUMP_OTHER_MODULE);
                 }
             },
         }
