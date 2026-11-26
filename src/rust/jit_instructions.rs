@@ -1452,6 +1452,13 @@ fn flags_skip(ctx: &JitContext) -> bool {
     ctx.flags_dead || ctx.flags_jcc_only.map_or(false, |cc| codegen::condition_from_locals(&ctx.current_instruction, cc))
 }
 
+/// The condition of the conditional jump that alone reads the current instruction's flags, when the jump can't
+/// compute it from locals itself: the instruction may compute it into ctx.condition_local (Instruction::Condition)
+/// instead of storing its flags
+fn jcc_condition(ctx: &JitContext) -> Option<u8> {
+    ctx.flags_jcc_only.filter(|&cc| !codegen::condition_from_locals(&ctx.current_instruction, cc))
+}
+
 fn gen_add32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
     ctx.current_instruction = Instruction::Add {
         opsize: OPSIZE_32,
@@ -1465,6 +1472,19 @@ fn gen_add32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         is_inc: false,
     };
 
+    if let Some(cc) = jcc_condition(ctx) {
+        // e, ne, s, ns: from the result
+        if matches!(cc & 0xF, 0x4 | 0x5 | 0x8 | 0x9) {
+            codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+            ctx.builder.get_local(&dest_operand);
+            source_operand.gen_get(ctx.builder);
+            ctx.builder.add_i32();
+            ctx.builder.set_local(dest_operand);
+            gen_test_condition(ctx, dest_operand, &LocalOrImmediate::WasmLocal(dest_operand), OPSIZE_32, cc);
+            ctx.current_instruction = Instruction::Condition { condition: cc };
+            return;
+        }
+    }
     if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         ctx.builder.get_local(&dest_operand);
@@ -1531,6 +1551,18 @@ fn gen_sub32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         is_dec: false,
     };
 
+    if let Some(cc) = jcc_condition(ctx) {
+        // the flags of sub are cmp's: the condition from the operands, before they change
+        if gen_cmp_condition(ctx, dest_operand, source_operand, OPSIZE_32, cc) {
+            codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+            ctx.builder.get_local(&dest_operand);
+            source_operand.gen_get(ctx.builder);
+            ctx.builder.sub_i32();
+            ctx.builder.set_local(dest_operand);
+            ctx.current_instruction = Instruction::Condition { condition: cc };
+            return;
+        }
+    }
     if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         ctx.builder.get_local(&dest_operand);
@@ -1919,6 +1951,14 @@ fn gen_and32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
     ctx.builder.and_i32();
     ctx.builder.set_local(dest_operand);
 
+    if let Some(cc) = jcc_condition(ctx) {
+        // CF and OF clear, as test: the condition from the result
+        if gen_test_condition(ctx, dest_operand, &LocalOrImmediate::WasmLocal(dest_operand), OPSIZE_32, cc) {
+            codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+            ctx.current_instruction = Instruction::Condition { condition: cc };
+            return;
+        }
+    }
     if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         return;
@@ -2089,6 +2129,14 @@ fn gen_or32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
     ctx.builder.or_i32();
     ctx.builder.set_local(dest_operand);
 
+    if let Some(cc) = jcc_condition(ctx) {
+        // CF and OF clear, as test: the condition from the result
+        if gen_test_condition(ctx, dest_operand, &LocalOrImmediate::WasmLocal(dest_operand), OPSIZE_32, cc) {
+            codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+            ctx.current_instruction = Instruction::Condition { condition: cc };
+            return;
+        }
+    }
     if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         return;
@@ -2145,6 +2193,14 @@ fn gen_xor32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         ctx.builder.set_local(dest_operand);
     }
 
+    if let Some(cc) = jcc_condition(ctx) {
+        // CF and OF clear, as test: the condition from the result
+        if gen_test_condition(ctx, dest_operand, &LocalOrImmediate::WasmLocal(dest_operand), OPSIZE_32, cc) {
+            codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
+            ctx.current_instruction = Instruction::Condition { condition: cc };
+            return;
+        }
+    }
     if flags_skip(ctx) {
         codegen::gen_profiler_stat_increment(ctx.builder, profiler::stat::FLAGS_ELIDED);
         return;

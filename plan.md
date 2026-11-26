@@ -307,6 +307,14 @@ writes, 17 read-modify-writes; slow paths ~0), 282 of them base register + offse
 module (no entry for the target). Guest side: the kernel's ChaCha (/dev/urandom, the gzip input) is 6 % of all
 instructions; the boot's decompressor and initramfs unpacking 4.5 %.
 
+## Round 3 (2026-11-26)
+
+- ✅ #28 sub/add/and/or/xor (32-bit) whose flags only the next jcc reads compute its condition into a local
+  (Instruction::Condition, as cmp/test): sub any condition but o/p, logic ops all but p, add e/ne/s/ns; memory and
+  register destinations. Test `jit/31_alu_condition` (210 cases; each path broken in turn fails its own range).
+  Measured neutral: kit within ±2 %; flags stored 127.7 -> 127.1 per 1000 instructions, jumps reading stored flags
+  22.7 -> 22.7: the remaining stores come from other patterns (inc/dec count as flag readers: they keep CF).
+
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
 Numbers from the last profile (buildroot boot and shell loop) and the kit (rust against original: boot -7 %, shell
