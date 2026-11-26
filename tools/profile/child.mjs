@@ -306,7 +306,7 @@ async function finish(ok, error)
     {
         const g = i => ex["get_jit_config"](i) >>> 0;
         // the 32-bit JIT's nested calls (made, and those after which the caller went on)
-        result.counters = { "nested calls made": g(32), "nested calls the caller went on after": g(33) };
+        result.counters = { "nested calls made": g(32), "nested calls the caller went on after": g(33), "nested calls that needed the dispatcher": g(34) };
     }
     if(opt.arch === "x86_64" && ex["get_jit_config"])
     {

@@ -2741,6 +2741,14 @@ pub static mut NESTED_CALLS_MADE: u64 = 0;
 /// (set_jit_config(22, 1): count them)
 pub static mut NESTED_CALL_STATS: bool = false;
 pub static mut NESTED_CALLS_CONTINUED: u64 = 0;
+/// (NESTED_CALL_STATS) nested calls after which the dispatcher was needed (halt, interrupt shadow, an interrupt to
+/// look at, single step)
+pub static mut NESTED_CALLS_NEED_DISPATCHER: u64 = 0;
+/// set_jit_config 30: call sites that keep missing stop trying (codegen::gen_nested_call)
+pub static mut NESTED_CALL_SITE_SKIP: bool = true;
+pub const NESTED_CALL_SITE_COUNT: u32 = 1 << 16;
+/// per call site (hashed): misses since its last success, see gen_nested_call
+pub static mut NESTED_CALL_SITES: [u8; NESTED_CALL_SITE_COUNT as usize] = [0; NESTED_CALL_SITE_COUNT as usize];
 /// and across memory accesses (set_jit_config(19, ..), see flag_effect)
 pub static mut FLAG_ELISION_ACROSS_ACCESSES: bool = true;
 /// and across the basic blocks of a module (set_jit_config(20, ..), see flags_live_out)
@@ -3384,6 +3392,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         27 => NESTED_CALL_DEPTH_NOW = (value as i32).max(1),
         25 => codegen::PAGE_ANCHORS = value != 0,
         29 => codegen::STACK_ANCHORS = value != 0,
+        30 => NESTED_CALL_SITE_SKIP = value != 0,
         26 => LOOP_EIP_ON_EXIT = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
@@ -3419,6 +3428,7 @@ pub unsafe fn get_jit_config(index: u32) -> u32 {
         32 => NESTED_CALLS_MADE as u32,
         34..=41 => crate::cpu::jit64::DISPATCH_STATS[(index - 34) as usize],
         33 => NESTED_CALLS_CONTINUED as u32,
+        34 => NESTED_CALLS_NEED_DISPATCHER as u32,
         31 => crate::cpu::cpu::STAT_LOOP_CLOCK_READS,
         20..=27 => crate::cpu::long_mem::SLOW_STATS[(index - 20) as usize],
         46000..=46063 => { let b = crate::cpu::jit64::visits_bucket(((index - 46000) / 2) as usize); if index & 1 == 0 { b.0 } else { b.1 } },

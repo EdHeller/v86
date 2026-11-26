@@ -3096,6 +3096,38 @@ pub fn gen_nested_call(
     wasm_table_index: crate::jit::WasmTableIndex,
     state_flags: crate::state_flags::CachedStateFlags,
 ) {
+    if !unsafe { crate::jit::NESTED_CALL_SITE_SKIP } {
+        gen_nested_call_attempt(ctx, main_loop, target_block, wasm_table_index, state_flags, None);
+        return;
+    }
+    // A call site whose callee keeps leaving its page some other way than returning here (the caller then exits
+    // anyway, after paying for the call) stops trying: a byte per site (hashed) counts its misses; from 4 on each
+    // time is skipped and counted on, until the byte wraps around to 0 and the site is tried again (every ~250
+    // skips); a call the caller goes on after resets it
+    let addr = ctx.start_of_current_instruction;
+    let site = unsafe { (&raw const crate::jit::NESTED_CALL_SITES) as u32 }
+        + ((addr ^ addr >> 16) & (crate::jit::NESTED_CALL_SITE_COUNT - 1));
+    ctx.builder.const_i32(site as i32);
+    ctx.builder.load_fixed_u8(site);
+    ctx.builder.const_i32(1);
+    ctx.builder.add_i32();
+    ctx.builder.store_u8(0);
+    ctx.builder.load_fixed_u8(site);
+    ctx.builder.const_i32(5);
+    ctx.builder.ltu_i32();
+    ctx.builder.if_void();
+    gen_nested_call_attempt(ctx, main_loop, target_block, wasm_table_index, state_flags, Some(site));
+    ctx.builder.block_end();
+}
+
+fn gen_nested_call_attempt(
+    ctx: &mut JitContext,
+    main_loop: Label,
+    target_block: &WasmLocal,
+    wasm_table_index: crate::jit::WasmTableIndex,
+    state_flags: crate::state_flags::CachedStateFlags,
+    site: Option<u32>,
+) {
     // the callee works on the registers in memory, and counts from the global counter
     gen_move_registers_from_locals_to_memory(ctx);
     gen_update_instruction_counter(ctx);
@@ -3134,6 +3166,11 @@ pub fn gen_nested_call(
     {
         if unsafe { crate::jit::NESTED_CALL_STATS } {
             ctx.builder.increment_fixed_i64((&raw const crate::jit::NESTED_CALLS_CONTINUED) as u32, 1);
+        }
+        if let Some(site) = site {
+            ctx.builder.const_i32(site as i32);
+            ctx.builder.const_i32(0);
+            ctx.builder.store_u8(0);
         }
         ctx.builder.get_local(&result);
         ctx.builder.set_local(target_block);
@@ -3239,6 +3276,10 @@ fn gen_nested_call_body(b: &mut WasmBuilder, wasm_table_index: u16, state_flags:
                         b.set_local(&eip);
                         gen_find_entry_in_page_body(b, &eip, &code2, &state2, wasm_table_index, state_flags);
                         b.return_();
+                    }
+                    if unsafe { crate::jit::NESTED_CALL_STATS } {
+                        b.else_();
+                        b.increment_fixed_i64((&raw const crate::jit::NESTED_CALLS_NEED_DISPATCHER) as u32, 1);
                     }
                     b.block_end();
                 }
