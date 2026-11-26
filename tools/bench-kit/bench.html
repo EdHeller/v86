@@ -65,7 +65,7 @@ const WORKLOADS = [
 ];
 const KEYS = ["boot", ...WORKLOADS.map(w => w[0])];
 const $ = s => document.querySelector(s);
-// URL parameters (all optional): builds=original,rust (a build named dir#k=v,k=v runs dir's core with those
+// URL parameters (all optional): builds=original,rust (a build named dir#k=v+k=v runs dir's core with those
 // set_jit_config values: the same core twice with one setting changed), rounds=3, auto (start at once),
 // report=/url (POST every log line there, for a browser run from a script)
 const params = new URLSearchParams(location.search);
@@ -78,9 +78,9 @@ const fetch_buffer = async u => (await fetch(u)).arrayBuffer();
 
 async function run(name, image, config)
 {
-    // (dir#k=v,k=v: dir's core with those settings too)
+    // (dir#k=v+k=v: dir's core with those settings too)
     const [build, extra] = name.split("#");
-    if(extra) config = [...config, ...extra.split(",").map(kv => kv.split("=").map(Number))];
+    if(extra) config = [...config, ...extra.split("+").map(kv => kv.split("=").map(Number))];
     const { V86 } = await import(`./${build}/libv86.mjs?${Math.random()}`);
     const t0 = performance.now();
     const e = new V86({
