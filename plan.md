@@ -314,6 +314,16 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   register destinations. Test `jit/31_alu_condition` (210 cases; each path broken in turn fails its own range).
   Measured neutral: kit within ±2 %; flags stored 127.7 -> 127.1 per 1000 instructions, jumps reading stored flags
   22.7 -> 22.7: the remaining stores come from other patterns (inc/dec count as flag readers: they keep CF).
+- 2026-11-26 #27 exits back to the same page (3.8 per 1000 instructions, ~10 M over the kit): by the instruction
+  that ended the run (profiler opstats, `jit_exits` in the report), mostly rep string instructions (rep movsb 3.5 M,
+  rep stosb 0.9 M, rep movsd 0.9 M, repne scasb 0.7 M), then segment loads, faulting loads, lfence. A rep string
+  instruction ended its block unconditionally; now (`rep_string`, set_jit_config 24) the block goes on when it
+  finished in its call (eip still after it) and, for movs/stos, no compiled code was freed (CODE_INVALIDATIONS).
+  Test `jit/32_rep_string` (fails with the invalidation check off). Measured: same core, on vs off, 6 rounds:
+  sha256 -2.3 %, md5 -2.6 %, boot -1.7 % (all within noise); the kit against the build before shows sha256 +8 %
+  in every round, which the on/off comparison puts on the build's code layout, not on the change.
+  Note: tests/x64 run on v64 (rebuild v64-debug), and N=12000 loops never reach the JIT threshold (32_rep_string
+  uses 200000; check 29-31 with PROFILER_STATS=1 X64_TEST_WASM=build/v86-prof.wasm, build/v64-prof.wasm).
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
