@@ -379,6 +379,11 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
 - 2026-11-26 #36 site files and kit refreshed with 9077eb3 (the fallback core boots too). Kit, 5 rounds, original
   (b1aaf25) against rust: boot -8.1 %, shell loop -6.1 %, md5 -16.7 %, sha256 -68.2 %, gzip -16.8 %, fork -12.9 %
   (the round before: -13.6, -8.1, -25.4, -65.0, -12.2, -4.8 %; this machine's speed varies between sessions).
+- 2026-11-26 #37 smaller modules for the boot: not worth it. The boot's 89 modules (7.6 MB) take 21.7 ms from
+  codegen_finalize to codegen_finalize_finished (median; p90 81 ms, max 177 ms), the guest running ~1 M
+  instructions meanwhile (p90 12 M); the latency does not follow the size (the three largest, 205-266 KB: 14, 25,
+  64 ms): it is the engine's scheduling, not compile work. The code is ~28 % i32.const and half TLB checks; a
+  smaller encoding would not shorten the wait.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
