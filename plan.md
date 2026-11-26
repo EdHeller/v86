@@ -341,6 +341,11 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   low bits (load, and, or, store) for that exit only. Moved into the exit (set_jit_config 26): measured on vs off, 6
   rounds, +1.5 % to +3.8 % per workload, all within noise: no gain in V8 (the store is cheap; the if around the exit
   may cost as much). Off by default, the code kept for Firefox.
+- 2026-11-26 #32 the profiler's virtual-clock hang on chained workloads no longer reproduces: the whole kit sequence
+  (boot, loop, md5, sha256, gzip, fork) runs to its end on the virtual clock, profiled and timed (fork mark at
+  31.95 s profiled). Probably fixed with the no-progress fallback of 2026-11-18 (a crossing-only block whose guard
+  failed was called forever; the same hang as the user's image at "Run /init"). The virtual clock is usable again
+  for A/B runs of the kit's sequence.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
