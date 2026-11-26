@@ -384,6 +384,10 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   instructions meanwhile (p90 12 M); the latency does not follow the size (the three largest, 205-266 KB: 14, 25,
   64 ms): it is the engine's scheduling, not compile work. The code is ~28 % i32.const and half TLB checks; a
   smaller encoding would not shorten the wait.
+- 2026-11-26 the shell loop now (100 000 iterations after the boot, profiled): compiled code 5.24 s, main loop and
+  dispatch 1.05 s (~48 ns per module entry at ~12 entries per 1000 instructions), interpreter 0.86 s (the first
+  run's warm-up), JIT codegen 0.21 s. Fewer entries is the lever left; chaining (17), bigger modules (1=4) and
+  nested calls (21) were each measured before: neutral in V8, nested calls -17 % in Firefox.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
