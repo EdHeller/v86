@@ -322,8 +322,9 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   Test `jit/32_rep_string` (fails with the invalidation check off). Measured: same core, on vs off, 6 rounds:
   sha256 -2.3 %, md5 -2.6 %, boot -1.7 % (all within noise); the kit against the build before shows sha256 +8 %
   in every round, which the on/off comparison puts on the build's code layout, not on the change.
-  Note: tests/x64 run on v64 (rebuild v64-debug), and N=12000 loops never reach the JIT threshold (32_rep_string
-  uses 200000; check 29-31 with PROFILER_STATS=1 X64_TEST_WASM=build/v86-prof.wasm, build/v64-prof.wasm).
+  Note: tests/x64 run on v64 (rebuild v64-debug); a short loop may never reach the JIT threshold: check with
+  `make build/v64-prof.wasm` and PROFILER_STATS=1 X64_TEST_WASM=build/v86-prof.wasm node tests/x64/worker.js <bin>
+  (29-31 are compiled: 4-6 modules, 0.8 M compiled runs each; 32_rep_string needed N=200000).
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
