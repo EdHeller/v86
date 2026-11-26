@@ -325,6 +325,18 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   Note: tests/x64 run on v64 (rebuild v64-debug); a short loop may never reach the JIT threshold: check with
   `make build/v64-prof.wasm` and PROFILER_STATS=1 X64_TEST_WASM=build/v86-prof.wasm node tests/x64/worker.js <bin>
   (29-31 are compiled: 4-6 modules, 0.8 M compiled runs each; 32_rep_string needed N=200000).
+- 2026-11-26 #26 page anchors (codegen::gen_access_anchor, set_jit_config 25). The generated code of gzip's
+  hottest loop (`--dump-modules dir@mark` in tools/profile, wasm2wat from npm's wabt) is half inline TLB checks
+  (968 in one module), gcc reloading `[esp]`, `[esp+4]` with esp unchanged. Now, per basic block, the first access at
+  reg+disp (|disp| < 128, flat segment; also [reg]) keeps the TLB entry its check loaded as the register's anchor
+  (0 when the register is within 128 bytes of its page's edge); later accesses through the unchanged register test
+  only that entry (7 wasm instructions instead of 18, no load), the full check if it fails. Register writes are
+  versioned in the wasm builder, the structure (blocks, else, loops, internal functions) by tokens; anchors drop
+  at every basic block. In the gzip run 984 M of 2.84 G accesses test an anchor, 619 M create one. Test
+  `jit/33_page_anchor` (paging, two pages at unrelated physical pages; fails with the version check or the edge
+  window removed). Same core on vs off, 6 rounds, the whole kit sequence: -3.0 % (5 of 6 rounds faster; per
+  workload loop -3.2 %, md5 -4.7 %, sha256 -6.7 %, gzip -4.5 %, fork -3.0 %, each within its rounds' noise);
+  wasm +6.6 %.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
