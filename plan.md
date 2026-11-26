@@ -362,6 +362,9 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   fork, 71 % of which the caller goes on after; fork +5.6 % (every round). The depth limit (new set_jit_config 27:
   1, 4, 16) changes nothing measurable: the fork loss is not deep nesting. Left off by default (V8 loses); a page
   could turn it on for Firefox (`set_jit_config(21, 1)` when navigator.userAgent has "Firefox").
+- 2026-11-26 #35 a priority lane for hot pages (heat >= 4x the threshold: 2 compile slots beyond the 4): the boot
+  interprets 42.5-52.6 M instructions either way (3 runs each, profiler counter; wall time +2.0 %, noise of
+  +-20 %). Reverted: the engine's compile throughput is the limit, as for 16 slots.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 
