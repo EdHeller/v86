@@ -5579,12 +5579,13 @@ static mut INTERP_ADDRS: Option<std::collections::HashMap<u32, (u64, u64, u32)>>
 pub unsafe fn interp_addrs(reset: u32) -> u32 {
     static mut OUT: [f64; 256] = [0.0; 256];
     let h = INTERP_ADDRS.get_or_insert_with(Default::default);
-    if reset != 0 {
+    if reset == 1 {
         h.clear();
         return 0;
     }
     let mut v: Vec<_> = h.iter().map(|(k, e)| (*k, *e)).collect();
-    v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    // (reset 2: the most steps first)
+    if reset == 2 { v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1)) } else { v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0)) }
     OUT = [0.0; 256];
     for (i, (a, e)) in v.iter().take(64).enumerate() {
         OUT[4 * i] = *a as f64;

@@ -346,6 +346,14 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
   31.95 s profiled). Probably fixed with the no-progress fallback of 2026-11-18 (a crossing-only block whose guard
   failed was called forever; the same hang as the user's image at "Run /init"). The virtual clock is usable again
   for A/B runs of the kit's sequence.
+- 2026-11-26 #30 the boot's interpreter time (jit_run_interpreted 0.79 s of a 3.6 s profiled boot, 57 M of 636 M
+  instructions interpreted): by address (profiler `interp_addrs`, now sorted by steps; `--watch-page`, `--dump-mem` in
+  tools/profile), the largest are the kernel's inflate_fast unpacking the initramfs (c126fbec, 7 M steps in 1577
+  runs), the decompressor before paging (1ed7xxx, 100 k-step runs) and cold init code. The hot pages are compiled
+  early but then wait: while the kernel's init runs, all 4 compile slots (MAX_COMPILING) stay full for up to ~10 M
+  instructions at a time, the hot page's heat climbing to 700 k+ meanwhile. Not better: 16 compile slots (boot
+  +6.5 %, noise), threshold 100 k instead of 200 k (+5.0 %, noise; 117 modules instead of 92). The engine's compile
+  throughput is the limit; nothing cheap left here.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 

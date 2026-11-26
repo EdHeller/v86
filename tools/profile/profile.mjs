@@ -39,6 +39,9 @@
 //   --keys name=text         the same on the keyboard
 //   --guest-map file         also sample the guest: which of its code the instructions go to. file is the
 //                            System.map of the guest's kernel (boot it with nokaslr), or "none" for addresses
+//   --dump-mem file@phys:len guest memory at the end of the run (hex address and length) into file
+//   --watch-page hex         (a profiler build) the JIT's view of a physical page (number, e.g. 1ed7) while it runs:
+//                            heat, entry points waiting, whether it has code, compiled entry points
 //   --dump-modules dir[@mark] save the wasm modules the 32-bit JIT generates (after the mark) in dir, named
 //                            <eip at compile>_<physical start>_<n>.wasm (wasm2wat from wabt reads them)
 //   --step-profile           x86_64: the instructions jit64 does not compile, by opcode: those run by the
@@ -139,6 +142,8 @@ const base = {
     memory: +args.memory || 512, timeout: +args.timeout || 600, interval: +args.interval || 200,
     marks, stat_names, guest_profile: !!args["guest-map"], step_profile: !!args["step-profile"], count_crossings: !!args["count-crossings"], frames: !!args["frames"], check_draw: !!args["check-draw"],
     jit_config: Object.fromEntries((args["jit-config"] || []).map(split)),
+    dump_mem: args["dump-mem"] ? path.resolve(args["dump-mem"].split("@")[0]) + "@" + args["dump-mem"].split("@")[1] : undefined,
+    watch_page: args["watch-page"] ? parseInt(args["watch-page"], 16) : undefined,
     dump_modules: args["dump-modules"] ? abs(args["dump-modules"].split("@")[0]) : undefined,
     dump_after: args["dump-modules"] ? args["dump-modules"].split("@")[1] : undefined,
     v86: args.v86 ? JSON.parse(args.v86) : undefined,

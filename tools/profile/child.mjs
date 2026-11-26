@@ -344,6 +344,13 @@ async function finish(ok, error)
             block_end: list("interp_profile_len", "interp_profile_key", "interp_profile_count", "interp_profile_bytes"),
         };
     }
+    if(ex["interp_addrs"])
+    {
+        // (profiler build) the physical addresses where the most instructions ran interpreted: [phys, runs, steps, virt]
+        const at = ex["interp_addrs"](2) >>> 0, f = new Float64Array(emulator.v86.cpu.wasm_memory.buffer, at, 256);
+        result.interp_addrs = [];
+        for(let i = 0; i < 64 && f[4 * i + 1]; i++) result.interp_addrs.push([f[4 * i].toString(16), f[4 * i + 1], f[4 * i + 2], f[4 * i + 3].toString(16)]);
+    }
     if(ex["get_opstats_buffer"] && ex["get_opstats_buffer"].length >= 8)
     {
         // which instruction ended each compiled run (profiler build), the most frequent first
@@ -361,6 +368,12 @@ async function finish(ok, error)
         result.stats = {};
         opt.stat_names.forEach((n, i) => { const v = ex["profiler_stat_get"](i); if(v) result.stats[n] = v; });
         if(!Object.keys(result.stats).length) delete result.stats;
+    }
+    if(opt.dump_mem)
+    {
+        // --dump-mem file@physhex:len: guest memory at the end (objdump -D -b binary -m i386 --adjust-vma=...)
+        const [file, range] = opt.dump_mem.split("@"), [at, len] = range.split(":").map(x => parseInt(x, 16));
+        fs.writeFileSync(file, emulator.v86.cpu.mem8.slice(at, at + len));
     }
     if(opt.serial_log) fs.writeFileSync(opt.serial_log, serial);
     if(opt.serial_log) fs.writeFileSync(opt.serial_log.replace(/serial\.txt$/, "screen.txt"), screen_text());
@@ -481,7 +494,20 @@ emulator.add_listener("emulator-ready", async () => {
 
     // (screen marks, instruction marks and the time limit are polled; serial marks are checked on every byte)
     let polls = 0;
+    // --watch-page hex (profiler build): the JIT's view of a physical page when it changes: [M instructions, heat,
+    // entry points waiting, has code, compiled entry points]
+    const watch = opt.watch_page !== undefined && emulator.v86.cpu.wm.exports["jit_page_debug"];
+    let watch_last = "";
+    if(watch) result.watch_page = [];
     const poll = setInterval(() => {
+        if(watch)
+        {
+            const g = i => watch(opt.watch_page, i);
+            const now = [g(0), g(1), g(2), g(3), "compiling", g(4)];
+            const k = opt.stat_names ? opt.stat_names.indexOf("RUN_INTERPRETED_STEPS") : -1;
+            const interp = k >= 0 ? +(emulator.v86.cpu.wm.exports["profiler_stat_get"](k) / 1e6).toFixed(1) : 0;
+            if(now.join() !== watch_last) { watch_last = now.join(); result.watch_page.push([+(instructions() / 1e6).toFixed(1), ...now, "interp M", interp]); }
+        }
         if(polls++ % 5 === 0) note_screen();
         check();
         if(!finished && real_now() - t0 > opt.timeout * 1000)
