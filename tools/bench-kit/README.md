@@ -70,7 +70,7 @@ your machine's numbers are the ones that count.
 ## From a script, in headless Firefox (no browser driver needed)
 
 `bench.html` takes URL parameters: `builds=a,b` (a build written `dir#k=v+k=v` runs that folder's core with those
-`set_jit_config` values, so one core can be compared with one setting changed: `new,new%2321=1`), `rounds=N`,
+`set_jit_config` values, so one core can be compared with one setting changed: `new,new%2321=1`; several: `new%2321=1%2B30=0`, since + is a space in a URL), `rounds=N`,
 `auto` (start at once) and `report=/log` (POST every log line there). `serve.mjs` serves the folder and appends the
 posted lines to a file:
 
