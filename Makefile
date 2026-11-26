@@ -366,6 +366,12 @@ build/v64-debug.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.t
 	CARGO_TARGET_DIR=build/x64 cargo rustc --features x86_64 $(CARGO_FLAGS)
 	cp build/x64/wasm32-unknown-unknown/debug/v86.wasm build/v64-debug.wasm
 
+# the x86_64 core with the profiler's counters (tests/x64: X64_TEST_WASM=build/v86-prof.wasm PROFILER_STATS=1)
+build/v64-prof.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
+	mkdir -p build/
+	CARGO_TARGET_DIR=build/x64-prof cargo rustc --release --features x86_64,profiler $(CARGO_FLAGS)
+	cp build/x64-prof/wasm32-unknown-unknown/release/v86.wasm build/v64-prof.wasm
+
 build/v64-fallback.wasm: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
 	mkdir -p build/
 	CARGO_TARGET_DIR=build/x64 cargo rustc --release --features x86_64 $(CARGO_FLAGS_SAFE)

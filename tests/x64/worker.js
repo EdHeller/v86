@@ -73,6 +73,13 @@ function finish(status)
         const g = i => emulator.v86.cpu.wm.exports.get_jit_config(i);
         result.jit64 = { compiled: g(5), failed: g(6), run: g(7), invalidated: g(8), insns: g(13) >>> 0, steps: g(14) >>> 0 };
     }
+    if(process.env.PROFILER_STATS)
+    {
+        // a profiler build's counters (X64_TEST_WASM=build/v86-prof.wasm), by the index of src/rust/profiler.rs's stat
+        const ex = emulator.v86.cpu.wm.exports;
+        result.stats = {};
+        for(let i = 0; ex["profiler_stat_get"] && i < 400; i++) { const v = ex["profiler_stat_get"](i); if(v) result.stats[i] = v; }
+    }
     console.log(JSON.stringify(result));
     process.exit(0);
 }

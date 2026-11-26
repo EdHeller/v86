@@ -308,7 +308,45 @@ pub struct BasicBlock {
     pub crossing: bool,
     /// that instruction is a relative jump: its condition (None: always) and offset
     pub crossing_jump: Option<(Option<u8>, i32)>,
+    /// it ends with a rep string instruction (rep_string_instruction) and goes on to the next block when that
+    /// instruction finished in its one call; otherwise (stopped at a page's end, a fault, compiled code
+    /// invalidated) the module returns, as after any block boundary
+    pub rep_string: Option<RepString>,
 }
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum RepString {
+    /// lods, cmps, scas
+    Reads,
+    /// movs, stos: may write to pages with compiled code
+    Writes,
+}
+
+/// A rep-prefixed string instruction (not ins/outs) at addr: how it touches memory
+fn rep_string_instruction(addr: u32) -> Option<RepString> {
+    let mut rep = false;
+    for i in 0..15 {
+        let a = addr + i;
+        if a & 0xFFF == 0 && i > 0 {
+            return None;
+        }
+        match memory::read8(a) as u8 {
+            0xF2 | 0xF3 => rep = true,
+            0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 => {},
+            0xA4 | 0xA5 | 0xAA | 0xAB if rep => return Some(RepString::Writes),
+            0xA6 | 0xA7 | 0xAC | 0xAD | 0xAE | 0xAF if rep => return Some(RepString::Reads),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Incremented whenever compiled code may have been freed (jit_dirty_page): a rep string instruction that writes
+/// leaves the module when it changed
+pub static mut CODE_INVALIDATIONS: u32 = 0;
+
+/// set_jit_config 24: rep string instructions that finished go on in the module
+pub static mut REP_STRING_CONTINUE: bool = true;
 
 #[derive(Copy, Clone, PartialEq)]
 pub struct CachedCode {
@@ -739,6 +777,7 @@ fn jit_find_basic_blocks(
                     number_of_instructions: 1,
                     crossing: true,
                     crossing_jump: jump,
+                    rep_string: None,
                 });
                 profiler::stat_increment(stat::COMPILE_CROSSING_INSTRUCTION);
                 continue;
@@ -766,6 +805,7 @@ fn jit_find_basic_blocks(
             number_of_instructions: 0,
             crossing: false,
             crossing_jump: None,
+            rep_string: None,
         };
         loop {
             let addr_before_instruction = current_address;
@@ -930,6 +970,16 @@ fn jit_find_basic_blocks(
 
                     if analysis.absolute_jump {
                         current_block.ty = BasicBlockType::AbsoluteEip;
+                    }
+                    else if has_next_instruction && next_fits && unsafe { REP_STRING_CONTINUE } {
+                        if let Some(kind) = rep_string_instruction(addr_before_instruction) {
+                            current_block.rep_string = Some(kind);
+                            current_block.ty = BasicBlockType::Normal {
+                                next_block_addr: Some(current_address),
+                                jump_offset: 0,
+                                jump_offset_is_32: true,
+                            };
+                        }
                     }
 
                     break;
@@ -2356,8 +2406,9 @@ fn jit_generate_module(
 fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
     let needs_eip_updated = match block.ty {
         BasicBlockType::Exit => true,
-        _ => false,
+        _ => block.rep_string.is_some(),
     };
+    let mut rep_string_check = None;
 
     profiler::stat_increment(stat::COMPILE_BASIC_BLOCK);
 
@@ -2436,6 +2487,19 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
                     last_instruction_addr as i32 & 0xFFF,
                 );
                 codegen::gen_set_eip_low_bits(ctx.builder, stop_addr as i32 & 0xFFF);
+                if let Some(kind) = block.rep_string {
+                    // eip after the instruction, and the invalidation count, to compare after it
+                    codegen::gen_get_eip(ctx.builder);
+                    let eip = ctx.builder.set_new_local();
+                    let invalidations = if kind == RepString::Writes {
+                        ctx.builder.load_fixed_i32(unsafe { (&raw const CODE_INVALIDATIONS) as u32 });
+                        Some(ctx.builder.set_new_local())
+                    }
+                    else {
+                        None
+                    };
+                    rep_string_check = Some((eip, invalidations));
+                }
             }
         }
 
@@ -2453,6 +2517,31 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
         jit_instructions::jit_instruction(ctx, &mut instruction_flags);
         ctx.flags_dead = false;
         ctx.flags_jcc_only = None;
+        if start_eip == last_instruction_addr {
+            if let Some((eip, invalidations)) = rep_string_check.take() {
+                // finished (eip still after it: not sent back to it for the next page, no fault) and no compiled
+                // code freed: on to the next block; otherwise return, as at the end of an Exit block
+                codegen::gen_get_eip(ctx.builder);
+                ctx.builder.get_local(&eip);
+                ctx.builder.ne_i32();
+                if let Some(invalidations) = &invalidations {
+                    ctx.builder.load_fixed_i32(unsafe { (&raw const CODE_INVALIDATIONS) as u32 });
+                    ctx.builder.get_local(invalidations);
+                    ctx.builder.ne_i32();
+                    ctx.builder.or_i32();
+                }
+                ctx.builder.if_void();
+                codegen::gen_debug_track_jit_exit(ctx.builder, last_instruction_addr);
+                codegen::gen_profiler_stat_increment(ctx.builder, stat::DIRECT_EXIT);
+                ctx.builder.br(ctx.exit_label);
+                ctx.builder.block_end();
+                codegen::gen_profiler_stat_increment(ctx.builder, stat::REP_STRING_CONTINUED);
+                ctx.builder.free_local(eip);
+                if let Some(invalidations) = invalidations {
+                    ctx.builder.free_local(invalidations);
+                }
+            }
+        }
         let end_eip = ctx.cpu.eip;
         if block.crossing && start_eip == last_instruction_addr {
             // after the crossing instruction: eip in the next page (a jump's target: from there)
@@ -2919,6 +3008,7 @@ fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
     if !maybe_has_code(page) {
         return;
     }
+    unsafe { CODE_INVALIDATIONS = CODE_INVALIDATIONS.wrapping_add(1) };
     crate::cpu::decoded::invalidate(page);
     if crate::cpu::parallel::active() {
         // the other instances that compiled the page retire their code too
@@ -3237,6 +3327,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         21 => NESTED_CALLS = value != 0,
         22 => NESTED_CALL_STATS = value != 0,
         23 => FLAG_ELISION_JCC = value != 0,
+        24 => REP_STRING_CONTINUE = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
         _ => dbg_assert!(false),

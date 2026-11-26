@@ -342,6 +342,18 @@ async function finish(ok, error)
             block_end: list("interp_profile_len", "interp_profile_key", "interp_profile_count", "interp_profile_bytes"),
         };
     }
+    if(ex["get_opstats_buffer"] && ex["get_opstats_buffer"].length >= 8)
+    {
+        // which instruction ended each compiled run (profiler build), the most frequent first
+        const exits = [];
+        for(let is_0f = 0; is_0f < 2; is_0f++) for(let op = 0; op < 256; op++) for(let m = 0; m < 2; m++) for(let g = 0; g < 8; g++)
+        {
+            const v = ex["get_opstats_buffer"](false, true, false, false, op, !!is_0f, !!m, g);
+            if(v) exits.push({ op: (is_0f ? "0F " : "") + op.toString(16).padStart(2, "0") + (m ? " mem" : " reg") + " /" + g, count: v });
+        }
+        exits.sort((a, b) => b.count - a.count);
+        if(exits.length) result.jit_exits = exits.slice(0, 40);
+    }
     if(ex["profiler_stat_get"] && opt.stat_names)
     {
         result.stats = {};
