@@ -365,6 +365,10 @@ instructions; the boot's decompressor and initramfs unpacking 4.5 %.
 - 2026-11-26 #35 a priority lane for hot pages (heat >= 4x the threshold: 2 compile slots beyond the 4): the boot
   interprets 42.5-52.6 M instructions either way (3 runs each, profiler counter; wall time +2.0 %, noise of
   +-20 %). Reverted: the engine's compile throughput is the limit, as for 16 slots.
+- 2026-11-26 #33 page anchors for push/pop (set_jit_config 29): esp's anchor follows push, pop and stack adjustments
+  with the offset esp moved by. Test `jit/33_page_anchor` (40 pushes across a page, checked at the physical pages;
+  fails with the offset not kept; the test needed values that change per iteration and its data off the code page).
+  6 rounds on vs off: +3.6 % to +8.1 % per workload (each within noise, all slower). Off by default.
 
 ## Next round of speedups (2026-11-18, branch `Vibe-Claude-rust`)
 

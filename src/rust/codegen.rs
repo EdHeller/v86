@@ -681,8 +681,10 @@ pub fn gen_safe_write128(
 const ANCHOR_WINDOW: i32 = 128;
 /// set_jit_config 25: page anchors on
 pub static mut PAGE_ANCHORS: bool = true;
-/// set_jit_config 29: anchors for push and pop, and esp's anchor following them (note_stack_adjust)
-pub static mut STACK_ANCHORS: bool = true;
+/// set_jit_config 29: anchors for push and pop, and esp's anchor following them (note_stack_adjust). Off: measured
+/// +3.6..+8.1 % per workload in V8 (each within noise, all slower): push/pop are short sequences where the extra
+/// check and the larger code cost more than the TLB load they save
+pub static mut STACK_ANCHORS: bool = false;
 
 pub enum PageAnchorUse {
     /// test the anchor's entry (a local) before the full TLB check
