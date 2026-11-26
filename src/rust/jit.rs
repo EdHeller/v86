@@ -348,6 +348,9 @@ pub static mut CODE_INVALIDATIONS: u32 = 0;
 /// set_jit_config 24: rep string instructions that finished go on in the module
 pub static mut REP_STRING_CONTINUE: bool = true;
 
+/// set_jit_config 26: a loop's eip store only on its loop-limit exit
+pub static mut LOOP_EIP_ON_EXIT: bool = true;
+
 #[derive(Copy, Clone, PartialEq)]
 pub struct CachedCode {
     pub wasm_table_index: WasmTableIndex,
@@ -2261,22 +2264,27 @@ fn jit_generate_module(
 
                 if entries.len() == 1 {
                     let addr = entries[0];
-                    codegen::gen_set_eip_low_bits(ctx.builder, addr as i32 & 0xFFF);
                     profiler::stat_increment(stat::COMPILE_WITH_LOOP_SAFETY);
                     codegen::gen_profiler_stat_increment(ctx.builder, stat::LOOP_SAFETY);
                     if unsafe { JIT_USE_LOOP_SAFETY } {
+                        // (eip at the loop's head only on the way out: every other exit and jump sets its low bits
+                        // itself, so the store need not run on every iteration; set_jit_config 26 off: as before)
+                        if unsafe { !LOOP_EIP_ON_EXIT } {
+                            codegen::gen_set_eip_low_bits(ctx.builder, addr as i32 & 0xFFF);
+                        }
                         ctx.builder.get_local(&ctx.instruction_counter);
                         ctx.builder.const_i32(unsafe { cpu::JIT_LOOP_LIMIT });
                         ctx.builder.geu_i32();
-                        if cfg!(feature = "profiler") {
-                            ctx.builder.if_void();
-                            codegen::gen_debug_track_jit_exit(ctx.builder, addr);
-                            ctx.builder.br(exit_label);
-                            ctx.builder.block_end();
+                        ctx.builder.if_void();
+                        if unsafe { LOOP_EIP_ON_EXIT } {
+                            codegen::gen_set_eip_low_bits(ctx.builder, addr as i32 & 0xFFF);
                         }
-                        else {
-                            ctx.builder.br_if(exit_label);
-                        }
+                        codegen::gen_debug_track_jit_exit(ctx.builder, addr);
+                        ctx.builder.br(exit_label);
+                        ctx.builder.block_end();
+                    }
+                    else {
+                        codegen::gen_set_eip_low_bits(ctx.builder, addr as i32 & 0xFFF);
                     }
                 }
 
@@ -3364,6 +3372,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         23 => FLAG_ELISION_JCC = value != 0,
         24 => REP_STRING_CONTINUE = value != 0,
         25 => codegen::PAGE_ANCHORS = value != 0,
+        26 => LOOP_EIP_ON_EXIT = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
         _ => dbg_assert!(false),
