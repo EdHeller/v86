@@ -15,7 +15,7 @@ JavaScript expects the core's new imports and exports; mixing folders does not s
 The folders:
 
 - `original/`: branch `Vibe-Claude` at b1aaf25, before the device port (the JavaScript devices).
-- `rust/`: branch `Vibe-Claude-rust` at c18db79, with the devices in Rust.
+- `rust/`: branch `Vibe-Claude-rust` at 9077eb3, with the devices in Rust.
 
 `bios/` has the SeaBIOS and VGA BIOS both were tested with. `buildroot-bzimage68.bin` is the i686 buildroot image
 (the no-GUI bzImage with its built-in rootfs, 10 MB) both scripts use by default: keep it in this folder, beside
