@@ -681,6 +681,8 @@ pub fn gen_safe_write128(
 const ANCHOR_WINDOW: i32 = 128;
 /// set_jit_config 25: page anchors on
 pub static mut PAGE_ANCHORS: bool = true;
+/// set_jit_config 29: anchors for push and pop, and esp's anchor following them (note_stack_adjust)
+pub static mut STACK_ANCHORS: bool = true;
 
 pub enum PageAnchorUse {
     /// test the anchor's entry (a local) before the full TLB check
@@ -706,10 +708,8 @@ fn gen_access_anchor(ctx: &mut JitContext, address_local: &WasmLocal, bytes: u32
     else {
         ctx.builder.local_last_write(address_local) == hint.pos
     };
-    if !is_the_address
-        || hint.disp < -ANCHOR_WINDOW
-        || hint.disp + bytes as i32 > ANCHOR_WINDOW
-    {
+    let in_window = |d: i32| d >= -ANCHOR_WINDOW && d + bytes as i32 <= ANCHOR_WINDOW;
+    if !is_the_address {
         return None;
     }
     let version = ctx.builder.local_version(&ctx.reg(hint.reg));
@@ -718,10 +718,11 @@ fn gen_access_anchor(ctx: &mut JitContext, address_local: &WasmLocal, bytes: u32
     }
     for a in &ctx.anchors {
         if a.reg == hint.reg && a.version == version && ctx.builder.structure_token_valid(a.token) {
-            return Some(PageAnchorUse::Check(a.local.unsafe_clone()));
+            // (the register moved by a.offset since the anchor was made: note_stack_adjust)
+            return if in_window(a.offset + hint.disp) { Some(PageAnchorUse::Check(a.local.unsafe_clone())) } else { None };
         }
     }
-    if ctx.anchors.len() >= 8 {
+    if !in_window(hint.disp) || ctx.anchors.len() >= 8 {
         return None;
     }
     Some(PageAnchorUse::Create { reg: hint.reg, version })
@@ -750,8 +751,39 @@ fn gen_anchor_from_entry(ctx: &mut JitContext, reg: u32, version: u32, entry_loc
     ctx.anchors.push(crate::jit::PageAnchor {
         reg,
         version,
+        offset: 0,
         token: ctx.builder.structure_token(),
         local,
+    });
+}
+
+/// After the stack register was set to its old value + k (push, pop, an adjustment): its anchor, if any, follows it
+/// (the same page as long as offset + displacement stays in the window)
+fn note_stack_adjust(ctx: &mut JitContext, old_version: u32, k: i32) {
+    if !unsafe { STACK_ANCHORS } {
+        return;
+    }
+    let new_version = ctx.builder.local_version(&ctx.reg(regs::ESP));
+    for a in ctx.anchors.iter_mut() {
+        if a.reg == regs::ESP && a.version == old_version {
+            a.version = new_version;
+            a.offset += k;
+        }
+    }
+}
+
+/// The address of the stack access that follows: esp + disp, in address_local (just written) or esp's own local
+fn hint_stack_access(ctx: &mut JitContext, disp: i32, address_local: Option<&WasmLocal>) {
+    if !unsafe { STACK_ANCHORS } {
+        return;
+    }
+    let reg_version = ctx.builder.local_version(&ctx.reg(regs::ESP));
+    ctx.address_hint = Some(crate::jit::AddressHint {
+        reg: regs::ESP,
+        disp,
+        reg_version,
+        pos: address_local.map_or(0, |l| ctx.builder.local_last_write(l)),
+        is_reg_local: address_local.is_none(),
     });
 }
 
@@ -1535,13 +1567,17 @@ pub fn gen_pop32s_ss32(ctx: &mut JitContext) {
     }
     else {
         let reg = ctx.register_locals[regs::ESP as usize].unsafe_clone();
+        hint_stack_access(ctx, 0, None);
         gen_safe_read32(ctx, &reg);
+        ctx.address_hint = None;
     }
 
+    let old_version = ctx.builder.local_version(&ctx.reg(regs::ESP));
     gen_get_reg32(ctx, regs::ESP);
     ctx.builder.const_i32(4);
     ctx.builder.add_i32();
     gen_set_reg32(ctx, regs::ESP);
+    note_stack_adjust(ctx, old_version, 4);
 
     // return value is already on stack
 }
@@ -1557,10 +1593,12 @@ pub fn gen_pop32s(ctx: &mut JitContext) {
 
 pub fn gen_adjust_stack_reg(ctx: &mut JitContext, offset: u32) {
     if ctx.cpu.ssize_32() {
+        let old_version = ctx.builder.local_version(&ctx.reg(regs::ESP));
         gen_get_reg32(ctx, regs::ESP);
         ctx.builder.const_i32(offset as i32);
         ctx.builder.add_i32();
         gen_set_reg32(ctx, regs::ESP);
+        note_stack_adjust(ctx, old_version, offset as i32);
     }
     else {
         gen_get_reg16(ctx, regs::SP);
@@ -1741,12 +1779,18 @@ pub fn gen_push32(ctx: &mut JitContext, value_local: &WasmLocal) {
     else {
         // short path: The address written to is equal to ESP/SP minus four
         let new_sp_local = ctx.builder.tee_new_local();
+        hint_stack_access(ctx, -4, Some(&new_sp_local));
         gen_safe_write32(ctx, &new_sp_local, &value_local);
+        ctx.address_hint = None;
         new_sp_local
     };
 
     if ctx.cpu.ssize_32() {
+        let old_version = ctx.builder.local_version(&ctx.reg(regs::ESP));
         gen_set_reg32(ctx, regs::ESP);
+        if ctx.cpu.has_flat_segmentation() {
+            note_stack_adjust(ctx, old_version, -4);
+        }
     }
     else {
         gen_set_reg16(ctx, regs::SP);

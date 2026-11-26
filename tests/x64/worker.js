@@ -79,6 +79,12 @@ function finish(status)
         const ex = emulator.v86.cpu.wm.exports;
         result.stats = {};
         for(let i = 0; ex["profiler_stat_get"] && i < 400; i++) { const v = ex["profiler_stat_get"](i); if(v) result.stats[i] = v; }
+        if(ex["interp_addrs"])
+        {
+            const at = ex["interp_addrs"](2) >>> 0, f = new Float64Array(emulator.v86.cpu.wasm_memory.buffer, at, 256);
+            result.interp_addrs = [];
+            for(let i = 0; i < 16 && f[4 * i + 1]; i++) result.interp_addrs.push([f[4 * i].toString(16), f[4 * i + 1], f[4 * i + 2]]);
+        }
     }
     console.log(JSON.stringify(result));
     process.exit(0);
@@ -97,6 +103,19 @@ emulator.bus.register("cpu-event-halt", () => finish("halt"));
 emulator.add_listener("emulator-loaded", function()
 {
     const cpu = emulator.v86.cpu;
+    if(process.env.DUMP_MODULES)
+    {
+        // the 32-bit JIT's modules, as <physical start>_<n>.wasm (wasm2wat reads them)
+        fs.mkdirSync(process.env.DUMP_MODULES, { recursive: true });
+        const finalize = cpu.codegen_finalize;
+        let n = 0;
+        cpu.codegen_finalize = function(index, start, state_flags, ptr, len)
+        {
+            fs.writeFileSync(process.env.DUMP_MODULES + "/" + (start >>> 0).toString(16) + "_" + n++ + ".wasm",
+                new Uint8Array(cpu.wasm_memory.buffer, ptr >>> 0, len >>> 0));
+            return finalize.call(cpu, index, start, state_flags, ptr, len);
+        };
+    }
     cpu.reboot_internal();
     cpu.reset_memory();
     cpu.mem8.set(bin, LOAD_ADDR);

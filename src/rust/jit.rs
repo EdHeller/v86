@@ -479,6 +479,8 @@ pub struct AddressHint {
 pub struct PageAnchor {
     pub reg: u32,
     pub version: u32,
+    /// how far the register moved since the anchor was made (codegen::note_stack_adjust)
+    pub offset: i32,
     pub token: (u32, usize, u32),
     pub local: WasmLocal,
 }
@@ -3381,6 +3383,7 @@ pub unsafe fn set_jit_config(index: u32, value: u32) {
         24 => REP_STRING_CONTINUE = value != 0,
         27 => NESTED_CALL_DEPTH_NOW = (value as i32).max(1),
         25 => codegen::PAGE_ANCHORS = value != 0,
+        29 => codegen::STACK_ANCHORS = value != 0,
         26 => LOOP_EIP_ON_EXIT = value != 0,
         15 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & !0xFFFF_FFFF) | value as u64,
         16 => crate::cpu::long_mem::WATCH_ADDR = (crate::cpu::long_mem::WATCH_ADDR & 0xFFFF_FFFF) | (value as u64) << 32,
